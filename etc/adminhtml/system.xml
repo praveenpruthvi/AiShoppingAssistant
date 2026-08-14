@@ -212,28 +212,33 @@
                        showInDefault="1" showInWebsite="1" showInStore="1">
                     <label>Searchable Attribute Codes</label>
                     <comment>Comma-separated attribute codes normalized into the assistant index. Leave blank to index no custom attributes. Changing this requires a full index rebuild.</comment>
+                    <backend_model>Aavirbhava\AiShoppingAssistant\Model\Config\Backend\InvalidateProductIndex</backend_model>
                 </field>
                 <field id="include_short_description" translate="label" type="select" sortOrder="30"
                        showInDefault="1" showInWebsite="1" showInStore="1">
                     <label>Include Short Description</label>
                     <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                    <backend_model>Aavirbhava\AiShoppingAssistant\Model\Config\Backend\InvalidateProductIndex</backend_model>
                 </field>
                 <field id="include_long_description" translate="label" type="select" sortOrder="40"
                        showInDefault="1" showInWebsite="1" showInStore="1">
                     <label>Include Long Description</label>
                     <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                    <backend_model>Aavirbhava\AiShoppingAssistant\Model\Config\Backend\InvalidateProductIndex</backend_model>
                 </field>
                 <field id="aggregate_configurable_variants" translate="label comment" type="select" sortOrder="50"
                        showInDefault="1" showInWebsite="1" showInStore="1">
                     <label>Aggregate Configurable Variants</label>
                     <comment>Not available in this version. Enabling this option is rejected with a configuration error.</comment>
                     <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                    <backend_model>Aavirbhava\AiShoppingAssistant\Model\Config\Backend\InvalidateProductIndex</backend_model>
                 </field>
                 <field id="max_attribute_values_per_product" translate="label comment" type="text" sortOrder="60"
                        showInDefault="1" showInWebsite="1" showInStore="1">
                     <label>Maximum Attribute Values per Product</label>
                     <comment>Total attribute values kept per product across the configured attributes (1-500).</comment>
                     <validate>validate-digits validate-greater-than-zero</validate>
+                    <backend_model>Aavirbhava\AiShoppingAssistant\Model\Config\Backend\InvalidateProductIndex</backend_model>
                 </field>
             </group>
         </section>

@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-Milestones 0–2A are closed. Milestone 2B1 — store-scoped catalogue loading — is implemented and verified: indexing configuration, immutable store scopes, keyset product-id batching, bounded snapshot loading with batch category/attribute resolution, and store-view category and attribute labels. The custom `ai_product_rag` indexer, queue consumers, embeddings, and the assistant search index remain out of scope (Milestone 2B2+).
+Milestones 0–2B1 are closed. Milestone 2B2 — the `ai_product_rag` indexer and full-rebuild orchestration — is implemented and verified: the custom indexer action, immutable rebuild run context, two-phase document-writer contract, safe unavailable writer/scheduler defaults, sanitized failure taxonomy, and configuration-driven index invalidation. Queue consumers, embeddings, and the assistant search index remain out of scope (Milestone 2C+).
 
 ## Completed
 
@@ -68,6 +68,18 @@ Milestone 2B1:
 - `SearchableAttributeValueResolverInterface`/`SearchableAttributeValueResolver` — resolves configured, policy-allowed attributes to store-view labels; select/multiselect/boolean option ids map to store-view option labels via a cloned store-scoped attribute source; scalar values otherwise; empty values removed, sorted by code, shared per-product value budget.
 - Five new DI preferences; `StoreScope` never depends on store emulation and no direct SQL or writes are used.
 
+Milestone 2B2:
+
+- `Api/Indexing/` contracts: `FullProductReindexerInterface::rebuild()`, `ProductDocumentWriterInterface` (two-phase contract: `beginRun`, `beginStore`, `writeBatch`, `finishStore`, `activateRun`, `abortRun`), immutable `RebuildRunContextInterface` (server-generated UUID v4 run id, schema version, store-id-sorted scopes, start time) with `RebuildRunContextFactoryInterface`, `RebuildMetricsInterface`, `RebuildResultInterface` (activated/no-op/aborted), and `IncrementalProductIndexSchedulerInterface::schedule/scheduleMany`.
+- `FullProductReindexer` — bounded-memory rebuild orchestration: resolve active store scopes and per-store indexing config, skip disabled stores (no-op without touching the writer), generate a run context, then per store stream keyset id batches -> snapshots -> eligibility-normalized `ProductDocument`s to the writer, activating the run only after every enabled store finished. On failure: no new batches, `abortRun` exactly once if the run began, `activateRun` never called, sanitized exception carrying the aborted-run result.
+- `RebuildMetrics` validates counters, reason-code keys (from `ProductEligibilityResultInterface::REASON_*`), and duration; `RebuildResult` validates the outcome value. Both immutable.
+- Sanitized exception taxonomy rooted at `ProductIndexingException` (extends `LocalizedException`) with stable error codes: `backend_unavailable`, `invalid_entity_ids`, `run_init_failed`, `store_prep_failed`, `batch_normalization_failed`, `batch_write_failed`, `activation_failed`, `abort_failed`, `incremental_scheduler_unavailable`, `invalid_metrics`, `invalid_result`; optional aborted-run result attached; generic customer-safe messages.
+- `UnavailableProductDocumentWriter` (default) — indexing never fails open: every lifecycle call throws `backend_unavailable`; `abortRun` is a safe idempotent no-op. `UnavailableIncrementalProductIndexScheduler` (default) — validates positive ids (never silently discards), then refuses with `incremental_scheduler_unavailable` because queues are not implemented.
+- `Model\Indexer\ProductIndexer` implements both `Magento\Framework\Indexer\ActionInterface` and `Magento\Framework\Mview\ActionInterface`: `executeFull` rebuilds; `executeRow/executeList/execute` forward to the scheduler. Not final because Magento generates interceptors for every `ActionInterface` implementer.
+- `etc/indexer.xml` registers indexer `ai_product_rag` (view id + action class). `etc/mview.xml` declares the matching view with no subscriptions — the schema requires a `table` element if `subscriptions` is present, so it is omitted entirely; the inert view satisfies `Magento\Framework\Mview\View::load()` during reindex and never activates a changelog.
+- `Model\Config\Backend\InvalidateProductIndex` extends `Magento\Framework\App\Config\Value` (not final because Magento intercepts `Value` subclasses) and invalidates `ai_product_rag` only when a content-affecting indexing setting changes (`searchable_attribute_codes`, description flags, variant aggregation, attribute value budget); `batch_size` never invalidates. Attached via `backend_model` in `system.xml`; registry failures become sanitized `ConfigurationException`.
+- `magento/module-indexer >=100.4 <101.0` declared in `composer.json` and `Magento_Indexer` sequenced in `module.xml` (framework `IndexerRegistry` lives in `magento/framework`, which was already required).
+
 ## Verified in the current workspace (executed results)
 
 - Module `Aavirbhava_AiShoppingAssistant` is enabled (`module:status`).
@@ -88,6 +100,8 @@ Milestone 2B1:
 - Standalone structure validator passes.
 - Milestone 2B1 coverage includes indexing-config parsing/clamping/fail-closed cases (malformed code, policy-denied codes, enabled variant aggregation), store-scope DTO validation, active-store resolution excluding the admin store, keyset batching (ascending disjoint batches, empty catalogue, out-of-range batch size), snapshot batch validation, snapshot loading with category/attribute resolution and missing-id handling, category reference resolution (store-relative paths, ancestor backfill, inactive/missing skips, dedup), and attribute value resolution (store-view labels, multiselect, scalars, empty values, policy denial, shared budget, code ordering).
 - In-Magento smoke test passed against the sample data (store 1 / website 1): exactly one active store scope with the admin store excluded, default indexing config, deterministic first product batch, full snapshot loading for the batch, store-view category references (e.g. `Gear`), store-view attribute labels (e.g. `color -> Yellow`, `size -> S`, `material -> Organic Cotton`), missing-id and empty-batch handling. Bounded to a single product batch.
+- Milestone 2B2 coverage includes run-context validation (UUID v4, schema version, scopes), run-context factory (server-generated ids, dedup/sort, empty rejection), metrics counter/reason-code validation, result outcome validation, the full failure taxonomy (stable error codes, cause preservation, aborted-result attachment, sanitized messages), unavailable writer/scheduler behavior (explicit refusal, never silent discard, safe idempotent abort), and `FullProductReindexer` scenarios: disabled-store no-op without touching the writer, single-batch activation, batch-size pass-through, ineligible/missing counting by reason, empty-batch activation, snapshot-load failure, backend-unavailable beginRun, write-batch failure, activation failure, abort-failure preserving the primary, run-context failure, config-read failure, and distinct run ids across consecutive rebuilds.
+- In-Magento smoke test passed for 2B2: `setup:upgrade`, `setup:di:compile`, and `cache:flush` succeed; `indexer:info` lists `ai_product_rag`; `indexer:reindex ai_product_rag` completes successfully in 00:00:00 as a no-op because `general/enabled` defaults to 0 and the unavailable writer would refuse if a store required indexing; `indexer:status` shows Ready. The inert mview view (no subscriptions) loads during reindex without creating a changelog.
 
 ## Operational note
 
@@ -97,10 +111,11 @@ Start Magento with `bin/start` from the repository root. Plain `docker compose u
 
 - Browser-based Admin rendering of the configuration section has not been verified. Admin form rendering, scoped save/load through the UI, and per-store overrides remain to be tested.
 - Because no real provider adapters are registered yet, the Admin provider dropdowns render an empty option list in production until adapters are contributed through DI; this is expected and tested.
-- Real provider HTTP adapters, the `ai_product_rag` custom indexer, queue consumers, the assistant search index, and hybrid retrieval (Milestone 2B2+) are not implemented.
+- Real provider HTTP adapters, queue consumers, the assistant search index, embedding generation, and hybrid retrieval (Milestone 2C+) are not implemented.
 - The `indexing` Admin group is registered in `system.xml` and compiles, but its browser rendering and per-store save/load have not been exercised through the Admin UI.
+- The `InvalidateProductIndex` backend model is unit-tested but has not been exercised through an actual Admin config save.
 - Two-store-view catalogue isolation is covered by unit mocks only; the current sample environment has a single frontend store view.
 
 ## Next implementation slice
 
-Milestone 2B2: the custom `ai_product_rag` indexer, asynchronous queue consumers with content-hash skipping, the dedicated store-scoped assistant search index, embedding provider adapters, and hybrid retrieval.
+Milestone 2C: asynchronous queue consumers with content-hash skipping, the dedicated store-scoped assistant search index (OpenSearch), embedding provider adapters, and hybrid retrieval.

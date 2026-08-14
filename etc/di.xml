@@ -35,6 +35,14 @@
                 type="Aavirbhava\AiShoppingAssistant\Model\Catalog\CategoryReferenceResolver"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Catalog\SearchableAttributeValueResolverInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Catalog\SearchableAttributeValueResolver"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\FullProductReindexerInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\FullProductReindexer"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\ProductDocumentWriterInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\UnavailableProductDocumentWriter"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalProductIndexSchedulerInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\UnavailableIncrementalProductIndexScheduler"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\RebuildRunContextFactoryInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\RebuildRunContextFactory"/>
 
     <type name="Aavirbhava\AiShoppingAssistant\Model\Provider\LlmProviderRegistry">
         <arguments>

@@ -204,6 +204,48 @@ Pipeline stages (`ProductDocumentNormalizerInterface::normalize`):
 
 The normalized document deliberately excludes price, stock, salability, URLs, media, and customer-group data. Those facts are always resolved from Magento services at retrieval or display time.
 
+## Full rebuild orchestration
+
+The custom indexer action (`ai_product_rag`) delegates full rebuilds to `FullProductReindexerInterface::rebuild()`. Memory stays bounded: only one batch of ids, snapshots, and documents exists at a time.
+
+Algorithm:
+
+1. Resolve active store scopes (`StoreScopeProviderInterface`) and each store's explicit `IndexingConfigInterface`.
+2. Skip stores where the assistant is disabled. If none remain, return a safe no-op `RebuildResult` without ever touching the document writer.
+3. Build an immutable `RebuildRunContext` (server-generated UUID v4 run id, schema version, store-id-sorted scopes, start time).
+4. Open the run in the `ProductDocumentWriterInterface`, then for each enabled store prepare the store, stream keyset id batches -> `ProductSnapshot`s -> eligibility-normalized `ProductDocument`s, and write only eligible documents.
+5. Only after every enabled store finished, `activateRun()`.
+
+### Document writer contract
+
+`ProductDocumentWriterInterface` is the two-phase boundary between orchestration and a future index backend:
+
+```php
+interface ProductDocumentWriterInterface
+{
+    public function beginRun(RebuildRunContextInterface $context): void;
+    public function beginStore(StoreScopeInterface $scope): void;
+    public function writeBatch(array $documents): void;
+    public function finishStore(): void;
+    public function activateRun(): void;
+    public function abortRun(): void;
+}
+```
+
+The default `UnavailableProductDocumentWriter` never fails open: every lifecycle call throws a sanitized `backend_unavailable` exception, and `abortRun()` is a safe idempotent no-op. A future OpenSearch writer replaces it through DI. `IncrementalProductIndexSchedulerInterface` receives row/list updates; the default validates positive ids (never silently discarding any) and refuses explicitly with `incremental_scheduler_unavailable` until the queue/consumer pipeline exists.
+
+### Failure semantics
+
+On any failure after the run began: no new batches are started, `abortRun()` is called exactly once, `activateRun()` is never called, and a sanitized `ProductIndexingException` (stable `errorCode()`: `backend_unavailable`, `invalid_entity_ids`, `run_init_failed`, `store_prep_failed`, `batch_normalization_failed`, `batch_write_failed`, `activation_failed`, `abort_failed`, `incremental_scheduler_unavailable`, `invalid_metrics`, `invalid_result`) is thrown carrying the aborted-run metrics. Messages are generic and customer-safe.
+
+### Index invalidation
+
+`Model\Config\Backend\InvalidateProductIndex` (a `Magento\Framework\App\Config\Value` subclass) invalidates `ai_product_rag` through `Magento\Framework\Indexer\IndexerRegistry` only when a content-affecting indexing setting changes: searchable attribute codes, description flags, variant aggregation, or the attribute value budget. `batch_size` never invalidates the index. No indexing or embedding work happens during the config save.
+
+### Indexer and mview wiring
+
+`etc/indexer.xml` registers the indexer with the action class `Model\Indexer\ProductIndexer` (implements both `Magento\Framework\Indexer\ActionInterface` and `Magento\Framework\Mview\ActionInterface`). `etc/mview.xml` declares the matching view with **no subscriptions** — the mview schema requires at least one `table` inside `subscriptions`, so the element is omitted entirely. The inert view satisfies `Magento\Framework\Mview\View::load()` (which `reindexAll()` calls unconditionally) without creating a changelog or enabling incremental processing. The action class and the config backend model are not `final` because Magento generates interceptors for `ActionInterface` implementers and `Config\Value` subclasses.
+
 ## Search index
 
 Use a dedicated versioned alias and physical index:
@@ -221,13 +263,15 @@ Price and stock fields may help candidate retrieval but must be revalidated thro
 
 ## Indexing
 
-- Register a custom indexer named `ai_product_rag`.
+- Register a custom indexer named `ai_product_rag` (registered in Milestone 2B2).
 - Full reindex processes products in configurable batches.
 - Product/category changes enqueue affected entity IDs.
 - Consumers normalize, hash, embed, and upsert documents.
 - Unchanged content hashes skip embedding generation.
 - Disabled, deleted, invisible, or unassigned products are removed for the relevant store scope.
 - A scheduled reconciliation detects missed events.
+
+Queue consumers, embedding generation, and the search-index backend are not yet implemented; until then the document writer and incremental scheduler refuse explicitly rather than failing open.
 
 ## Failure policy
 

@@ -33,6 +33,12 @@
 - Load product ids through `ProductIdBatchProviderInterface` keyset batches and snapshots through `ProductSnapshotProviderInterface`; resolve categories and attribute values through their batch resolvers — never per product (no N+1).
 - Call product-collection `addCategoryIds()` only after `load()`; it derives category ids from the already-loaded items.
 - Drive loading from `ConfigurationReaderInterface::readIndexing`; keep price, stock, salability, URLs, and customer-group data out of snapshots.
+- Run full assistant-index rebuilds only through `FullProductReindexerInterface::rebuild()`; the document writer opens a run, streams store-scoped eligible `ProductDocument` batches, and activates only after every enabled store finished, with `abortRun()` called at most once on failure.
+- Keep the indexer action class (`Model\Indexer\ProductIndexer`) and any `Magento\Framework\App\Config\Value` subclass non-`final`; Magento generates interceptors for `ActionInterface` implementers and `Config\Value` subclasses and cannot extend final classes.
+- Declare `Magento_Indexer` in the module sequence when registering a custom indexer; the framework `IndexerRegistry` used for invalidation lives in `magento/framework`.
+- Make index-failure messages generic and stable (`ProductIndexingException::errorCode()`); never leak provider payloads, SQL, or internal traces.
+- Never let an index default fail open: until a backend and queue pipeline exist, the writer and incremental scheduler refuse explicitly with sanitized exceptions rather than pretending documents were persisted.
+- Invalidate the assistant index only for content-affecting indexing settings; configuration that cannot change persisted content (for example `batch_size`) must never invalidate the index.
 
 ## Don't
 
@@ -59,6 +65,9 @@
 - Do not add display labels or customer-facing descriptions inside provider implementations; keep UI metadata in the label registry.
 - Do not call `addCategoryIds()` before `load()` or call `getCategoryIds()` per product on the fly — both defeat batching and reintroduce N+1 queries.
 - Do not bypass `StoreScopeInterface` with the admin store or inactive store views.
+- Do not index, embed, or generate anything synchronously inside a config save, a product save, or the indexer action; publish identifiers and rebuild through the bounded orchestration.
+- Do not silently discard a product id passed to incremental scheduling; validate and refuse explicitly when the pipeline is unavailable.
+- Do not declare an mview `subscriptions` element without at least one `table`; declare an inert view by omitting `subscriptions` entirely.
 
 ## Configuration rules
 

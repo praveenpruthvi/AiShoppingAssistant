@@ -33,6 +33,8 @@ Exit condition: contract tests pass for every enabled provider without domain lo
 
 Exit condition: evaluation queries retrieve expected products and no store-scoping leaks occur.
 
+Current status: Milestones 0, 1, and 2B1 are closed. Milestone 2B2 closed the `ai_product_rag` indexer registration and full-rebuild orchestration (run context, two-phase writer contract, safe unavailable defaults, sanitized failure taxonomy, config-driven invalidation, inert mview view). Remaining Milestone 2 work (Milestone 2C): queue consumers with content-hash skipping, the dedicated store-scoped OpenSearch index, embedding provider adapters, and hybrid retrieval.
+
 ## Milestone 3 — Guardrails and read-only assistant
 
 - Implement fixed intent allowlist and classifier schema.
