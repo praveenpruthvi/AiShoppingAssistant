@@ -19,6 +19,10 @@
 - Write provider contract tests and use recorded/fake responses in routine tests.
 - Add extension interfaces before adding merchant-specific logic.
 - Update documentation when a contract, configuration path, or security rule changes.
+- Use the centralized `ProviderIdentifiers` allowlist for provider names; never derive identifiers from customer input or configuration-supplied class names.
+- Contribute provider implementations through the DI-backed provider registries and resolve them via `ConfiguredProviderResolverInterface`.
+- Represent provider failures with the sanitized `ProviderException` hierarchy and stable error codes.
+- Gate fallback strictly through `FallbackEligibilityPolicyInterface`; only transient availability failures may use the fallback provider.
 
 ## Don't
 
@@ -37,6 +41,9 @@
 - Do not mix organic relevance and paid promotion into an unexplained score.
 - Do not silently fail open when a guardrail component is unavailable.
 - Do not add Phase 2 scope while Phase 1 correctness tests are failing.
+- Do not turn configured provider names into class names or instantiate providers dynamically.
+- Do not expose raw provider response bodies, request bodies, or secret material in exceptions or logs.
+- Do not use fallback to bypass refusals, invalid tool calls, authorization failures, or response-validation failures.
 
 ## Configuration rules
 

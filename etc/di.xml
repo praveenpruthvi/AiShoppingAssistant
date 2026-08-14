@@ -5,4 +5,23 @@
                 type="Aavirbhava\AiShoppingAssistant\Model\Config\ConfigurationReader"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Config\SecretReaderInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Config\SecretReader"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Provider\LlmProviderRegistryInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Provider\LlmProviderRegistry"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Provider\EmbeddingProviderRegistryInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Provider\EmbeddingProviderRegistry"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Provider\ConfiguredProviderResolverInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Provider\ConfiguredProviderResolver"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Provider\FallbackEligibilityPolicyInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Provider\FallbackEligibilityPolicy"/>
+
+    <type name="Aavirbhava\AiShoppingAssistant\Model\Provider\LlmProviderRegistry">
+        <arguments>
+            <argument name="providers" xsi:type="array"/>
+        </arguments>
+    </type>
+    <type name="Aavirbhava\AiShoppingAssistant\Model\Provider\EmbeddingProviderRegistry">
+        <arguments>
+            <argument name="providers" xsi:type="array"/>
+        </arguments>
+    </type>
 </config>

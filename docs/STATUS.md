@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-Milestone 0 is closed. Milestone 1A — secure configuration-reading foundations — is implemented and verified. Real provider adapters, HTTP, fallback, circuit-breaking, and RAG calls remain out of scope (Milestone 1B+).
+Milestone 0 is closed. Milestone 1A — secure configuration-reading foundations — and Milestone 1B — provider foundations (registries, capabilities, resolver, exceptions, fallback policy) — are implemented and verified. Real provider HTTP adapters, retry/circuit-breaking, and RAG calls remain out of scope (Milestone 1C+).
 
 ## Completed
 
@@ -29,6 +29,19 @@ Milestone 1A:
 - Immutable `SecretValue` with private storage, explicit `reveal()`, no `__toString()`, and redacted `__debugInfo()` and JSON serialization.
 - Interface-to-implementation DI preferences registered in `etc/di.xml`.
 
+Milestone 1B:
+
+- Hard safety ceilings tightened in `ConfigurationReader`: max output tokens `8192`, max input characters `10000`, max tool calls `10`, final products `20`. Defaults (`1200`, `1000`, `4`, `8`) stay within ceilings.
+- `ProviderIdentifiers` centralizes the allowlisted LLM (`openai`, `anthropic`, `xai`, `openai_compatible`) and embedding (`openai`, `voyage`, `openai_compatible`) identifiers.
+- `ProviderCapabilities` — immutable capability metadata, all capabilities default to false.
+- `capabilities()` added to `LlmProviderInterface` and `EmbeddingProviderInterface`.
+- `LlmProviderRegistry`/`EmbeddingProviderRegistry` DI-backed registries keyed by allowlisted identifiers; unknown identifiers fail closed with sanitized `ProviderNotFoundException`; never dynamic class resolution.
+- `ConfiguredProviderResolver` maps store-scoped config to registered providers (primary LLM, nullable fallback LLM, embedding) with no secret or Object Manager dependency.
+- Sanitized provider exception hierarchy: abstract `ProviderException` with `errorCode()` plus ten final classes covering configuration, authentication, rate limit, timeout, transport, unavailable, invalid response, refusal, policy violation, and not-found.
+- `FallbackEligibilityPolicy` — fallback eligible only for transient availability failures; safety/validation failures and unknown exceptions fail closed.
+- Fake providers (`Test/Unit/Fake/`) and contract tests for identifiers, capabilities, registries, resolver, fallback policy, and the exception taxonomy.
+- DI preferences and empty provider-array extension points registered in `etc/di.xml`.
+
 ## Verified in the current workspace (executed results)
 
 - Module `Aavirbhava_AiShoppingAssistant` is enabled (`module:status`).
@@ -36,11 +49,12 @@ Milestone 1A:
 - `setup:di:compile` passed (before and after the Milestone 1A changes).
 - `cache:flush` passed.
 - `composer.json` validation passed (`composer validate --strict` inside the Magento container).
-- PHP syntax checks passed for 38 PHP files (Milestone 0 baseline: 17).
+- PHP syntax checks passed for 68 PHP files (Milestone 0 baseline: 17).
 - Five Magento XML files are well formed (Milestone 0 baseline: four).
-- PHPUnit: 37 tests, 160 assertions passed (Milestone 0 baseline: 7 tests, 70 assertions). Executed with the workspace root's PHPUnit 9.5.24; the module requires `^10.5 || ^11.0`, so CI runs a newer runner.
+- PHPUnit: 76 tests, 329 assertions passed (Milestone 1A baseline: 37 tests, 160 assertions). Executed with the workspace root's PHPUnit 9.5.24; the module requires `^10.5 || ^11.0`, so CI runs a newer runner.
 - Default configuration loaded correctly for all 29 module config paths through `ScopeConfigInterface`; the intentionally empty `llm/base_url` default resolves to an empty string.
 - Dependency-injection resolution verified inside Magento: `ConfigurationReaderInterface` -> `ConfigurationReader`, `SecretReaderInterface` -> `SecretReader`.
+- `setup:di:compile` validates the new registry, resolver, and policy preferences together with their empty provider-array arguments.
 - All three API-key fields (`llm/api_key`, `fallback/api_key`, `embedding/api_key`) use `Magento\Config\Model\Config\Backend\Encrypted`.
 - Stored API-key values decrypt through `EncryptorInterface`; empty stored values return an empty `SecretValue` so local providers can operate without a key.
 - Standalone structure validator passes.
@@ -52,8 +66,8 @@ Start Magento with `bin/start` from the repository root. Plain `docker compose u
 ## Not verified
 
 - Browser-based Admin rendering of the configuration section has not been verified. Admin form rendering, scoped save/load through the UI, and per-store overrides remain to be tested.
-- Real provider HTTP adapters, embedding and RAG retrieval, and the orchestration pipeline (Milestone 1B+) are not implemented.
+- Real provider HTTP adapters, embedding and RAG retrieval, and the orchestration pipeline (Milestone 1C+) are not implemented.
 
 ## Next implementation slice
 
-Milestone 1B: provider registry, sanitized test-connection actions, a bounded HTTP client abstraction, retry/circuit-breaker policy, and fake-provider contract tests before writing real vendor API adapters.
+Milestone 1C: sanitized test-connection actions, a bounded HTTP client abstraction, retry/circuit-breaker policy, and real vendor API adapters behind the registries.

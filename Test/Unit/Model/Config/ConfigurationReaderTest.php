@@ -167,6 +167,56 @@ final class ConfigurationReaderTest extends TestCase
         self::assertSame(ConfigurationReader::MAX_FINAL_PRODUCTS, $retrieval->finalProducts());
     }
 
+    public function testHardSafetyCeilingsAreEnforced(): void
+    {
+        self::assertSame(8192, ConfigurationReader::MAX_MAX_OUTPUT_TOKENS);
+        self::assertSame(10000, ConfigurationReader::MAX_MAX_INPUT_CHARACTERS);
+        self::assertSame(10, ConfigurationReader::MAX_MAX_TOOL_CALLS);
+        self::assertSame(20, ConfigurationReader::MAX_FINAL_PRODUCTS);
+    }
+
+    public function testSafeDefaultsStayWithinHardCeilings(): void
+    {
+        self::assertLessThanOrEqual(
+            ConfigurationReader::MAX_MAX_OUTPUT_TOKENS,
+            ConfigurationReader::DEFAULT_MAX_OUTPUT_TOKENS
+        );
+        self::assertLessThanOrEqual(
+            ConfigurationReader::MAX_MAX_INPUT_CHARACTERS,
+            ConfigurationReader::DEFAULT_MAX_INPUT_CHARACTERS
+        );
+        self::assertLessThanOrEqual(
+            ConfigurationReader::MAX_MAX_TOOL_CALLS,
+            ConfigurationReader::DEFAULT_MAX_TOOL_CALLS
+        );
+        self::assertLessThanOrEqual(
+            ConfigurationReader::MAX_FINAL_PRODUCTS,
+            ConfigurationReader::DEFAULT_FINAL_PRODUCTS
+        );
+    }
+
+    public function testValuesAboveHardCeilingsAreClampedToCeiling(): void
+    {
+        $reader = $this->reader([
+            Path::LLM_PROVIDER => 'openai',
+            Path::LLM_MODEL => 'test-model',
+            Path::LLM_MAX_OUTPUT_TOKENS => '20000',
+            Path::GUARDRAILS_MAX_INPUT_CHARACTERS => '50000',
+            Path::GUARDRAILS_MAX_TOOL_CALLS => '500',
+            Path::RETRIEVAL_FINAL_PRODUCTS => '100',
+        ]);
+
+        $llm = $reader->readLlm(1);
+        self::assertSame(ConfigurationReader::MAX_MAX_OUTPUT_TOKENS, $llm->maxOutputTokens());
+
+        $guardrails = $reader->readGuardrails(1);
+        self::assertSame(ConfigurationReader::MAX_MAX_INPUT_CHARACTERS, $guardrails->maxInputCharacters());
+        self::assertSame(ConfigurationReader::MAX_MAX_TOOL_CALLS, $guardrails->maxToolCalls());
+
+        $retrieval = $reader->readRetrieval(1);
+        self::assertSame(ConfigurationReader::MAX_FINAL_PRODUCTS, $retrieval->finalProducts());
+    }
+
     public function testNumbersAtOrBelowLowerBoundAreHandledSafely(): void
     {
         $reader = $this->reader([

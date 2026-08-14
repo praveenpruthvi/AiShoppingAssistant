@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Aavirbhava\AiShoppingAssistant\Api;
 
 use Aavirbhava\AiShoppingAssistant\Model\Dto\EmbeddingBatch;
+use Aavirbhava\AiShoppingAssistant\Model\Provider\ProviderCapabilities;
 
 interface EmbeddingProviderInterface
 {
@@ -16,4 +17,6 @@ interface EmbeddingProviderInterface
     public function dimensions(): int;
 
     public function fingerprint(): string;
+
+    public function capabilities(): ProviderCapabilities;
 }

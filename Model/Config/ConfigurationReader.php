@@ -23,7 +23,7 @@ final class ConfigurationReader implements ConfigurationReaderInterface
     public const DEFAULT_TIMEOUT_SECONDS = 20;
 
     public const MIN_MAX_OUTPUT_TOKENS = 1;
-    public const MAX_MAX_OUTPUT_TOKENS = 32768;
+    public const MAX_MAX_OUTPUT_TOKENS = 8192;
     public const DEFAULT_MAX_OUTPUT_TOKENS = 1200;
 
     public const MIN_FALLBACK_TIMEOUT_SECONDS = 1;
@@ -55,15 +55,15 @@ final class ConfigurationReader implements ConfigurationReaderInterface
     public const DEFAULT_MERGED_CANDIDATES = 30;
 
     public const MIN_FINAL_PRODUCTS = 1;
-    public const MAX_FINAL_PRODUCTS = 50;
+    public const MAX_FINAL_PRODUCTS = 20;
     public const DEFAULT_FINAL_PRODUCTS = 8;
 
     public const MIN_MAX_INPUT_CHARACTERS = 1;
-    public const MAX_MAX_INPUT_CHARACTERS = 100000;
+    public const MAX_MAX_INPUT_CHARACTERS = 10000;
     public const DEFAULT_MAX_INPUT_CHARACTERS = 1000;
 
     public const MIN_MAX_TOOL_CALLS = 1;
-    public const MAX_MAX_TOOL_CALLS = 100;
+    public const MAX_MAX_TOOL_CALLS = 10;
     public const DEFAULT_MAX_TOOL_CALLS = 4;
 
     public const DEFAULT_OUT_OF_SCOPE_MESSAGE = 'I can help you search, compare, and learn about products and services available on this store. What are you looking for?';

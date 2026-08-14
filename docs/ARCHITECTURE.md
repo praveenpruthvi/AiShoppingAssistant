@@ -30,6 +30,7 @@ interface LlmProviderInterface
 {
     public function chat(ChatRequest $request): ChatResponse;
     public function testConnection(): ConnectionResult;
+    public function capabilities(): ProviderCapabilities;
 }
 ```
 
@@ -48,10 +49,31 @@ interface EmbeddingProviderInterface
     public function embed(array $texts): EmbeddingBatch;
     public function dimensions(): int;
     public function fingerprint(): string;
+    public function capabilities(): ProviderCapabilities;
 }
 ```
 
 Changing the embedding fingerprint or dimensions invalidates the assistant index.
+
+### Provider capabilities
+
+`ProviderCapabilities` is an immutable value object that declares what a provider supports (chat generation, embeddings, tool calling, structured output, streaming, optional API key, configurable base URL). Every capability defaults to `false`; providers must declare support explicitly. It carries no secrets and no provider instances.
+
+### Provider registries
+
+`LlmProviderRegistryInterface` and `EmbeddingProviderRegistryInterface` hold providers contributed through Magento DI as an array keyed by allowlisted identifiers from `ProviderIdentifiers`. Unknown or unregistered identifiers fail closed with a sanitized `ProviderNotFoundException`; identifiers are never turned into class names.
+
+### Configured provider resolution
+
+`ConfiguredProviderResolverInterface` maps store-scoped configuration to registered providers: `primaryLlmProvider(int $storeId)`, `fallbackLlmProvider(int $storeId): ?LlmProviderInterface` (null when disabled or unset), and `embeddingProvider(int $storeId)`. It depends only on the configuration reader and the registries, never on secrets or dynamic class resolution.
+
+### Fallback eligibility policy
+
+`FallbackEligibilityPolicyInterface::isEligible(Throwable)` permits fallback only for transient availability failures (`ProviderTimeoutException`, `ProviderRateLimitException`, `ProviderTransportException`, `ProviderUnavailableException`). Configuration, authentication, invalid-response, refusal, and policy failures are never eligible, and unknown exceptions fail closed.
+
+### Provider exceptions
+
+All provider failures are represented by a sanitized hierarchy rooted at `ProviderException` with a stable `errorCode()`. Messages are generic and customer-safe; raw request/response bodies and secrets never reach exception messages or logs.
 
 ### Commerce tool
 
