@@ -1,0 +1,32 @@
+# Normalize line endings across the repository.
+* text=auto
+
+# PHP and configuration files must use LF.
+*.php text eol=lf
+*.xml text eol=lf
+*.xsd text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.dist text eol=lf
+
+# Image assets.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+
+# Composer package distribution: exclude development-only files from the
+# packed archive while keeping them in version control.
+/.github export-ignore
+/.gitattributes export-ignore
+/.gitignore export-ignore
+/.idea export-ignore
+/.vscode export-ignore
+/.phpunit.cache export-ignore
+/Test export-ignore
+/tools export-ignore
+/phpunit.xml.dist export-ignore

@@ -1,0 +1,33 @@
+# Composer / build artifacts
+/vendor/
+/composer.lock
+
+# PHPUnit cache and result files
+/.phpunit.cache/
+/.phpunit.result.cache
+
+# IDE files
+/.idea/
+/.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Environment files
+/env/
+/.env
+/.env.*
+*.local
+
+# Credentials and secrets
+/auth.json
+/.auth.json
+/credentials.json
+/secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
