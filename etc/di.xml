@@ -25,6 +25,16 @@
                 type="Aavirbhava\AiShoppingAssistant\Model\Catalog\ProductDocumentNormalizer"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Catalog\ContentHashServiceInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Catalog\ContentHashService"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Store\StoreScopeProviderInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Store\StoreScopeProvider"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductIdBatchProviderInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Catalog\ProductIdBatchProvider"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductSnapshotProviderInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Catalog\ProductSnapshotProvider"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Catalog\CategoryReferenceResolverInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Catalog\CategoryReferenceResolver"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Catalog\SearchableAttributeValueResolverInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Catalog\SearchableAttributeValueResolver"/>
 
     <type name="Aavirbhava\AiShoppingAssistant\Model\Provider\LlmProviderRegistry">
         <arguments>

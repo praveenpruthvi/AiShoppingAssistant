@@ -161,6 +161,34 @@ Reserved Phase 2 signals:
 - Clearance
 - Consent-based personalization
 
+## Store-scoped catalogue loading
+
+The loading layer (Milestone 2B1) turns the Magento catalogue into raw `ProductSnapshot` DTOs, strictly scoped by store view and website, with bounded memory and no N+1 queries. It performs no indexing: the custom indexer, queue consumers, and the assistant search index remain separate concerns.
+
+### Store scope
+
+`StoreScopeProviderInterface::activeStores()` returns every active frontend store view as an immutable `StoreScopeInterface` (store id, website id, store code, optional locale), sorted by store id. The admin store (id 0) is never a scope. `requireActive(int $storeId)` resolves a single active scope and throws a sanitized `StoreScopeException` otherwise. No assistant query may run without a `StoreScopeInterface`.
+
+### Indexing configuration
+
+`ConfigurationReaderInterface::readIndexing(int $storeId)` returns the immutable `IndexingConfigInterface`: batch size (10–500, default 100), an explicit lowercase attribute-code allowlist (blank means no custom attributes), short/long description flags, `maxAttributeValuesPerProduct` (1–500, default 100), and `aggregateConfigurableVariants` (always disabled). Codes are validated with the `SearchableAttribute` syntax rule; policy-denied codes are dropped before sorting and slicing to 50. Configurable-variant aggregation is rejected at configuration time with a sanitized `ConfigurationException` until a variant aggregator exists.
+
+### Product id batching
+
+`ProductIdBatchProviderInterface::batches(scope, batchSize)` yields ascending, disjoint product entity-id lists using a keyset over `entity_id` (`> lastId`, ascending order, explicit page size, `getAllIds`), limited to products assigned to the scope's website. The generator terminates cleanly on an empty catalogue. Batch sizes outside 1–1000 throw `InvalidArgumentException`.
+
+### Snapshot loading
+
+`ProductSnapshotProviderInterface::load(scope, config, ids)` loads one bounded product collection per call: store-view and website filters, an id filter, only the needed fields (`name`, `status`, `visibility`, descriptions when enabled, configured attribute codes), category ids via `addCategoryIds()` (which must run after `load()`), ascending order, and a page size equal to the requested id count. Category references are resolved once per batch through `CategoryReferenceResolverInterface`, and store-view attribute values once per product through `SearchableAttributeValueResolverInterface`. Requested ids that cannot be loaded are returned as `missingProductIds`, never as an error.
+
+### Category references
+
+`CategoryReferenceResolverInterface::resolve(scope, ids)` loads the requested categories in one bounded, store-scoped batch and missing ancestors from their `path` segments in a second batch. Global (id 1) and the store root category are excluded from paths, inactive and empty-name categories are skipped, and references are returned sorted by category id.
+
+### Attribute values
+
+`SearchableAttributeValueResolverInterface::resolve(scope, config, product)` resolves configured, policy-allowed attributes to store-view labels. Option-based attributes (select, multiselect, boolean) map option ids to store-view option labels; other attributes pass through scalar values. Empty values are removed, results are sorted by code, and the per-product value budget is shared across attributes.
+
 ## Catalogue normalization
 
 The assistant index is built from deterministic, sanitized product documents, never from raw catalogue content.

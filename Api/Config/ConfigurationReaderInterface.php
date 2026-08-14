@@ -17,4 +17,6 @@ interface ConfigurationReaderInterface
     public function readRetrieval(int $storeId): RetrievalConfigInterface;
 
     public function readGuardrails(int $storeId): GuardrailConfigInterface;
+
+    public function readIndexing(int $storeId): IndexingConfigInterface;
 }

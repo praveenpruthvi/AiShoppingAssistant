@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace Aavirbhava\AiShoppingAssistant\Model\Config;
 
+use Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductAttributePolicyInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\ConfigurationReaderInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\EmbeddingConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\FallbackConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\GeneralConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\GuardrailConfigInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Config\IndexingConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\LlmConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\RetrievalConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Config\Exception\ConfigurationException;
@@ -68,8 +70,24 @@ final class ConfigurationReader implements ConfigurationReaderInterface
 
     public const DEFAULT_OUT_OF_SCOPE_MESSAGE = 'I can help you search, compare, and learn about products and services available on this store. What are you looking for?';
 
+    public const MIN_BATCH_SIZE = 10;
+    public const MAX_BATCH_SIZE = 500;
+    public const DEFAULT_BATCH_SIZE = 100;
+
+    public const MAX_SEARCHABLE_ATTRIBUTE_CODES = 50;
+
+    public const MIN_MAX_ATTRIBUTE_VALUES = 1;
+    public const MAX_MAX_ATTRIBUTE_VALUES = 500;
+    public const DEFAULT_MAX_ATTRIBUTE_VALUES = 100;
+
+    /**
+     * @var list<string>
+     */
+    public const DEFAULT_SEARCHABLE_ATTRIBUTE_CODES = ['manufacturer', 'color', 'size', 'material'];
+
     public function __construct(
-        private readonly ScopeConfigInterface $scopeConfig
+        private readonly ScopeConfigInterface $scopeConfig,
+        private readonly ProductAttributePolicyInterface $attributePolicy
     ) {
     }
 
@@ -214,6 +232,97 @@ final class ConfigurationReader implements ConfigurationReaderInterface
             $this->readBool(Path::GUARDRAILS_BLOCK_CODE_GENERATION, $storeId, true),
             $this->readString(Path::GUARDRAILS_OUT_OF_SCOPE_MESSAGE, $storeId, self::DEFAULT_OUT_OF_SCOPE_MESSAGE)
         );
+    }
+
+    public function readIndexing(int $storeId): IndexingConfigInterface
+    {
+        $codes = $this->readAttributeCodeList(
+            Path::INDEXING_SEARCHABLE_ATTRIBUTE_CODES,
+            $storeId,
+            self::DEFAULT_SEARCHABLE_ATTRIBUTE_CODES
+        );
+
+        $aggregate = $this->readBool(Path::INDEXING_AGGREGATE_CONFIGURABLE_VARIANTS, $storeId, false);
+
+        if ($aggregate) {
+            throw new ConfigurationException(
+                new Phrase('Configurable variant aggregation is not available in this version. Disable "aggregate configurable variants".')
+            );
+        }
+
+        return new IndexingConfig(
+            $this->readInt(
+                Path::INDEXING_BATCH_SIZE,
+                $storeId,
+                self::MIN_BATCH_SIZE,
+                self::MAX_BATCH_SIZE,
+                self::DEFAULT_BATCH_SIZE
+            ),
+            $codes,
+            $this->readBool(Path::INDEXING_INCLUDE_SHORT_DESCRIPTION, $storeId, true),
+            $this->readBool(Path::INDEXING_INCLUDE_LONG_DESCRIPTION, $storeId, true),
+            false,
+            $this->readInt(
+                Path::INDEXING_MAX_ATTRIBUTE_VALUES_PER_PRODUCT,
+                $storeId,
+                self::MIN_MAX_ATTRIBUTE_VALUES,
+                self::MAX_MAX_ATTRIBUTE_VALUES,
+                self::DEFAULT_MAX_ATTRIBUTE_VALUES
+            )
+        );
+    }
+
+    /**
+     * Reads the explicit searchable attribute allowlist and validates it fail closed.
+     *
+     * - An empty or null value resolves to the default list.
+     * - A raw empty string (explicit blank) resolves to an empty explicit allowlist.
+     * - Invalid tokens (bad attribute-code format) throw a sanitized ConfigurationException.
+     * - Policy-denied codes are silently dropped (fail closed) before sorting and slicing.
+     *
+     * @param list<string> $defaults
+     *
+     * @return list<string>
+     */
+    private function readAttributeCodeList(string $path, int $storeId, array $defaults): array
+    {
+        $raw = $this->scopeConfig->getValue($path, ScopeInterface::SCOPE_STORE, (string) $storeId);
+
+        if ($raw === null) {
+            return $defaults;
+        }
+
+        $rawString = trim((string) $raw);
+
+        if ($rawString === '') {
+            return [];
+        }
+
+        $codes = [];
+        foreach (explode(',', $rawString) as $token) {
+            $code = strtolower(trim($token));
+            if ($code === '') {
+                continue;
+            }
+            if (preg_match('/^[a-z][a-z0-9_]{0,63}$/', $code) !== 1) {
+                throw new ConfigurationException(
+                    new Phrase('The searchable attribute list contains an invalid attribute code.')
+                );
+            }
+            $codes[] = $code;
+        }
+
+        $allowed = [];
+        foreach ($codes as $code) {
+            if ($this->attributePolicy->isAllowed($code)) {
+                $allowed[] = $code;
+            }
+        }
+
+        $allowed = array_values(array_unique($allowed));
+        sort($allowed);
+
+        return array_slice($allowed, 0, self::MAX_SEARCHABLE_ATTRIBUTE_CODES);
     }
 
     private function readBool(string $path, int $storeId, bool $failClosed): bool

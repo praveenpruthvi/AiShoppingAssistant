@@ -44,6 +44,14 @@
                 <block_code_generation>1</block_code_generation>
                 <out_of_scope_message>I can help you search, compare, and learn about products and services available on this store. What are you looking for?</out_of_scope_message>
             </guardrails>
+            <indexing>
+                <batch_size>100</batch_size>
+                <searchable_attribute_codes>manufacturer,color,size,material</searchable_attribute_codes>
+                <include_short_description>1</include_short_description>
+                <include_long_description>1</include_long_description>
+                <aggregate_configurable_variants>0</aggregate_configurable_variants>
+                <max_attribute_values_per_product>100</max_attribute_values_per_product>
+            </indexing>
         </ai_shopping_assistant>
     </default>
 </config>

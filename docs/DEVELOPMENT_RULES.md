@@ -29,6 +29,10 @@
 - Sanitize every untrusted catalogue field through `UntrustedContentSanitizerInterface` and filter attributes through `ProductAttributePolicyInterface`; never embed raw description markup.
 - Compute index idempotency from `ContentHashServiceInterface` SHA-256 digests; `embeddingContentHash` must exclude status/scope-only fields so those changes skip re-embedding.
 - Route all catalogue normalization through `ProductDocumentNormalizerInterface` and produce `ProductDocument` value objects; never build index payloads in controllers, templates, or consumers.
+- Resolve store scopes through `StoreScopeProviderInterface` and load catalogue data only from an active `StoreScopeInterface`; the admin store (id 0) is never a valid scope.
+- Load product ids through `ProductIdBatchProviderInterface` keyset batches and snapshots through `ProductSnapshotProviderInterface`; resolve categories and attribute values through their batch resolvers — never per product (no N+1).
+- Call product-collection `addCategoryIds()` only after `load()`; it derives category ids from the already-loaded items.
+- Drive loading from `ConfigurationReaderInterface::readIndexing`; keep price, stock, salability, URLs, and customer-group data out of snapshots.
 
 ## Don't
 
@@ -53,6 +57,8 @@
 - Do not hard-code a closed provider allowlist: only the DI registry may restrict which identifiers resolve.
 - Do not register a provider under a DI key that differs from its `identifier()`.
 - Do not add display labels or customer-facing descriptions inside provider implementations; keep UI metadata in the label registry.
+- Do not call `addCategoryIds()` before `load()` or call `getCategoryIds()` per product on the fly — both defeat batching and reintroduce N+1 queries.
+- Do not bypass `StoreScopeInterface` with the admin store or inactive store views.
 
 ## Configuration rules
 

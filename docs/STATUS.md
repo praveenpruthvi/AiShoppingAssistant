@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-Milestones 0–1B are closed. Milestone 2A — deterministic catalogue normalization foundations — is implemented and verified: eligibility policy, untrusted-content sanitizer, attribute allowlisting, immutable product documents, canonical content hashing, and the normalization pipeline. Real embedding providers, the custom indexer, queue consumers, and retrieval remain out of scope (Milestone 2B+).
+Milestones 0–2A are closed. Milestone 2B1 — store-scoped catalogue loading — is implemented and verified: indexing configuration, immutable store scopes, keyset product-id batching, bounded snapshot loading with batch category/attribute resolution, and store-view category and attribute labels. The custom `ai_product_rag` indexer, queue consumers, embeddings, and the assistant search index remain out of scope (Milestone 2B2+).
 
 ## Completed
 
@@ -57,6 +57,17 @@ Milestone 2A:
 - `ProductDocumentSchema::VERSION = 1` centralizes schema versioning for index invalidation.
 - DI preferences, `Magento_Catalog` module dependency, and `magento/module-catalog >=104.0 <105.0` composer constraint added.
 
+Milestone 2B1:
+
+- `ConfigurationReaderInterface::readIndexing` plus the immutable `IndexingConfigInterface`/`IndexingConfig`: batch size (10–500, default 100), explicit lowercase attribute-code allowlist (blank = no custom attributes, policy-denied codes dropped, sorted, capped at 50), description flags, `maxAttributeValuesPerProduct` (1–500, default 100), and `aggregate_configurable_variants` (always disabled; enabling is rejected with a sanitized `ConfigurationException`). Defaults registered in `etc/config.xml` and Admin system configuration under the `indexing` group.
+- `StoreScopeInterface`/`StoreScope` and `StoreScopeProviderInterface`/`StoreScopeProvider` built on `StoreManagerInterface`: active frontend store views only, admin store (id 0) excluded, deterministic store-id ordering, optional locale via store config, sanitized `StoreScopeException`.
+- `ProductIdBatchProviderInterface`/`ProductIdBatchProvider` — ascending, disjoint keyset batches over `entity_id` with explicit website filtering; batch sizes outside 1–1000 throw `InvalidArgumentException`; empty catalogues terminate cleanly.
+- `ProductSnapshotProviderInterface`/`ProductSnapshotProvider` — one bounded, store-scoped product collection per batch with selective field loading and `addCategoryIds()` applied after `load()`; produces `ProductSnapshot` DTOs with store-scoped attributes and per-batch category references; requested-but-unloaded ids returned as `missingProductIds`, never an error.
+- `ProductSnapshotBatch` immutable batch DTO (snapshots + missing ids, validated).
+- `CategoryReferenceResolverInterface`/`CategoryReferenceResolver` — two bounded, store-scoped category batches (requested ids, then missing ancestors from `path` segments); excludes global/root categories, skips inactive/empty-name categories, store-relative paths, sorted by id.
+- `SearchableAttributeValueResolverInterface`/`SearchableAttributeValueResolver` — resolves configured, policy-allowed attributes to store-view labels; select/multiselect/boolean option ids map to store-view option labels via a cloned store-scoped attribute source; scalar values otherwise; empty values removed, sorted by code, shared per-product value budget.
+- Five new DI preferences; `StoreScope` never depends on store emulation and no direct SQL or writes are used.
+
 ## Verified in the current workspace (executed results)
 
 - Module `Aavirbhava_AiShoppingAssistant` is enabled (`module:status`).
@@ -64,9 +75,9 @@ Milestone 2A:
 - `setup:di:compile` passed (before and after the Milestone 1A changes).
 - `cache:flush` passed.
 - `composer.json` validation passed (`composer validate --strict` inside the Magento container).
-- PHP syntax checks passed for 76 PHP files (Milestone 0 baseline: 17).
-- Five Magento XML files are well formed (Milestone 0 baseline: four).
-- PHPUnit: 200 tests, 582 assertions passed (Milestone 1B baseline: 107 tests, 398 assertions). Executed with the workspace root's PHPUnit 9.5.24; the module requires `^10.5 || ^11.0`, so CI runs a newer runner.
+- PHP syntax checks passed for 141 PHP files.
+- Five Magento XML files are well formed (`acl.xml`, `config.xml`, `di.xml`, `module.xml`, `adminhtml/system.xml`).
+- PHPUnit: 248 tests, 708 assertions passed (Milestone 2A baseline: 200 tests, 582 assertions). Executed with the workspace root's PHPUnit 9.5.24; the module requires `^10.5 || ^11.0`, so CI runs a newer runner.
 - Milestone 2A coverage includes eligibility paths (including the `invalid_identity` reason via a stub snapshot), sanitization (script, entity-encoded script, hidden content, comment, and external-entity non-expansion cases), attribute policy obfuscation, hash canonicalization and non-UTF-8 rejection, document validation, and full normalizer pipeline tests (determinism, scope independence of `embeddingContentHash`, injection stripping, cross-store ineligibility).
 - `ProductIndexEligibilityPolicy` resolves Magento's `Magento\Catalog\Model\Product\Visibility` constants at runtime through the root autoload.
 - Default configuration loaded correctly for all 29 module config paths through `ScopeConfigInterface`; the intentionally empty `llm/base_url` default resolves to an empty string.
@@ -75,6 +86,8 @@ Milestone 2A:
 - All three API-key fields (`llm/api_key`, `fallback/api_key`, `embedding/api_key`) use `Magento\Config\Model\Config\Backend\Encrypted`.
 - Stored API-key values decrypt through `EncryptorInterface`; empty stored values return an empty `SecretValue` so local providers can operate without a key.
 - Standalone structure validator passes.
+- Milestone 2B1 coverage includes indexing-config parsing/clamping/fail-closed cases (malformed code, policy-denied codes, enabled variant aggregation), store-scope DTO validation, active-store resolution excluding the admin store, keyset batching (ascending disjoint batches, empty catalogue, out-of-range batch size), snapshot batch validation, snapshot loading with category/attribute resolution and missing-id handling, category reference resolution (store-relative paths, ancestor backfill, inactive/missing skips, dedup), and attribute value resolution (store-view labels, multiselect, scalars, empty values, policy denial, shared budget, code ordering).
+- In-Magento smoke test passed against the sample data (store 1 / website 1): exactly one active store scope with the admin store excluded, default indexing config, deterministic first product batch, full snapshot loading for the batch, store-view category references (e.g. `Gear`), store-view attribute labels (e.g. `color -> Yellow`, `size -> S`, `material -> Organic Cotton`), missing-id and empty-batch handling. Bounded to a single product batch.
 
 ## Operational note
 
@@ -84,8 +97,10 @@ Start Magento with `bin/start` from the repository root. Plain `docker compose u
 
 - Browser-based Admin rendering of the configuration section has not been verified. Admin form rendering, scoped save/load through the UI, and per-store overrides remain to be tested.
 - Because no real provider adapters are registered yet, the Admin provider dropdowns render an empty option list in production until adapters are contributed through DI; this is expected and tested.
-- Real provider HTTP adapters, the `ai_product_rag` custom indexer, queue consumers, the assistant search index, and hybrid retrieval (Milestone 2B+) are not implemented.
+- Real provider HTTP adapters, the `ai_product_rag` custom indexer, queue consumers, the assistant search index, and hybrid retrieval (Milestone 2B2+) are not implemented.
+- The `indexing` Admin group is registered in `system.xml` and compiles, but its browser rendering and per-store save/load have not been exercised through the Admin UI.
+- Two-store-view catalogue isolation is covered by unit mocks only; the current sample environment has a single frontend store view.
 
 ## Next implementation slice
 
-Milestone 2B: the custom `ai_product_rag` indexer, asynchronous queue consumers with content-hash skipping, the dedicated store-scoped assistant search index, embedding provider adapters, and hybrid retrieval.
+Milestone 2B2: the custom `ai_product_rag` indexer, asynchronous queue consumers with content-hash skipping, the dedicated store-scoped assistant search index, embedding provider adapters, and hybrid retrieval.

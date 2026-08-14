@@ -46,6 +46,13 @@ final class Path
     public const GUARDRAILS_BLOCK_CODE_GENERATION = self::PREFIX . 'guardrails/block_code_generation';
     public const GUARDRAILS_OUT_OF_SCOPE_MESSAGE = self::PREFIX . 'guardrails/out_of_scope_message';
 
+    public const INDEXING_BATCH_SIZE = self::PREFIX . 'indexing/batch_size';
+    public const INDEXING_SEARCHABLE_ATTRIBUTE_CODES = self::PREFIX . 'indexing/searchable_attribute_codes';
+    public const INDEXING_INCLUDE_SHORT_DESCRIPTION = self::PREFIX . 'indexing/include_short_description';
+    public const INDEXING_INCLUDE_LONG_DESCRIPTION = self::PREFIX . 'indexing/include_long_description';
+    public const INDEXING_AGGREGATE_CONFIGURABLE_VARIANTS = self::PREFIX . 'indexing/aggregate_configurable_variants';
+    public const INDEXING_MAX_ATTRIBUTE_VALUES_PER_PRODUCT = self::PREFIX . 'indexing/max_attribute_values_per_product';
+
     private function __construct()
     {
     }

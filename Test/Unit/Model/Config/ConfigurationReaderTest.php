@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Aavirbhava\AiShoppingAssistant\Test\Unit\Model\Config;
 
+use Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductAttributePolicyInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\GeneralConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\GuardrailConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Config\ConfigurationReader;
@@ -28,7 +29,15 @@ final class ConfigurationReaderTest extends TestCase
                 static fn (string $path): mixed => $values[$path] ?? null
             );
 
-        return new ConfigurationReader($scopeConfig);
+        return new ConfigurationReader($scopeConfig, $this->policy());
+    }
+
+    private function policy(): ProductAttributePolicyInterface
+    {
+        $policy = $this->createMock(ProductAttributePolicyInterface::class);
+        $policy->method('isAllowed')->willReturn(true);
+
+        return $policy;
     }
 
     public function testReadsConfigurationForExplicitStoreScope(): void
@@ -74,7 +83,7 @@ final class ConfigurationReaderTest extends TestCase
                 static fn (string $path): mixed => $values[$path] ?? null
             );
 
-        $reader = new ConfigurationReader($scopeConfig);
+        $reader = new ConfigurationReader($scopeConfig, $this->policy());
 
         $general = $reader->readGeneral($storeId);
         self::assertInstanceOf(GeneralConfigInterface::class, $general);
@@ -355,5 +364,119 @@ final class ConfigurationReaderTest extends TestCase
         $this->expectExceptionMessage('fallback provider is not configured');
 
         $reader->readFallback(1);
+    }
+
+    public function testReadsIndexingConfiguration(): void
+    {
+        $reader = $this->reader([
+            Path::INDEXING_BATCH_SIZE => '25',
+            Path::INDEXING_SEARCHABLE_ATTRIBUTE_CODES => 'Brand, COLOR , size',
+            Path::INDEXING_INCLUDE_SHORT_DESCRIPTION => '1',
+            Path::INDEXING_INCLUDE_LONG_DESCRIPTION => '0',
+            Path::INDEXING_AGGREGATE_CONFIGURABLE_VARIANTS => '0',
+            Path::INDEXING_MAX_ATTRIBUTE_VALUES_PER_PRODUCT => '50',
+        ]);
+
+        $indexing = $reader->readIndexing(1);
+        self::assertSame(25, $indexing->batchSize());
+        self::assertSame(['brand', 'color', 'size'], $indexing->searchableAttributeCodes());
+        self::assertTrue($indexing->includeShortDescription());
+        self::assertFalse($indexing->includeLongDescription());
+        self::assertFalse($indexing->aggregateConfigurableVariants());
+        self::assertSame(50, $indexing->maxAttributeValuesPerProduct());
+    }
+
+    public function testIndexingUsesSafeDefaultsWhenConfigurationIsUnavailable(): void
+    {
+        $reader = $this->reader([]);
+
+        $indexing = $reader->readIndexing(1);
+        self::assertSame(ConfigurationReader::DEFAULT_BATCH_SIZE, $indexing->batchSize());
+        self::assertSame(
+            ConfigurationReader::DEFAULT_SEARCHABLE_ATTRIBUTE_CODES,
+            $indexing->searchableAttributeCodes()
+        );
+        self::assertTrue($indexing->includeShortDescription());
+        self::assertTrue($indexing->includeLongDescription());
+        self::assertFalse($indexing->aggregateConfigurableVariants());
+        self::assertSame(ConfigurationReader::DEFAULT_MAX_ATTRIBUTE_VALUES, $indexing->maxAttributeValuesPerProduct());
+    }
+
+    public function testIndexingClampsBatchSizeAndAttributeValuesToBounds(): void
+    {
+        $reader = $this->reader([
+            Path::INDEXING_BATCH_SIZE => '99999',
+            Path::INDEXING_MAX_ATTRIBUTE_VALUES_PER_PRODUCT => '99999',
+        ]);
+
+        $indexing = $reader->readIndexing(1);
+        self::assertSame(ConfigurationReader::MAX_BATCH_SIZE, $indexing->batchSize());
+        self::assertSame(ConfigurationReader::MAX_MAX_ATTRIBUTE_VALUES, $indexing->maxAttributeValuesPerProduct());
+    }
+
+    public function testIndexingClampsValuesBelowLowerBound(): void
+    {
+        $reader = $this->reader([
+            Path::INDEXING_BATCH_SIZE => '1',
+            Path::INDEXING_MAX_ATTRIBUTE_VALUES_PER_PRODUCT => '0',
+        ]);
+
+        $indexing = $reader->readIndexing(1);
+        self::assertSame(ConfigurationReader::MIN_BATCH_SIZE, $indexing->batchSize());
+        self::assertSame(ConfigurationReader::MIN_MAX_ATTRIBUTE_VALUES, $indexing->maxAttributeValuesPerProduct());
+    }
+
+    public function testIndexingFailsClosedOnMalformedAttributeCode(): void
+    {
+        $reader = $this->reader([
+            Path::INDEXING_SEARCHABLE_ATTRIBUTE_CODES => 'Good-Code, BAD CODE',
+        ]);
+
+        $this->expectException(ConfigurationException::class);
+        $this->expectExceptionMessage('invalid attribute code');
+
+        $reader->readIndexing(1);
+    }
+
+    public function testIndexingExplicitBlankListYieldsNoSearchableAttributes(): void
+    {
+        $reader = $this->reader([
+            Path::INDEXING_SEARCHABLE_ATTRIBUTE_CODES => '',
+        ]);
+
+        $indexing = $reader->readIndexing(1);
+        self::assertSame([], $indexing->searchableAttributeCodes());
+    }
+
+    public function testIndexingRemovesPolicyDeniedAttributeCodes(): void
+    {
+        $policy = $this->createMock(ProductAttributePolicyInterface::class);
+        $policy->method('isAllowed')
+            ->willReturnCallback(
+                static fn (string $code): bool => $code !== 'cost'
+            );
+
+        $scopeConfig = $this->createMock(ScopeConfigInterface::class);
+        $scopeConfig->method('getValue')
+            ->willReturnCallback(
+                static fn (string $path): mixed => $path === Path::INDEXING_SEARCHABLE_ATTRIBUTE_CODES
+                    ? 'cost,color'
+                    : null
+            );
+
+        $indexing = (new ConfigurationReader($scopeConfig, $policy))->readIndexing(1);
+        self::assertSame(['color'], $indexing->searchableAttributeCodes());
+    }
+
+    public function testIndexingRejectsEnabledConfigurableVariantAggregation(): void
+    {
+        $reader = $this->reader([
+            Path::INDEXING_AGGREGATE_CONFIGURABLE_VARIANTS => '1',
+        ]);
+
+        $this->expectException(ConfigurationException::class);
+        $this->expectExceptionMessage('Configurable variant aggregation is not available');
+
+        $reader->readIndexing(1);
     }
 }
