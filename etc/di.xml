@@ -15,6 +15,16 @@
                 type="Aavirbhava\AiShoppingAssistant\Model\Provider\FallbackEligibilityPolicy"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Provider\ProviderLabelRegistryInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Provider\ProviderLabelRegistry"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductIndexEligibilityPolicyInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Catalog\ProductIndexEligibilityPolicy"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Catalog\UntrustedContentSanitizerInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Catalog\UntrustedContentSanitizer"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductAttributePolicyInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Catalog\ProductAttributePolicy"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductDocumentNormalizerInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Catalog\ProductDocumentNormalizer"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Catalog\ContentHashServiceInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Catalog\ContentHashService"/>
 
     <type name="Aavirbhava\AiShoppingAssistant\Model\Provider\LlmProviderRegistry">
         <arguments>

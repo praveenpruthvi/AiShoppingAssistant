@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-Milestone 0 is closed. Milestone 1A — secure configuration-reading foundations — and Milestone 1B — provider foundations (registries, capabilities, resolver, exceptions, fallback policy) — are implemented and verified. Milestone 1B also corrects the provider-extension design: the DI registry is the runtime allowlist, third-party providers can be registered through DI, and Admin option sources derive from registry metadata. Real provider HTTP adapters, retry/circuit-breaking, and RAG calls remain out of scope (Milestone 1C+).
+Milestones 0–1B are closed. Milestone 2A — deterministic catalogue normalization foundations — is implemented and verified: eligibility policy, untrusted-content sanitizer, attribute allowlisting, immutable product documents, canonical content hashing, and the normalization pipeline. Real embedding providers, the custom indexer, queue consumers, and retrieval remain out of scope (Milestone 2B+).
 
 ## Completed
 
@@ -46,6 +46,17 @@ Milestone 1B:
 
 Duplicate DI-key detection is intentionally not implemented: Magento DI merges array arguments across modules before the registry constructor runs, so duplicates have already been collapsed and cannot be observed inside the registry.
 
+Milestone 2A:
+
+- `Api/Catalog/` service contracts and immutable `Model/Catalog/` DTOs: `ProductSnapshot`, `ProductEligibilityContext/Result`, `ProductDocument`, `ProductNormalizationResult`, `CategoryReference`, `SearchableAttribute`; all constructors validate and throw sanitized `CatalogException`.
+- `ProductIndexEligibilityPolicy` — deterministic store/website scope and search-visibility gate using Magento's real `Visibility` constants; reason codes `invalid_identity`, `store_mismatch`, `website_not_assigned`, `disabled`, `not_search_visible`, `eligible`.
+- `UntrustedContentSanitizer` — DOM path with `LIBXML_NONET` (no entity expansion) plus a plain entity-decode path; removes blocked tags, hidden content, comments, event handlers, control characters, and entity-encoded scripts after decoding; collapses whitespace; documented per-field length caps.
+- `ProductAttributePolicy` — fails closed: lowercase valid codes only, explicit internal/credential denylist plus obfuscation-resistant substring checks; sorted filtering.
+- `ContentHashService` — canonical SHA-256 (recursive key sort, list order preserved); `embeddingContentHash` excludes status/scope/audit fields so scope-only changes skip re-embedding; `completeDocumentHash` covers the full persisted document.
+- `ProductDocumentNormalizer` — eligibility gate, sanitization, attribute policy, empty-value pruning, deterministic ordering, fixed-order searchable-text assembly, and hashes; deterministic and idempotent; empty SKU/name after sanitization fail with `CatalogException`.
+- `ProductDocumentSchema::VERSION = 1` centralizes schema versioning for index invalidation.
+- DI preferences, `Magento_Catalog` module dependency, and `magento/module-catalog >=104.0 <105.0` composer constraint added.
+
 ## Verified in the current workspace (executed results)
 
 - Module `Aavirbhava_AiShoppingAssistant` is enabled (`module:status`).
@@ -55,7 +66,9 @@ Duplicate DI-key detection is intentionally not implemented: Magento DI merges a
 - `composer.json` validation passed (`composer validate --strict` inside the Magento container).
 - PHP syntax checks passed for 76 PHP files (Milestone 0 baseline: 17).
 - Five Magento XML files are well formed (Milestone 0 baseline: four).
-- PHPUnit: 107 tests, 398 assertions passed (Milestone 1B baseline: 76 tests, 329 assertions). Executed with the workspace root's PHPUnit 9.5.24; the module requires `^10.5 || ^11.0`, so CI runs a newer runner.
+- PHPUnit: 200 tests, 582 assertions passed (Milestone 1B baseline: 107 tests, 398 assertions). Executed with the workspace root's PHPUnit 9.5.24; the module requires `^10.5 || ^11.0`, so CI runs a newer runner.
+- Milestone 2A coverage includes eligibility paths (including the `invalid_identity` reason via a stub snapshot), sanitization (script, entity-encoded script, hidden content, comment, and external-entity non-expansion cases), attribute policy obfuscation, hash canonicalization and non-UTF-8 rejection, document validation, and full normalizer pipeline tests (determinism, scope independence of `embeddingContentHash`, injection stripping, cross-store ineligibility).
+- `ProductIndexEligibilityPolicy` resolves Magento's `Magento\Catalog\Model\Product\Visibility` constants at runtime through the root autoload.
 - Default configuration loaded correctly for all 29 module config paths through `ScopeConfigInterface`; the intentionally empty `llm/base_url` default resolves to an empty string.
 - Dependency-injection resolution verified inside Magento: `ConfigurationReaderInterface` -> `ConfigurationReader`, `SecretReaderInterface` -> `SecretReader`.
 - `setup:di:compile` validates the new registry, resolver, and policy preferences together with their empty provider-array arguments.
@@ -71,8 +84,8 @@ Start Magento with `bin/start` from the repository root. Plain `docker compose u
 
 - Browser-based Admin rendering of the configuration section has not been verified. Admin form rendering, scoped save/load through the UI, and per-store overrides remain to be tested.
 - Because no real provider adapters are registered yet, the Admin provider dropdowns render an empty option list in production until adapters are contributed through DI; this is expected and tested.
-- Real provider HTTP adapters, embedding and RAG retrieval, and the orchestration pipeline (Milestone 1C+) are not implemented.
+- Real provider HTTP adapters, the `ai_product_rag` custom indexer, queue consumers, the assistant search index, and hybrid retrieval (Milestone 2B+) are not implemented.
 
 ## Next implementation slice
 
-Milestone 1C: sanitized test-connection actions, a bounded HTTP client abstraction, retry/circuit-breaker policy, and real vendor API adapters behind the registries.
+Milestone 2B: the custom `ai_product_rag` indexer, asynchronous queue consumers with content-hash skipping, the dedicated store-scoped assistant search index, embedding provider adapters, and hybrid retrieval.

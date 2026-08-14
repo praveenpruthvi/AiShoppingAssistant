@@ -25,6 +25,10 @@
 - Supply Admin provider labels only through trusted DI metadata (`ProviderLabelRegistryInterface`); never echo customer input into labels.
 - Represent provider failures with the sanitized `ProviderException` hierarchy and stable error codes.
 - Gate fallback strictly through `FallbackEligibilityPolicyInterface`; only transient availability failures may use the fallback provider.
+- Gate indexing through `ProductIndexEligibilityPolicyInterface` before any sanitization or embedding work; it only answers scope and visibility questions and never inspects content.
+- Sanitize every untrusted catalogue field through `UntrustedContentSanitizerInterface` and filter attributes through `ProductAttributePolicyInterface`; never embed raw description markup.
+- Compute index idempotency from `ContentHashServiceInterface` SHA-256 digests; `embeddingContentHash` must exclude status/scope-only fields so those changes skip re-embedding.
+- Route all catalogue normalization through `ProductDocumentNormalizerInterface` and produce `ProductDocument` value objects; never build index payloads in controllers, templates, or consumers.
 
 ## Don't
 

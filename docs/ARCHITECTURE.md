@@ -161,6 +161,21 @@ Reserved Phase 2 signals:
 - Clearance
 - Consent-based personalization
 
+## Catalogue normalization
+
+The assistant index is built from deterministic, sanitized product documents, never from raw catalogue content.
+
+Pipeline stages (`ProductDocumentNormalizerInterface::normalize`):
+
+1. Eligibility gate (`ProductIndexEligibilityPolicyInterface`): a snapshot must match the requested store view, be assigned to the requested website, be enabled, and be visible in search (`Visibility::VISIBILITY_IN_SEARCH` or `VISIBILITY_BOTH`). Failures return a reason code (`store_mismatch`, `website_not_assigned`, `disabled`, `not_search_visible`, `invalid_identity`) and never reach sanitization or embedding.
+2. Sanitization (`UntrustedContentSanitizerInterface`): untrusted text is treated as data, never instructions. Scripts, styles, hidden content, comments, event handlers, forms, and iframes are removed with a DOM pass (with `LIBXML_NONET`, no entity expansion) or a plain entity-decode pass; control characters are stripped and whitespace is collapsed. Entity-encoded attacks such as `&lt;script&gt;` are removed after decoding. External entities are never resolved.
+3. Attribute policy (`ProductAttributePolicyInterface`): fails closed. Only lowercase valid attribute codes not on the internal/secret denylist survive; `cost`, admin/internal notes, and credential-like codes (including obfuscated substrings such as `secret_key_2`) are excluded.
+4. Deterministic normalization: empty values are pruned, categories are sorted by id, attributes are sorted by code, and duplicate values are collapsed.
+5. Searchable text is assembled in a fixed order (name, short description, long description, category names, category paths, attribute labels, attribute values) with exact-duplicate parts removed.
+6. Content hashing (`ContentHashServiceInterface`): canonical SHA-256 digests. `embeddingContentHash` covers only the embedding payload (name, descriptions, categories, attributes, searchable text) so status/scope-only changes skip re-embedding. `completeDocumentHash` covers the whole persisted document for idempotent, retry-safe index writes. `ProductDocumentSchema::VERSION` centralizes the schema version and invalidates the index when bumped.
+
+The normalized document deliberately excludes price, stock, salability, URLs, media, and customer-group data. Those facts are always resolved from Magento services at retrieval or display time.
+
 ## Search index
 
 Use a dedicated versioned alias and physical index:
