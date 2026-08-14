@@ -15,6 +15,8 @@
                 type="Aavirbhava\AiShoppingAssistant\Model\Provider\FallbackEligibilityPolicy"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Provider\ProviderLabelRegistryInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Provider\ProviderLabelRegistry"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Embedding\EmbeddingGenerationServiceInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Embedding\EmbeddingGenerationService"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductIndexEligibilityPolicyInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Catalog\ProductIndexEligibilityPolicy"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Catalog\UntrustedContentSanitizerInterface"
@@ -51,7 +53,11 @@
     </type>
     <type name="Aavirbhava\AiShoppingAssistant\Model\Provider\EmbeddingProviderRegistry">
         <arguments>
-            <argument name="providers" xsi:type="array"/>
+            <argument name="providers" xsi:type="array">
+                <item name="openai" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Provider\Embedding\OpenAiEmbeddingProvider</item>
+                <item name="voyage" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Provider\Embedding\VoyageEmbeddingProvider</item>
+                <item name="local_openai_compatible" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Provider\Embedding\LocalOpenAiCompatibleEmbeddingProvider</item>
+            </argument>
         </arguments>
     </type>
     <type name="Aavirbhava\AiShoppingAssistant\Model\Provider\ProviderLabelRegistry">
@@ -60,8 +66,9 @@
                 <item name="openai" xsi:type="string">OpenAI</item>
                 <item name="anthropic" xsi:type="string">Anthropic Claude</item>
                 <item name="xai" xsi:type="string">xAI Grok</item>
-                <item name="openai_compatible" xsi:type="string">Local / OpenAI-Compatible</item>
+                <item name="openai_compatible" xsi:type="string">OpenAI-Compatible</item>
                 <item name="voyage" xsi:type="string">Voyage AI</item>
+                <item name="local_openai_compatible" xsi:type="string">Local OpenAI-Compatible</item>
             </argument>
         </arguments>
     </type>

@@ -33,7 +33,7 @@ Exit condition: contract tests pass for every enabled provider without domain lo
 
 Exit condition: evaluation queries retrieve expected products and no store-scoping leaks occur.
 
-Current status: Milestones 0, 1, and 2B1 are closed. Milestone 2B2 closed the `ai_product_rag` indexer registration and full-rebuild orchestration (run context, two-phase writer contract, safe unavailable defaults, sanitized failure taxonomy, config-driven invalidation, inert mview view). Remaining Milestone 2 work (Milestone 2C): queue consumers with content-hash skipping, the dedicated store-scoped OpenSearch index, embedding provider adapters, and hybrid retrieval.
+Current status: Milestones 0, 1, and 2B1 are closed. Milestone 2B2 closed the `ai_product_rag` indexer registration and full-rebuild orchestration (run context, two-phase writer contract, safe unavailable defaults, sanitized failure taxonomy, config-driven invalidation, inert mview view). Milestone 3A delivered real, testable embedding provider adapters (`openai`, `voyage`, `local_openai_compatible`) plus a store-scoped `EmbeddingGenerationService`, `EmbeddingRequest`/`EmbeddingResult` boundaries, provider endpoint policy, bounded HTTP transport, sanitized embedding exception taxonomy, and config corrections. Remaining Milestone 2 work (Milestone 2C): queue consumers with content-hash skipping, the dedicated store-scoped OpenSearch index, and hybrid retrieval. Chat (primary LLM) generation, storefront UI, guardrail classification, and Magento observers remain out of scope.
 
 ## Milestone 3 — Guardrails and read-only assistant
 

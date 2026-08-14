@@ -58,4 +58,25 @@ class EmbeddingProviderTest extends TestCase
         self::assertStringNotContainsString('base_url', $serialized);
         self::assertStringNotContainsString('dimensions', $serialized);
     }
+
+    public function testBuiltInProvidersAppearInDeterministicOrder(): void
+    {
+        $registry = new EmbeddingProviderRegistry([
+            'openai' => new FakeEmbeddingProvider('openai'),
+            'voyage' => new FakeEmbeddingProvider('voyage'),
+            'local_openai_compatible' => new FakeEmbeddingProvider('local_openai_compatible'),
+        ]);
+        $labels = new ProviderLabelRegistry([
+            'openai' => 'OpenAI',
+            'voyage' => 'Voyage AI',
+            'local_openai_compatible' => 'Local OpenAI-Compatible',
+        ]);
+
+        $options = (new EmbeddingProvider($registry, new ProviderOptionService($labels)))->toOptionArray();
+
+        self::assertSame(
+            ['local_openai_compatible', 'openai', 'voyage'],
+            array_column($options, 'value')
+        );
+    }
 }

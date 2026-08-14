@@ -29,7 +29,7 @@ class ProviderIdentifiersTest extends TestCase
         self::assertSame([
             'openai',
             'voyage',
-            'openai_compatible',
+            'local_openai_compatible',
         ], ProviderIdentifiers::embeddingProviderIds());
 
         foreach (ProviderIdentifiers::embeddingProviderIds() as $id) {
@@ -45,7 +45,7 @@ class ProviderIdentifiersTest extends TestCase
         self::assertSame('openai_compatible', ProviderIdentifiers::LLM_OPENAI_COMPATIBLE);
         self::assertSame('openai', ProviderIdentifiers::EMBEDDING_OPENAI);
         self::assertSame('voyage', ProviderIdentifiers::EMBEDDING_VOYAGE);
-        self::assertSame('openai_compatible', ProviderIdentifiers::EMBEDDING_OPENAI_COMPATIBLE);
+        self::assertSame('local_openai_compatible', ProviderIdentifiers::EMBEDDING_LOCAL_OPENAI_COMPATIBLE);
     }
 
     public function testThirdPartyIdentifiersAreSyntacticallyValid(): void

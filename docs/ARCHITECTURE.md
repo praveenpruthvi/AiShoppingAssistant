@@ -48,7 +48,7 @@ Expected adapters:
 interface EmbeddingProviderInterface
 {
     public function identifier(): string;
-    public function embed(array $texts): EmbeddingBatch;
+    public function embed(EmbeddingRequestInterface $request): EmbeddingResultInterface;
     public function dimensions(): int;
     public function fingerprint(): string;
     public function capabilities(): ProviderCapabilities;
@@ -56,6 +56,34 @@ interface EmbeddingProviderInterface
 ```
 
 Changing the embedding fingerprint or dimensions invalidates the assistant index.
+
+Embedding adapters are stateless and store-scoped: every call receives a fully validated `EmbeddingRequest` carrying the resolved model, base URL, API key (`SecretValue`), timeout, and expected dimensions for one store. Adapters never retain config, secrets, or raw responses, and never perform network requests during construction.
+
+Initial adapters:
+
+- `OpenAiEmbeddingProvider` — official `https://api.openai.com/v1` endpoint, mandatory Bearer API key.
+- `VoyageEmbeddingProvider` — official `https://api.voyageai.com/v1` endpoint, mandatory Bearer API key, sends the explicit `input_type` (`document`/`query`).
+- `LocalOpenAiCompatibleEmbeddingProvider` — explicit base URL required (HTTP allowed), API key optional; no Authorization header is sent when the key is empty.
+
+### Embedding request and result boundaries
+
+`EmbeddingInputType` restricts input to `document`/`query`; `EmbeddingInput` pairs a normalized non-empty text with a deterministic positional identifier. `EmbeddingRequest` is immutable and validates store id, inputs, model, timeout (1–300s), and dimensions (1–16384). `EmbeddingVector` rejects empty, non-numeric, and non-finite values and enforces the declared dimension. `EmbeddingUsage` holds non-negative token counts. `EmbeddingResult` is immutable and requires non-empty, unique identifiers matching the vectors one-to-one.
+
+### Embedding generation service
+
+`EmbeddingGenerationService` is the only supported entry point for callers: it activates and scopes to a store view, reads store-scoped embedding configuration, resolves exactly one provider (never a fallback), reads the store-scoped API key, validates inputs through `EmbeddingInputValidator` (batch size ≤ 100, per-text ≤ 8000 bytes, combined ≤ 200000 bytes, valid UTF-8, never silently truncates), builds the request, and validates the returned `EmbeddingResult` against the expected identifiers and configured dimensions. Configuration, provider-resolution, and secret failures surface as sanitized embedding exceptions. The service writes nothing.
+
+### Provider endpoint policy
+
+Cloud providers (OpenAI, Voyage) may only use their official HTTPS base URL: a configured override is rejected fail-closed unless it exactly equals the official default. The local OpenAI-compatible provider requires an explicit base URL and may use HTTP or HTTPS, but never embedded credentials or fragments. The inspected URL is never placed in an exception message.
+
+### HTTP transport boundary
+
+`ProviderHttpTransport` (Magento `LaminasClient` with the Curl adapter) enforces: URL sanity (scheme, host, no credentials/fragments), mandatory TLS verification that can never be disabled, `maxredirects => 0`, a bounded timeout in seconds, JSON content headers, and a bounded 10 MB response body. HTTP status mapping: 401/403 → authentication, 429 → rate limit, 408/504 → timeout, 5xx → unavailable, other 4xx/3xx → invalid response. Timeouts and transport failures are detected by message markers and curl errno and surface as sanitized exceptions; raw URLs, headers, bodies, and credentials never enter messages.
+
+### Embedding response verification
+
+Before any vector is accepted, `AbstractEmbeddingProvider` requires exactly one distinct index per input position (0..n-1); missing, duplicate, unknown, or malformed indexes are rejected, while a complete distinct permutation is safely restored to input order via `ksort`. Vectors are validated for the configured dimension and numeric finiteness, and `EmbeddingResultValidator` re-checks identifier correlation and dimensions at the service boundary.
 
 ### Provider capabilities
 
@@ -77,7 +105,7 @@ Magento DI merges array arguments across modules before the registry constructor
 
 ### Provider identifiers
 
-Identifiers are lowercase ASCII, start with a letter, and contain only letters, numbers, and underscores, up to 64 characters: `^[a-z][a-z0-9_]{0,63}$`. `ProviderIdentifiers` centralizes the built-in identifiers as constants (`openai`, `anthropic`, `xai`, `openai_compatible` for LLM; `openai`, `voyage`, `openai_compatible` for embeddings) and validates syntax. These constants are reference values, not an exhaustive allowlist: a third-party identifier such as `acme_local_llm` is permitted once registered through DI and once it satisfies the syntax rule. Invalid identifiers produce a sanitized configuration exception that never echoes the invalid value.
+Identifiers are lowercase ASCII, start with a letter, and contain only letters, numbers, and underscores, up to 64 characters: `^[a-z][a-z0-9_]{0,63}$`. `ProviderIdentifiers` centralizes the built-in identifiers as constants (`openai`, `anthropic`, `xai`, `openai_compatible` for LLM; `openai`, `voyage`, `local_openai_compatible` for embeddings) and validates syntax. These constants are reference values, not an exhaustive allowlist: a third-party identifier such as `acme_local_llm` is permitted once registered through DI and once it satisfies the syntax rule. Invalid identifiers produce a sanitized configuration exception that never echoes the invalid value.
 
 ### Third-party provider extension
 

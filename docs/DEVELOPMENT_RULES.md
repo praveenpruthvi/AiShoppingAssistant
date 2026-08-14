@@ -39,6 +39,11 @@
 - Make index-failure messages generic and stable (`ProductIndexingException::errorCode()`); never leak provider payloads, SQL, or internal traces.
 - Never let an index default fail open: until a backend and queue pipeline exist, the writer and incremental scheduler refuse explicitly with sanitized exceptions rather than pretending documents were persisted.
 - Invalidate the assistant index only for content-affecting indexing settings; configuration that cannot change persisted content (for example `batch_size`) must never invalidate the index.
+- Route all embedding generation through `EmbeddingGenerationServiceInterface` with an explicit store id and `EmbeddingInputType`; it scopes, reads config, resolves exactly one provider (never a fallback), validates inputs, and validates the returned result against expected identifiers and dimensions.
+- Reject cloud-provider base-URL overrides fail-closed (`ProviderEndpointPolicy`): OpenAI and Voyage may only use their official HTTPS defaults; only the local OpenAI-compatible provider accepts a custom base URL (HTTP allowed) and requires one.
+- Enforce the bounded HTTP boundary (`ProviderHttpTransport`): mandatory TLS verification that can never be disabled, `maxredirects => 0`, bounded timeout and 10 MB response body, JSON headers, and sanitized status-to-exception mapping. Never put URLs, headers, bodies, or credentials into messages.
+- Correlate provider responses to inputs by explicit index only; reject missing, duplicate, unknown, or malformed indexes and restore a complete distinct permutation to input order before accepting vectors. Never trust the model/vector count or order implicitly.
+- Validate every returned vector for the configured dimension and numeric finiteness, and re-check identifier correlation and dimensions at the service boundary (`EmbeddingResultValidator`).
 
 ## Don't
 

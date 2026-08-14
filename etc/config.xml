@@ -8,25 +8,25 @@
                 <strict_store_only>1</strict_store_only>
             </general>
             <llm>
-                <provider>openai</provider>
-                <model>gpt-5.6-terra</model>
+                <provider></provider>
+                <model></model>
                 <base_url></base_url>
                 <timeout_seconds>20</timeout_seconds>
                 <max_output_tokens>1200</max_output_tokens>
             </llm>
             <fallback>
                 <enabled>0</enabled>
-                <provider>openai_compatible</provider>
-                <model>qwen3:14b</model>
-                <base_url>http://127.0.0.1:11434/v1</base_url>
+                <provider></provider>
+                <model></model>
+                <base_url></base_url>
                 <timeout_seconds>30</timeout_seconds>
                 <failure_threshold>3</failure_threshold>
                 <cooldown_seconds>60</cooldown_seconds>
             </fallback>
             <embedding>
-                <provider>openai_compatible</provider>
-                <model>bge-m3</model>
-                <base_url>http://127.0.0.1:11434/v1</base_url>
+                <provider>local_openai_compatible</provider>
+                <model></model>
+                <base_url></base_url>
                 <dimensions>1024</dimensions>
             </embedding>
             <retrieval>

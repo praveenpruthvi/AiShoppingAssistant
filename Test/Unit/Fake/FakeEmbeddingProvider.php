@@ -4,8 +4,9 @@ declare(strict_types=1);
 
 namespace Aavirbhava\AiShoppingAssistant\Test\Unit\Fake;
 
+use Aavirbhava\AiShoppingAssistant\Api\Embedding\EmbeddingRequestInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Embedding\EmbeddingResultInterface;
 use Aavirbhava\AiShoppingAssistant\Api\EmbeddingProviderInterface;
-use Aavirbhava\AiShoppingAssistant\Model\Dto\EmbeddingBatch;
 use Aavirbhava\AiShoppingAssistant\Model\Provider\ProviderCapabilities;
 
 /**
@@ -26,7 +27,7 @@ final class FakeEmbeddingProvider implements EmbeddingProviderInterface
         return $this->identifier;
     }
 
-    public function embed(array $texts): EmbeddingBatch
+    public function embed(EmbeddingRequestInterface $request): EmbeddingResultInterface
     {
         throw new \RuntimeException('Fake embedding provider is not expected to be invoked.');
     }

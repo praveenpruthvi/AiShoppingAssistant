@@ -27,7 +27,7 @@ final class ProviderIdentifiers
 
     public const EMBEDDING_OPENAI = 'openai';
     public const EMBEDDING_VOYAGE = 'voyage';
-    public const EMBEDDING_OPENAI_COMPATIBLE = 'openai_compatible';
+    public const EMBEDDING_LOCAL_OPENAI_COMPATIBLE = 'local_openai_compatible';
 
     public const IDENTIFIER_PATTERN = '/^[a-z][a-z0-9_]{0,63}$/';
 
@@ -49,7 +49,7 @@ final class ProviderIdentifiers
     private const ALL_EMBEDDING = [
         self::EMBEDDING_OPENAI,
         self::EMBEDDING_VOYAGE,
-        self::EMBEDDING_OPENAI_COMPATIBLE,
+        self::EMBEDDING_LOCAL_OPENAI_COMPATIBLE,
     ];
 
     /**

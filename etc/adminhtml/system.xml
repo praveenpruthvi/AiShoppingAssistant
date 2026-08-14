@@ -123,9 +123,10 @@
                        showInDefault="1" showInWebsite="1" showInStore="1">
                     <label>Model</label>
                 </field>
-                <field id="base_url" translate="label" type="text" sortOrder="40"
+                <field id="base_url" translate="label comment" type="text" sortOrder="40"
                        showInDefault="1" showInWebsite="1" showInStore="1">
                     <label>Base URL</label>
+                    <comment>Required for Local OpenAI-Compatible. Leave empty for OpenAI or Voyage AI; a custom endpoint is rejected for those providers.</comment>
                 </field>
                 <field id="dimensions" translate="label comment" type="text" sortOrder="50"
                        showInDefault="1" showInWebsite="1" showInStore="1">
