@@ -28,6 +28,7 @@ External inference servers are optional dependencies reached through HTTP adapte
 ```php
 interface LlmProviderInterface
 {
+    public function identifier(): string;
     public function chat(ChatRequest $request): ChatResponse;
     public function testConnection(): ConnectionResult;
     public function capabilities(): ProviderCapabilities;
@@ -46,6 +47,7 @@ Expected adapters:
 ```php
 interface EmbeddingProviderInterface
 {
+    public function identifier(): string;
     public function embed(array $texts): EmbeddingBatch;
     public function dimensions(): int;
     public function fingerprint(): string;
@@ -61,7 +63,41 @@ Changing the embedding fingerprint or dimensions invalidates the assistant index
 
 ### Provider registries
 
-`LlmProviderRegistryInterface` and `EmbeddingProviderRegistryInterface` hold providers contributed through Magento DI as an array keyed by allowlisted identifiers from `ProviderIdentifiers`. Unknown or unregistered identifiers fail closed with a sanitized `ProviderNotFoundException`; identifiers are never turned into class names.
+`LlmProviderRegistryInterface` and `EmbeddingProviderRegistryInterface` hold provider instances contributed by installed Magento modules through Magento DI as an array keyed by provider identifier. The registry **is** the runtime allowlist: only registered identifiers can be resolved, and unknown or unregistered identifiers fail closed with a sanitized `ProviderNotFoundException`.
+
+Registration rules enforced by each registry:
+
+- The DI array key must be a syntactically valid identifier.
+- The provider's `identifier()` must be syntactically valid and must exactly equal the DI key.
+- The injected instance must implement the expected provider interface (a provider only implementing `LlmProviderInterface` cannot appear in the embedding registry, and vice versa).
+
+Installed Magento modules are trusted application code; their DI contributions define what may be selected. Configuration never contains a class name and no class is ever instantiated dynamically from configuration. A configured identifier is always treated as a registry key, so a class-name-like value simply fails closed.
+
+Magento DI merges array arguments across modules before the registry constructor runs, so duplicate keys have already been collapsed into a single entry. Duplicate-contribution detection is therefore not possible inside the registry.
+
+### Provider identifiers
+
+Identifiers are lowercase ASCII, start with a letter, and contain only letters, numbers, and underscores, up to 64 characters: `^[a-z][a-z0-9_]{0,63}$`. `ProviderIdentifiers` centralizes the built-in identifiers as constants (`openai`, `anthropic`, `xai`, `openai_compatible` for LLM; `openai`, `voyage`, `openai_compatible` for embeddings) and validates syntax. These constants are reference values, not an exhaustive allowlist: a third-party identifier such as `acme_local_llm` is permitted once registered through DI and once it satisfies the syntax rule. Invalid identifiers produce a sanitized configuration exception that never echoes the invalid value.
+
+### Third-party provider extension
+
+A third-party module contributes a provider by implementing the provider interface and adding DI items to the registry argument:
+
+```xml
+<type name="Aavirbhava\AiShoppingAssistant\Model\Provider\LlmProviderRegistry">
+    <arguments>
+        <argument name="providers" xsi:type="array">
+            <item name="acme_local_llm" xsi:type="object">Acme\Module\Model\Provider\AcmeLocalLlm</item>
+        </argument>
+    </arguments>
+</type>
+```
+
+The item name must match `identifier()`. The same pattern applies to the embedding registry. Merchant configuration then stores only the identifier `acme_local_llm`.
+
+### Provider labels and Admin option sources
+
+`ProviderLabelRegistryInterface` supplies trusted display labels contributed through DI; labels are static metadata, never customer input. `ProviderOptionService` builds deterministic (identifier-sorted) option lists from a registry's `all()`. The Admin source models `Model\Config\Source\Provider` (primary and fallback LLM fields) and `Model\Config\Source\EmbeddingProvider` render options from the registries, so registered third-party providers appear automatically. Option lists carry only identifiers and labels; provider instances, capabilities, credentials, and configuration values never reach the Admin UI. Empty registries render an empty option list safely, and a saved provider that later becomes unavailable fails closed during resolution.
 
 ### Configured provider resolution
 

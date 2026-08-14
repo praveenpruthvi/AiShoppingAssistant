@@ -14,8 +14,15 @@ use Magento\Framework\Phrase;
  * Registry of embedding providers contributed through Magento DI.
  *
  * Chat and embedding providers are deliberately kept in separate registries.
- * Identifiers are never turned into class names, and unknown identifiers
- * always fail closed with a sanitized ProviderNotFoundException.
+ * The registry IS the runtime allowlist: only providers contributed by
+ * installed Magento modules through DI are resolvable. A provider instance
+ * must implement EmbeddingProviderInterface to be accepted here, even if it
+ * also implements LlmProviderInterface.
+ *
+ * Magento DI merges array arguments across modules before this constructor
+ * runs, so duplicate keys have already been collapsed into a single entry.
+ * Duplicate-contribution detection is therefore not possible inside the
+ * registry and is intentionally not attempted.
  */
 final class EmbeddingProviderRegistry implements EmbeddingProviderRegistryInterface
 {
@@ -30,15 +37,25 @@ final class EmbeddingProviderRegistry implements EmbeddingProviderRegistryInterf
     public function __construct(array $providers = [])
     {
         foreach ($providers as $identifier => $provider) {
-            if (!is_string($identifier) || $identifier === '') {
+            if (!is_string($identifier)) {
                 throw new ProviderConfigurationException(
-                    new Phrase('Provider identifiers must be non-empty strings.')
+                    new Phrase('Provider identifiers must be strings.')
                 );
             }
+
+            ProviderIdentifiers::assertValid($identifier);
 
             if (!$provider instanceof EmbeddingProviderInterface) {
                 throw new ProviderConfigurationException(
                     new Phrase('A registered embedding provider does not implement the provider contract.')
+                );
+            }
+
+            ProviderIdentifiers::assertValid($provider->identifier());
+
+            if ($provider->identifier() !== $identifier) {
+                throw new ProviderConfigurationException(
+                    new Phrase('A registered embedding provider identifier does not match its declaration.')
                 );
             }
 
@@ -48,7 +65,7 @@ final class EmbeddingProviderRegistry implements EmbeddingProviderRegistryInterf
 
     public function has(string $identifier): bool
     {
-        return ProviderIdentifiers::isKnownEmbedding($identifier) && isset($this->providers[$identifier]);
+        return isset($this->providers[$identifier]);
     }
 
     public function get(string $identifier): EmbeddingProviderInterface

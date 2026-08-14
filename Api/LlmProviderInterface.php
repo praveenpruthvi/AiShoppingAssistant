@@ -11,6 +11,8 @@ use Aavirbhava\AiShoppingAssistant\Model\Provider\ProviderCapabilities;
 
 interface LlmProviderInterface
 {
+    public function identifier(): string;
+
     public function chat(ChatRequest $request): ChatResponse;
 
     public function testConnection(): ConnectionResult;

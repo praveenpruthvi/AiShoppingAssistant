@@ -8,6 +8,7 @@ use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderConfiguratio
 use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderNotFoundException;
 use Aavirbhava\AiShoppingAssistant\Model\Provider\EmbeddingProviderRegistry;
 use Aavirbhava\AiShoppingAssistant\Test\Unit\Fake\FakeEmbeddingProvider;
+use Aavirbhava\AiShoppingAssistant\Test\Unit\Fake\FakeLlmProvider;
 use PHPUnit\Framework\TestCase;
 
 class EmbeddingProviderRegistryTest extends TestCase
@@ -20,7 +21,7 @@ class EmbeddingProviderRegistryTest extends TestCase
         self::assertSame([], $registry->all());
     }
 
-    public function testRegisteredProviderIsAvailableAndCapabilitiesAreExposed(): void
+    public function testBuiltInRegisteredProviderResolves(): void
     {
         $provider = new FakeEmbeddingProvider('openai');
         $registry = new EmbeddingProviderRegistry(['openai' => $provider]);
@@ -31,28 +32,51 @@ class EmbeddingProviderRegistryTest extends TestCase
         self::assertTrue($registry->capabilities('openai')->supportsEmbeddings());
     }
 
-    public function testUnknownIdentifierFailsClosed(): void
+    public function testThirdPartyProviderResolvesThroughDiRegistration(): void
+    {
+        $provider = new FakeEmbeddingProvider('acme_embeddings');
+        $registry = new EmbeddingProviderRegistry(['acme_embeddings' => $provider]);
+
+        self::assertTrue($registry->has('acme_embeddings'));
+        self::assertSame($provider, $registry->get('acme_embeddings'));
+    }
+
+    public function testUnregisteredIdentifierFailsClosed(): void
     {
         $registry = new EmbeddingProviderRegistry(['openai' => new FakeEmbeddingProvider('openai')]);
 
         self::assertFalse($registry->has('UnknownClass'));
         self::assertFalse($registry->has('google'));
+        self::assertFalse($registry->has('acme_embeddings'));
 
         $this->expectException(ProviderNotFoundException::class);
-        $registry->get('UnknownClass');
+        $registry->get('acme_embeddings');
     }
 
-    public function testRegisteredIdentifierOutsideAllowlistIsRejected(): void
+    public function testRegisteredIdentifierIsTheAllowlistEvenWhenNotBuiltIn(): void
     {
-        $registry = new EmbeddingProviderRegistry([
-            'openai' => new FakeEmbeddingProvider('openai'),
-            'google' => new FakeEmbeddingProvider('google'),
-        ]);
+        $registry = new EmbeddingProviderRegistry(['acme_embeddings' => new FakeEmbeddingProvider('acme_embeddings')]);
 
-        self::assertFalse($registry->has('google'));
+        self::assertTrue($registry->has('acme_embeddings'));
+        self::assertFalse($registry->has('voyage'));
+    }
 
-        $this->expectException(ProviderNotFoundException::class);
-        $registry->get('google');
+    public function testInvalidDiKeyIsRejectedAtConstruction(): void
+    {
+        $this->expectException(ProviderConfigurationException::class);
+        new EmbeddingProviderRegistry(['Acme Embeddings' => new FakeEmbeddingProvider('acme_embeddings')]);
+    }
+
+    public function testInvalidProviderIdentifierIsRejectedAtConstruction(): void
+    {
+        $this->expectException(ProviderConfigurationException::class);
+        new EmbeddingProviderRegistry(['openai' => new FakeEmbeddingProvider('openai/Evil')]);
+    }
+
+    public function testDiKeyProviderIdentifierMismatchIsRejected(): void
+    {
+        $this->expectException(ProviderConfigurationException::class);
+        new EmbeddingProviderRegistry(['openai' => new FakeEmbeddingProvider('acme_embeddings')]);
     }
 
     public function testNonStringIdentifierIsRejectedAtConstruction(): void
@@ -67,15 +91,21 @@ class EmbeddingProviderRegistryTest extends TestCase
         new EmbeddingProviderRegistry(['openai' => $this->createMock(\stdClass::class)]);
     }
 
+    public function testLlmProviderCannotRegisterAsEmbeddingProvider(): void
+    {
+        $this->expectException(ProviderConfigurationException::class);
+        new EmbeddingProviderRegistry(['openai' => new FakeLlmProvider('openai')]);
+    }
+
     public function testErrorMessageNeverContainsTheRequestedIdentifier(): void
     {
         $registry = new EmbeddingProviderRegistry([]);
 
         try {
-            $registry->get('voyage');
+            $registry->get('acme_embeddings');
             self::fail('Expected ProviderNotFoundException to be thrown.');
         } catch (ProviderNotFoundException $exception) {
-            self::assertStringNotContainsString('voyage', $exception->getMessage());
+            self::assertStringNotContainsString('acme_embeddings', $exception->getMessage());
         }
     }
 }

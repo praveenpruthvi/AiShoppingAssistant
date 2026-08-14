@@ -13,6 +13,8 @@
                 type="Aavirbhava\AiShoppingAssistant\Model\Provider\ConfiguredProviderResolver"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Provider\FallbackEligibilityPolicyInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Provider\FallbackEligibilityPolicy"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Provider\ProviderLabelRegistryInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Provider\ProviderLabelRegistry"/>
 
     <type name="Aavirbhava\AiShoppingAssistant\Model\Provider\LlmProviderRegistry">
         <arguments>
@@ -22,6 +24,17 @@
     <type name="Aavirbhava\AiShoppingAssistant\Model\Provider\EmbeddingProviderRegistry">
         <arguments>
             <argument name="providers" xsi:type="array"/>
+        </arguments>
+    </type>
+    <type name="Aavirbhava\AiShoppingAssistant\Model\Provider\ProviderLabelRegistry">
+        <arguments>
+            <argument name="labels" xsi:type="array">
+                <item name="openai" xsi:type="string">OpenAI</item>
+                <item name="anthropic" xsi:type="string">Anthropic Claude</item>
+                <item name="xai" xsi:type="string">xAI Grok</item>
+                <item name="openai_compatible" xsi:type="string">Local / OpenAI-Compatible</item>
+                <item name="voyage" xsi:type="string">Voyage AI</item>
+            </argument>
         </arguments>
     </type>
 </config>

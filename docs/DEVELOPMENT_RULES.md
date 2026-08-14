@@ -19,8 +19,10 @@
 - Write provider contract tests and use recorded/fake responses in routine tests.
 - Add extension interfaces before adding merchant-specific logic.
 - Update documentation when a contract, configuration path, or security rule changes.
-- Use the centralized `ProviderIdentifiers` allowlist for provider names; never derive identifiers from customer input or configuration-supplied class names.
-- Contribute provider implementations through the DI-backed provider registries and resolve them via `ConfiguredProviderResolverInterface`.
+- Use `ProviderIdentifiers` constants for built-in identifiers and `ProviderIdentifiers::isValid()` for syntax; the runtime allowlist is the DI registry, so never reject identifiers merely because they are not built in.
+- Contribute provider implementations through the DI-backed provider registries and resolve them via `ConfiguredProviderResolverInterface`; a provider's `identifier()` must equal its DI key.
+- Never put a class name in configuration or derive a provider from customer input; configuration stores only registry keys.
+- Supply Admin provider labels only through trusted DI metadata (`ProviderLabelRegistryInterface`); never echo customer input into labels.
 - Represent provider failures with the sanitized `ProviderException` hierarchy and stable error codes.
 - Gate fallback strictly through `FallbackEligibilityPolicyInterface`; only transient availability failures may use the fallback provider.
 
@@ -44,6 +46,9 @@
 - Do not turn configured provider names into class names or instantiate providers dynamically.
 - Do not expose raw provider response bodies, request bodies, or secret material in exceptions or logs.
 - Do not use fallback to bypass refusals, invalid tool calls, authorization failures, or response-validation failures.
+- Do not hard-code a closed provider allowlist: only the DI registry may restrict which identifiers resolve.
+- Do not register a provider under a DI key that differs from its `identifier()`.
+- Do not add display labels or customer-facing descriptions inside provider implementations; keep UI metadata in the label registry.
 
 ## Configuration rules
 

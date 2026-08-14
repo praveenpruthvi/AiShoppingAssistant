@@ -12,6 +12,7 @@ use Aavirbhava\AiShoppingAssistant\Api\Provider\EmbeddingProviderRegistryInterfa
 use Aavirbhava\AiShoppingAssistant\Api\Provider\LlmProviderRegistryInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Provider\ConfiguredProviderResolver;
 use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderNotFoundException;
+use Aavirbhava\AiShoppingAssistant\Model\Provider\LlmProviderRegistry;
 use Aavirbhava\AiShoppingAssistant\Test\Unit\Fake\FakeEmbeddingProvider;
 use Aavirbhava\AiShoppingAssistant\Test\Unit\Fake\FakeLlmProvider;
 use PHPUnit\Framework\TestCase;
@@ -144,6 +145,20 @@ class ConfiguredProviderResolverTest extends TestCase
         );
 
         self::assertSame($provider, $resolver->embeddingProvider(self::STORE_ID));
+    }
+
+    public function testClassNameLikeConfiguredProviderFailsClosedWithoutDynamicResolution(): void
+    {
+        $llmConfig = $this->createMock(LlmConfigInterface::class);
+        $llmConfig->method('provider')->willReturn('Acme\\Evil\\Provider');
+
+        $reader = $this->createMock(ConfigurationReaderInterface::class);
+        $reader->method('readLlm')->with(self::STORE_ID)->willReturn($llmConfig);
+
+        $resolver = $this->resolver($reader, new LlmProviderRegistry([]));
+
+        $this->expectException(ProviderNotFoundException::class);
+        $resolver->primaryLlmProvider(self::STORE_ID);
     }
 
     private function resolver(

@@ -4,12 +4,19 @@ declare(strict_types=1);
 
 namespace Aavirbhava\AiShoppingAssistant\Model\Provider;
 
+use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderConfigurationException;
+use Magento\Framework\Phrase;
+
 /**
- * Centralized, allowlisted provider identifiers.
+ * Centralized identifier syntax and built-in provider identifiers.
  *
- * Services must never scatter raw provider strings, and identifiers must never
- * be derived from customer input or from arbitrary class names found in
- * Magento configuration.
+ * The runtime allowlist is the DI-backed provider registry, not this class.
+ * Third-party identifiers such as `acme_local_llm` are permitted as long as
+ * they are registered through Magento DI and are syntactically valid.
+ *
+ * Identifiers must never be derived from customer input or from arbitrary
+ * class names found in Magento configuration, and configuration must never
+ * contain a class name.
  */
 final class ProviderIdentifiers
 {
@@ -21,6 +28,10 @@ final class ProviderIdentifiers
     public const EMBEDDING_OPENAI = 'openai';
     public const EMBEDDING_VOYAGE = 'voyage';
     public const EMBEDDING_OPENAI_COMPATIBLE = 'openai_compatible';
+
+    public const IDENTIFIER_PATTERN = '/^[a-z][a-z0-9_]{0,63}$/';
+
+    public const MAX_IDENTIFIER_LENGTH = 64;
 
     /**
      * @var list<string>
@@ -42,6 +53,9 @@ final class ProviderIdentifiers
     ];
 
     /**
+     * Built-in LLM identifiers. Not an exhaustive allowlist: any syntactically
+     * valid identifier is permitted once registered through DI.
+     *
      * @return list<string>
      */
     public static function llmProviderIds(): array
@@ -50,6 +64,8 @@ final class ProviderIdentifiers
     }
 
     /**
+     * Built-in embedding identifiers. Not an exhaustive allowlist.
+     *
      * @return list<string>
      */
     public static function embeddingProviderIds(): array
@@ -57,14 +73,22 @@ final class ProviderIdentifiers
         return self::ALL_EMBEDDING;
     }
 
-    public static function isKnownLlm(string $identifier): bool
+    public static function isValid(string $identifier): bool
     {
-        return in_array($identifier, self::ALL_LLM, true);
+        return preg_match(self::IDENTIFIER_PATTERN, $identifier) === 1;
     }
 
-    public static function isKnownEmbedding(string $identifier): bool
+    /**
+     * Throws a sanitized exception for invalid identifiers. The message never
+     * echoes the invalid value.
+     */
+    public static function assertValid(string $identifier): void
     {
-        return in_array($identifier, self::ALL_EMBEDDING, true);
+        if (!self::isValid($identifier)) {
+            throw new ProviderConfigurationException(
+                new Phrase('A provider identifier is not valid.')
+            );
+        }
     }
 
     private function __construct()

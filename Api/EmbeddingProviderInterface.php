@@ -9,6 +9,8 @@ use Aavirbhava\AiShoppingAssistant\Model\Provider\ProviderCapabilities;
 
 interface EmbeddingProviderInterface
 {
+    public function identifier(): string;
+
     /**
      * @param list<string> $texts
      */
