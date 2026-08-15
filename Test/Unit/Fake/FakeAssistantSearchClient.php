@@ -76,6 +76,18 @@ final class FakeAssistantSearchClient implements AssistantSearchClientInterface
      */
     public array $writtenDocuments = [];
 
+    public ?\Closure $beforeDocumentState = null;
+
+    public ?\Closure $afterDocumentState = null;
+
+    public ?\Closure $beforeWriteDocument = null;
+
+    public ?\Closure $afterWriteDocument = null;
+
+    public ?\Closure $beforeDeleteDocument = null;
+
+    public ?\Closure $afterDeleteDocument = null;
+
     /**
      * @var array<string, \Throwable>
      */
@@ -130,15 +142,27 @@ final class FakeAssistantSearchClient implements AssistantSearchClientInterface
     public function writeDocument(string $indexName, StoragePayloadInterface $document): void
     {
         $this->assertNoFailure('writeDocument');
+        if ($this->beforeWriteDocument !== null) {
+            ($this->beforeWriteDocument)($indexName, $document->id());
+        }
         $this->writeDocuments($indexName, [$document]);
         $this->documentSources[$indexName][$document->id()] = $document->source();
         $this->writtenDocuments[] = ['index' => $indexName, 'id' => $document->id()];
+        if ($this->afterWriteDocument !== null) {
+            ($this->afterWriteDocument)($indexName, $document->id());
+        }
     }
 
     public function documentState(string $indexName, string $documentId): ?IndexedDocumentStateInterface
     {
         $this->assertNoFailure('documentState');
+        if ($this->beforeDocumentState !== null) {
+            ($this->beforeDocumentState)($indexName, $documentId);
+        }
         $source = $this->documentSources[$indexName][$documentId] ?? null;
+        if ($this->afterDocumentState !== null) {
+            ($this->afterDocumentState)($indexName, $documentId);
+        }
         if ($source === null) {
             return null;
         }
@@ -149,8 +173,14 @@ final class FakeAssistantSearchClient implements AssistantSearchClientInterface
     public function deleteDocument(string $indexName, string $documentId): void
     {
         $this->assertNoFailure('deleteDocument');
+        if ($this->beforeDeleteDocument !== null) {
+            ($this->beforeDeleteDocument)($indexName, $documentId);
+        }
         $this->deletedDocuments[] = ['index' => $indexName, 'id' => $documentId];
         unset($this->documentSources[$indexName][$documentId]);
+        if ($this->afterDeleteDocument !== null) {
+            ($this->afterDeleteDocument)($indexName, $documentId);
+        }
     }
 
     public function indexMeta(string $indexName): array
@@ -187,7 +217,9 @@ final class FakeAssistantSearchClient implements AssistantSearchClientInterface
             if (isset($action['add'])) {
                 $alias = $action['add']['alias'];
                 $index = $action['add']['index'];
-                $this->aliases[$alias] = array_values(array_unique(array_merge($this->aliases[$alias] ?? [], [$index])));
+                $this->aliases[$alias] = $this->aliases[$alias] ?? [];
+                $this->aliases[$alias][] = $index;
+                $this->aliases[$alias] = array_values(array_unique($this->aliases[$alias]));
             }
             if (isset($action['remove'])) {
                 $alias = $action['remove']['alias'];

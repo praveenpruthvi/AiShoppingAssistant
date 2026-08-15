@@ -34,6 +34,8 @@ final class FakeEmbeddingGenerationService implements EmbeddingGenerationService
      */
     public array $calls = [];
 
+    public ?\Closure $beforeEmbed = null;
+
     /**
      * @var array<int, \Throwable>
      */
@@ -48,6 +50,10 @@ final class FakeEmbeddingGenerationService implements EmbeddingGenerationService
             throw $this->failures[$storeId];
         }
 
+        if ($this->beforeEmbed !== null) {
+            ($this->beforeEmbed)($storeId, $texts);
+        }
+
         $this->calls[] = ['storeId' => $storeId, 'inputType' => $inputType, 'texts' => $texts];
         $this->lastInputWasDocument = $inputType->isDocument();
 
@@ -56,7 +62,12 @@ final class FakeEmbeddingGenerationService implements EmbeddingGenerationService
             $vectors[] = new EmbeddingVector($this->vectorFor($text), $this->vectorDimension);
         }
 
-        return new EmbeddingResult($vectors, array_map('strval', array_keys($texts)), 'fake-model', new EmbeddingUsage(0, 0));
+        return new EmbeddingResult(
+            $vectors,
+            array_map('strval', array_keys($texts)),
+            'fake-model',
+            new EmbeddingUsage(0, 0)
+        );
     }
 
     public function failOn(int $storeId, \Throwable $throwable = null): void

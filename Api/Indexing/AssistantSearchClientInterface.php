@@ -68,7 +68,7 @@ interface AssistantSearchClientInterface
     public function writeDocuments(string $indexName, array $documents): void;
 
     /**
-     * Writes one validated storage payload to the given store read alias.
+     * Writes one validated storage payload to the given exact index or alias.
      *
      * @throws ProductIndexingException when the write cannot be verified
      */
@@ -84,8 +84,8 @@ interface AssistantSearchClientInterface
     public function documentState(string $indexName, string $documentId): ?IndexedDocumentStateInterface;
 
     /**
-     * Idempotently deletes one document by exact id. Missing documents are a
-     * successful no-op.
+     * Idempotently deletes one document by exact id from the given exact index
+     * or alias. Missing documents are a successful no-op.
      *
      * @throws ProductIndexingException when the delete response is malformed or
      *     the backend fails

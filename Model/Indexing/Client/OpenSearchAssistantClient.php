@@ -19,6 +19,7 @@ use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexCreateFa
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexingException;
 use Magento\Elasticsearch\Model\Config;
 use OpenSearch\Client;
+use OpenSearch\Common\Exceptions\Missing404Exception;
 
 /**
  * Production assistant-search client backed by the configured OpenSearch
@@ -45,6 +46,17 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
 
     /** Maximum accepted request timeout in seconds. */
     public const MAX_TIMEOUT = 120;
+
+    /**
+     * @var list<string>
+     */
+    private const DOCUMENT_STATE_SOURCE_FIELDS = [
+        'document_id',
+        'complete_document_hash',
+        'embedding_content_hash',
+        'embedding_fingerprint',
+        'embedding',
+    ];
 
     private ?Client $client = null;
 
@@ -232,6 +244,7 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
                 [
                     'index' => $indexName,
                     'id' => $documentId,
+                    '_source_includes' => self::DOCUMENT_STATE_SOURCE_FIELDS,
                     'client' => ['timeout' => $this->timeout()],
                 ]
             );
@@ -249,8 +262,24 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
             throw new IndexDocumentStateInvalidException();
         }
 
-        if (($response['found'] ?? true) === false) {
+        $found = $response['found'] ?? null;
+        if ($found !== null && !is_bool($found)) {
+            throw new IndexDocumentStateInvalidException();
+        }
+
+        $responseId = $response['_id'] ?? null;
+        if ($found === false) {
+            if (isset($response['_source'])
+                || ($responseId !== null && (!is_string($responseId) || $responseId !== $documentId))
+            ) {
+                throw new IndexDocumentStateInvalidException();
+            }
+
             return null;
+        }
+
+        if (!is_string($responseId) || $responseId !== $documentId) {
+            throw new IndexDocumentStateInvalidException();
         }
 
         $source = $response['_source'] ?? null;
@@ -286,6 +315,11 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
         }
 
         if (!is_array($response)) {
+            throw new IndexDocumentStateInvalidException();
+        }
+
+        $responseId = $response['_id'] ?? null;
+        if ($responseId !== null && (!is_string($responseId) || $responseId !== $documentId)) {
             throw new IndexDocumentStateInvalidException();
         }
 
@@ -451,7 +485,7 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
 
     private function isNotFound(\Throwable $throwable): bool
     {
-        return str_contains(get_class($throwable), 'Missing404Exception')
+        return $throwable instanceof Missing404Exception
             || $throwable->getCode() === 404;
     }
 }

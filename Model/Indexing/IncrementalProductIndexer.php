@@ -22,6 +22,7 @@ use Aavirbhava\AiShoppingAssistant\Api\Indexing\IndexedDocumentStateInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\IndexNamingServiceInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\ProductIncrementalIndexerInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\ProductIndexMappingInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Indexing\StoragePayloadInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Store\StoreScopeInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Store\StoreScopeProviderInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Catalog\Exception\CatalogException;
@@ -78,7 +79,6 @@ final class IncrementalProductIndexer implements ProductIncrementalIndexerInterf
     {
         try {
             $general = $this->configurationReader->readGeneral($scope->storeId());
-            $indexing = $this->configurationReader->readIndexing($scope->storeId());
         } catch (ConfigurationException $exception) {
             throw new OpenSearchConfigurationInvalidException();
         }
@@ -88,61 +88,79 @@ final class IncrementalProductIndexer implements ProductIncrementalIndexerInterf
         }
 
         try {
+            $indexing = $this->configurationReader->readIndexing($scope->storeId());
+        } catch (ConfigurationException $exception) {
+            throw new OpenSearchConfigurationInvalidException();
+        }
+
+        try {
             $embedding = $this->configSnapshot->capture($scope->storeId());
         } catch (ConfigurationException $exception) {
             throw new OpenSearchConfigurationInvalidException();
         }
 
-        $alias = $this->namingService->readAlias($indexing->indexPrefix(), $scope);
-        $this->assertAliasTargetCompatible($alias, $indexing->indexPrefix(), $scope, $embedding);
+        $target = $this->resolveTarget($indexing->indexPrefix(), $scope, $embedding);
 
         $documentId = $this->documentId($scope->storeId(), $productId);
         $batch = $this->loadSnapshot($scope, $indexing, $productId);
 
-        if (in_array($productId, $batch->missingProductIds(), true) || $batch->snapshots() === []) {
-            $this->client->deleteDocument($alias, $documentId);
+        if ($this->batchProvesMissing($batch, $productId)) {
+            $this->deleteDocument($target, $indexing->indexPrefix(), $scope, $embedding, $documentId);
 
             return;
         }
 
-        foreach ($batch->snapshots() as $snapshot) {
-            $result = $this->normalize($snapshot, $scope);
-            if (!$result->eligible() || $result->document() === null) {
-                $this->client->deleteDocument($alias, $documentId);
-
-                return;
-            }
-
-            $this->writeEligibleDocument($alias, $scope, $embedding, $result->document());
+        $snapshot = $this->snapshotForProduct($batch, $productId);
+        $result = $this->normalize($snapshot, $scope);
+        if (!$result->eligible() || $result->document() === null) {
+            $this->deleteDocument($target, $indexing->indexPrefix(), $scope, $embedding, $documentId);
 
             return;
         }
+
+        $this->writeEligibleDocument(
+            $target,
+            $indexing->indexPrefix(),
+            $scope,
+            $embedding,
+            $productId,
+            $result->document()
+        );
     }
 
-    private function assertAliasTargetCompatible(
-        string $alias,
+    private function resolveTarget(
         string $prefix,
         StoreScopeInterface $scope,
         FrozenEmbeddingConfigInterface $embedding
-    ): void {
+    ): IncrementalIndexTarget {
+        $alias = $this->namingService->readAlias($prefix, $scope);
         $targets = $this->client->aliasTargets($alias);
         if (count($targets) !== 1) {
             throw new IncrementalIndexTargetInvalidException();
         }
 
-        $target = $targets[0];
-        $parsed = $this->namingService->parseAssistantIndex($prefix, $target);
+        return $this->targetFromPhysicalIndex($alias, $prefix, $scope, $embedding, $targets[0]);
+    }
+
+    private function targetFromPhysicalIndex(
+        string $alias,
+        string $prefix,
+        StoreScopeInterface $scope,
+        FrozenEmbeddingConfigInterface $embedding,
+        string $physicalIndex
+    ): IncrementalIndexTarget {
+        $parsed = $this->namingService->parseAssistantIndex($prefix, $physicalIndex);
         if ($parsed === null || $parsed['store_id'] !== $scope->storeId()) {
             throw new IncrementalIndexTargetInvalidException();
         }
 
-        $meta = $this->client->indexMeta($target);
+        $meta = $this->client->indexMeta($physicalIndex);
         $runToken = $this->runTokenFromMeta($meta);
 
         if (($meta['assistant_index'] ?? null) !== true
             || ($meta['store_id'] ?? null) !== $scope->storeId()
             || ($meta['website_id'] ?? null) !== $scope->websiteId()
-            || ($meta['physical_index'] ?? null) !== $target
+            || ($meta['physical_index'] ?? null) !== $physicalIndex
             || $runToken === null
             || $runToken !== $parsed['run_token']
             || ($meta['schema_version'] ?? null) !== ProductDocumentSchema::VERSION
@@ -153,23 +171,62 @@ final class IncrementalProductIndexer implements ProductIncrementalIndexerInterf
         ) {
             throw new IncrementalIndexTargetInvalidException();
         }
+
+        $runId = $meta['run_id'] ?? null;
+        if (!is_string($runId)) {
+            throw new IncrementalIndexTargetInvalidException();
+        }
+
+        return new IncrementalIndexTarget(
+            $alias,
+            $physicalIndex,
+            $scope->storeId(),
+            $scope->websiteId(),
+            $runId,
+            $runToken,
+            ProductDocumentSchema::VERSION,
+            ProductIndexMappingInterface::MAPPING_VERSION,
+            $embedding->dimensions(),
+            $embedding->fingerprint(),
+            $embedding->baseUrlHash()
+        );
+    }
+
+    private function assertTargetStillCurrent(
+        IncrementalIndexTarget $target,
+        string $prefix,
+        StoreScopeInterface $scope,
+        FrozenEmbeddingConfigInterface $embedding
+    ): void {
+        if (!$this->configSnapshot->matches($embedding)) {
+            throw new IncrementalIndexTargetInvalidException();
+        }
+
+        $current = $this->resolveTarget($prefix, $scope, $embedding);
+        if (!$target->samePhysicalTarget($current)) {
+            throw new IncrementalIndexTargetInvalidException();
+        }
     }
 
     private function writeEligibleDocument(
-        string $alias,
+        IncrementalIndexTarget $target,
+        string $prefix,
         StoreScopeInterface $scope,
         FrozenEmbeddingConfigInterface $embedding,
+        int $productId,
         ProductDocumentInterface $document
     ): void {
-        $this->assertDocumentMatchesScope($scope, $document);
+        $this->assertDocumentMatchesScope($scope, $productId, $document);
 
-        $state = $this->client->documentState($alias, $document->documentId());
+        $state = $this->client->documentState($target->physicalIndex(), $document->documentId());
         $reusableVector = $this->reusableVector($state, $document, $embedding);
 
         if ($state !== null
             && $state->completeDocumentHash() === $document->completeDocumentHash()
             && $reusableVector !== null
         ) {
+            $this->assertTargetStillCurrent($target, $prefix, $scope, $embedding);
+
             return;
         }
 
@@ -186,13 +243,22 @@ final class IncrementalProductIndexer implements ProductIncrementalIndexerInterf
             $indexed = $this->embed($embedding, $document);
         }
 
-        $this->client->writeDocument($alias, $this->payloadBuilder->build($indexed));
+        $this->writeDocument($target, $prefix, $scope, $embedding, $this->payloadBuilder->build($indexed));
     }
 
-    private function assertDocumentMatchesScope(StoreScopeInterface $scope, ProductDocumentInterface $document): void
-    {
+    private function assertDocumentMatchesScope(
+        StoreScopeInterface $scope,
+        int $productId,
+        ProductDocumentInterface $document
+    ): void {
         if ($document->schemaVersion() !== ProductDocumentSchema::VERSION) {
             throw new IndexCompatibilityMismatchException();
+        }
+        if ($document->entityId() !== $productId) {
+            throw new IndexScopeMismatchException();
+        }
+        if ($document->documentId() !== $this->documentId($scope->storeId(), $productId)) {
+            throw new IndexScopeMismatchException();
         }
         if ($document->storeId() !== $scope->storeId()) {
             throw new IndexScopeMismatchException();
@@ -200,6 +266,59 @@ final class IncrementalProductIndexer implements ProductIncrementalIndexerInterf
         if (!in_array($scope->websiteId(), $document->websiteIds(), true)) {
             throw new IndexScopeMismatchException();
         }
+    }
+
+    private function deleteDocument(
+        IncrementalIndexTarget $target,
+        string $prefix,
+        StoreScopeInterface $scope,
+        FrozenEmbeddingConfigInterface $embedding,
+        string $documentId
+    ): void {
+        $this->assertTargetStillCurrent($target, $prefix, $scope, $embedding);
+        $this->client->deleteDocument($target->physicalIndex(), $documentId);
+        $this->assertTargetStillCurrent($target, $prefix, $scope, $embedding);
+    }
+
+    private function writeDocument(
+        IncrementalIndexTarget $target,
+        string $prefix,
+        StoreScopeInterface $scope,
+        FrozenEmbeddingConfigInterface $embedding,
+        StoragePayloadInterface $payload
+    ): void {
+        $this->assertTargetStillCurrent($target, $prefix, $scope, $embedding);
+        $this->client->writeDocument($target->physicalIndex(), $payload);
+        $this->assertTargetStillCurrent($target, $prefix, $scope, $embedding);
+    }
+
+    private function batchProvesMissing(ProductSnapshotBatchInterface $batch, int $productId): bool
+    {
+        $snapshots = $batch->snapshots();
+        $missing = $batch->missingProductIds();
+
+        if ($snapshots === [] && $missing === [$productId]) {
+            return true;
+        }
+
+        if (count($snapshots) === 1
+            && $missing === []
+            && $snapshots[0]->entityId() === $productId
+        ) {
+            return false;
+        }
+
+        throw new ProductIndexBatchNormalizationException();
+    }
+
+    private function snapshotForProduct(ProductSnapshotBatchInterface $batch, int $productId): ProductSnapshotInterface
+    {
+        $snapshots = $batch->snapshots();
+        if (count($snapshots) !== 1 || $batch->missingProductIds() !== [] || $snapshots[0]->entityId() !== $productId) {
+            throw new ProductIndexBatchNormalizationException();
+        }
+
+        return $snapshots[0];
     }
 
     /**
@@ -252,8 +371,7 @@ final class IncrementalProductIndexer implements ProductIncrementalIndexerInterf
         StoreScopeInterface $scope,
         IndexingConfigInterface $indexing,
         int $productId
-    ): ProductSnapshotBatchInterface
-    {
+    ): ProductSnapshotBatchInterface {
         try {
             return $this->snapshotProvider->load($scope, $indexing, [$productId]);
         } catch (CatalogException $exception) {
@@ -264,8 +382,7 @@ final class IncrementalProductIndexer implements ProductIncrementalIndexerInterf
     private function normalize(
         ProductSnapshotInterface $snapshot,
         StoreScopeInterface $scope
-    ): ProductNormalizationResultInterface
-    {
+    ): ProductNormalizationResultInterface {
         try {
             return $this->documentNormalizer->normalize(
                 $snapshot,
