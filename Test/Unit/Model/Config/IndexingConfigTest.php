@@ -15,7 +15,7 @@ final class IndexingConfigTest extends TestCase
 {
     public function testExposesAllValues(): void
     {
-        $config = new IndexingConfig(100, ['color', 'size'], true, false, false, 50);
+        $config = new IndexingConfig(100, ['color', 'size'], true, false, false, 50, 'aavirbhava_ai');
 
         self::assertInstanceOf(IndexingConfigInterface::class, $config);
         self::assertSame(100, $config->batchSize());
@@ -24,23 +24,30 @@ final class IndexingConfigTest extends TestCase
         self::assertFalse($config->includeLongDescription());
         self::assertFalse($config->aggregateConfigurableVariants());
         self::assertSame(50, $config->maxAttributeValuesPerProduct());
+        self::assertSame('aavirbhava_ai', $config->indexPrefix());
     }
 
     public function testRejectsNonPositiveBatchSize(): void
     {
         $this->expectException(ConfigurationException::class);
-        new IndexingConfig(0, [], true, true, false, 100);
+        new IndexingConfig(0, [], true, true, false, 100, 'aavirbhava_ai');
     }
 
     public function testRejectsInvalidAttributeCode(): void
     {
         $this->expectException(ConfigurationException::class);
-        new IndexingConfig(100, ['Bad Code'], true, true, false, 100);
+        new IndexingConfig(100, ['Bad Code'], true, true, false, 100, 'aavirbhava_ai');
     }
 
     public function testRejectsNonPositiveAttributeValueBudget(): void
     {
         $this->expectException(ConfigurationException::class);
-        new IndexingConfig(100, [], true, true, false, 0);
+        new IndexingConfig(100, [], true, true, false, 0, 'aavirbhava_ai');
+    }
+
+    public function testRejectsInvalidIndexPrefix(): void
+    {
+        $this->expectException(ConfigurationException::class);
+        new IndexingConfig(100, [], true, true, false, 100, 'Invalid-Prefix!');
     }
 }

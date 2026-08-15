@@ -40,11 +40,19 @@
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\FullProductReindexerInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\FullProductReindexer"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\ProductDocumentWriterInterface"
-                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\UnavailableProductDocumentWriter"/>
+                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\OpenSearchProductDocumentWriter"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalProductIndexSchedulerInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\UnavailableIncrementalProductIndexScheduler"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\RebuildRunContextFactoryInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\RebuildRunContextFactory"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\AssistantSearchClientInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Client\OpenSearchAssistantClient"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\IndexNamingServiceInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Naming\IndexNamingService"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\ProductIndexMappingInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Mapping\ProductIndexMapping"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\EmbeddingEnrichmentServiceInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Embedding\EmbeddingEnrichmentService"/>
 
     <type name="Aavirbhava\AiShoppingAssistant\Model\Provider\LlmProviderRegistry">
         <arguments>

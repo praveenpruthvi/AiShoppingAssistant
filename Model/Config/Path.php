@@ -52,6 +52,7 @@ final class Path
     public const INDEXING_INCLUDE_LONG_DESCRIPTION = self::PREFIX . 'indexing/include_long_description';
     public const INDEXING_AGGREGATE_CONFIGURABLE_VARIANTS = self::PREFIX . 'indexing/aggregate_configurable_variants';
     public const INDEXING_MAX_ATTRIBUTE_VALUES_PER_PRODUCT = self::PREFIX . 'indexing/max_attribute_values_per_product';
+    public const INDEXING_INDEX_PREFIX = self::PREFIX . 'indexing/index_prefix';
 
     private function __construct()
     {

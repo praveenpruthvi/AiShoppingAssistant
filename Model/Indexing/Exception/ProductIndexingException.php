@@ -55,6 +55,48 @@ class ProductIndexingException extends LocalizedException
     /** An immutable rebuild result value failed validation. */
     public const ERROR_INVALID_RESULT = 'invalid_result';
 
+    /** The OpenSearch backend is not reachable or its connection failed. */
+    public const ERROR_OPENSEARCH_BACKEND_UNAVAILABLE = 'opensearch_backend_unavailable';
+
+    /** The OpenSearch backend connection or configuration is invalid. */
+    public const ERROR_OPENSEARCH_CONFIGURATION_INVALID = 'opensearch_configuration_invalid';
+
+    /** The OpenSearch backend lacks a required capability. */
+    public const ERROR_OPENSEARCH_CAPABILITY_UNSUPPORTED = 'opensearch_capability_unsupported';
+
+    /** An index or alias name is invalid or oversize. */
+    public const ERROR_INDEX_NAME_INVALID = 'index_name_invalid';
+
+    /** Creating a physical index failed. */
+    public const ERROR_INDEX_CREATE_FAILED = 'index_create_failed';
+
+    /** The physical index mapping is invalid. */
+    public const ERROR_INDEX_MAPPING_INVALID = 'index_mapping_invalid';
+
+    /** Generating or correlating document embeddings failed. */
+    public const ERROR_EMBEDDING_ENRICHMENT = 'embedding_enrichment_failed';
+
+    /** A bulk document write was rejected by the backend. */
+    public const ERROR_BULK_INDEX = 'bulk_index_failed';
+
+    /** A bulk response was malformed or could not be verified. */
+    public const ERROR_BULK_RESPONSE_INVALID = 'bulk_response_invalid';
+
+    /** The atomic alias activation failed. */
+    public const ERROR_ALIAS_ACTIVATION = 'alias_activation_failed';
+
+    /** Cleaning up an aborted run's physical indexes failed. */
+    public const ERROR_INDEX_ABORT = 'index_abort_failed';
+
+    /** The run state does not allow the requested lifecycle call. */
+    public const ERROR_INDEX_RUN_STATE_INVALID = 'index_run_state_invalid';
+
+    /** A document or store scope does not match the active run store. */
+    public const ERROR_INDEX_SCOPE_MISMATCH = 'index_scope_mismatch';
+
+    /** The document or embedding configuration is incompatible with the run. */
+    public const ERROR_INDEX_COMPATIBILITY_MISMATCH = 'index_compatibility_mismatch';
+
     /**
      * @param string $errorCode stable machine-readable failure category
      * @param Phrase $phrase sanitized, customer-safe message

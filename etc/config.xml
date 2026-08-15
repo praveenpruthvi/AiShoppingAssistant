@@ -51,6 +51,7 @@
                 <include_long_description>1</include_long_description>
                 <aggregate_configurable_variants>0</aggregate_configurable_variants>
                 <max_attribute_values_per_product>100</max_attribute_values_per_product>
+                <index_prefix>aavirbhava_ai_product_rag</index_prefix>
             </indexing>
         </ai_shopping_assistant>
     </default>

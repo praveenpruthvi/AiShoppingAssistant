@@ -19,13 +19,27 @@ use Aavirbhava\AiShoppingAssistant\Api\Store\StoreScopeProviderInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Catalog\Exception\CatalogException;
 use Aavirbhava\AiShoppingAssistant\Model\Catalog\ProductEligibilityContext;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\InvalidProductIndexEntityIdsException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\AliasActivationFailedException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\BulkIndexFailedException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\BulkResponseInvalidException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\EmbeddingEnrichmentException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexCompatibilityMismatchException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexRunStateInvalidException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexScopeMismatchException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchBackendUnavailableException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchCapabilityUnsupportedException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchConfigurationInvalidException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexAbortException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexAbortFailedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexActivationException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexBackendUnavailableException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexBatchNormalizationException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexBatchWriteException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexCreateFailedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexIncrementalSchedulerUnavailableException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexingException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexMappingInvalidException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexNameInvalidException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexRunInitException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexStorePrepException;
 
@@ -336,6 +350,20 @@ final class FullProductReindexer implements FullProductReindexerInterface
             ProductIndexingException::ERROR_ACTIVATION => new ProductIndexActivationException($previous, $result),
             ProductIndexingException::ERROR_ABORT => new ProductIndexAbortException($previous, $result),
             ProductIndexingException::ERROR_INCREMENTAL_SCHEDULER_UNAVAILABLE => new ProductIndexIncrementalSchedulerUnavailableException($previous, $result),
+            ProductIndexingException::ERROR_OPENSEARCH_BACKEND_UNAVAILABLE => new OpenSearchBackendUnavailableException($previous, $result),
+            ProductIndexingException::ERROR_OPENSEARCH_CONFIGURATION_INVALID => new OpenSearchConfigurationInvalidException($previous, $result),
+            ProductIndexingException::ERROR_OPENSEARCH_CAPABILITY_UNSUPPORTED => new OpenSearchCapabilityUnsupportedException($previous, $result),
+            ProductIndexingException::ERROR_INDEX_NAME_INVALID => new ProductIndexNameInvalidException($previous, $result),
+            ProductIndexingException::ERROR_INDEX_CREATE_FAILED => new ProductIndexCreateFailedException($previous, $result),
+            ProductIndexingException::ERROR_INDEX_MAPPING_INVALID => new ProductIndexMappingInvalidException($previous, $result),
+            ProductIndexingException::ERROR_EMBEDDING_ENRICHMENT => new EmbeddingEnrichmentException($previous, $result),
+            ProductIndexingException::ERROR_BULK_INDEX => new BulkIndexFailedException($previous, $result),
+            ProductIndexingException::ERROR_BULK_RESPONSE_INVALID => new BulkResponseInvalidException($previous, $result),
+            ProductIndexingException::ERROR_ALIAS_ACTIVATION => new AliasActivationFailedException($previous, $result),
+            ProductIndexingException::ERROR_INDEX_ABORT => new ProductIndexAbortFailedException($previous, $result),
+            ProductIndexingException::ERROR_INDEX_RUN_STATE_INVALID => new IndexRunStateInvalidException($previous, $result),
+            ProductIndexingException::ERROR_INDEX_SCOPE_MISMATCH => new IndexScopeMismatchException($previous, $result),
+            ProductIndexingException::ERROR_INDEX_COMPATIBILITY_MISMATCH => new IndexCompatibilityMismatchException($previous, $result),
             default => new ProductIndexRunInitException($previous, $result),
         };
     }

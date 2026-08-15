@@ -46,4 +46,10 @@ interface IndexingConfigInterface
      * attributes (1-500).
      */
     public function maxAttributeValuesPerProduct(): int;
+
+    /**
+     * Index prefix used to build the dedicated assistant index aliases and
+     * physical indexes. Must match IndexNamingServiceInterface::PREFIX_PATTERN.
+     */
+    public function indexPrefix(): string;
 }

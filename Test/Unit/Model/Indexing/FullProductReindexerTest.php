@@ -19,6 +19,8 @@ use Aavirbhava\AiShoppingAssistant\Api\Indexing\RebuildRunContextFactoryInterfac
 use Aavirbhava\AiShoppingAssistant\Api\Store\StoreScopeInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Store\StoreScopeProviderInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Catalog\Exception\CatalogException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\EmbeddingEnrichmentException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchBackendUnavailableException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexAbortException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexActivationException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexBackendUnavailableException;
@@ -426,6 +428,73 @@ final class FullProductReindexerTest extends TestCase
 
         self::assertFalse($this->writer->begun);
         self::assertSame(0, $this->writer->abortCount);
+    }
+
+    public function testOpenSearchBackendFailureMapsToStableCode(): void
+    {
+        $this->stubEnabledStore();
+        $this->stubBatches([]);
+        $this->writer->failOn(
+            'beginRun',
+            new OpenSearchBackendUnavailableException()
+        );
+
+        try {
+            $this->buildReindexer()->rebuild();
+            self::fail('Expected ProductIndexingException');
+        } catch (OpenSearchBackendUnavailableException $exception) {
+            self::assertSame('opensearch_backend_unavailable', $exception->errorCode());
+            self::assertNotNull($exception->rebuildResult());
+            self::assertTrue($exception->rebuildResult()->aborted());
+        }
+
+        self::assertFalse($this->writer->begun);
+        self::assertSame(0, $this->writer->abortCount);
+    }
+
+    public function testEmbeddingEnrichmentFailureMapsToStableCode(): void
+    {
+        $this->stubEnabledStore();
+        $this->stubBatches([[10]]);
+        $this->stubSnapshots(1);
+        $this->stubNormalizer(1);
+        $this->writer->failOn(
+            'writeBatch',
+            new EmbeddingEnrichmentException()
+        );
+
+        try {
+            $this->buildReindexer()->rebuild();
+            self::fail('Expected ProductIndexingException');
+        } catch (ProductIndexBatchWriteException $exception) {
+            self::assertSame('batch_write_failed', $exception->errorCode());
+            self::assertNotNull($exception->rebuildResult());
+            self::assertChainContains($exception, EmbeddingEnrichmentException::class);
+        }
+
+        self::assertTrue($this->writer->begun);
+        self::assertFalse($this->writer->activated);
+        self::assertSame(1, $this->writer->abortCount);
+    }
+
+    /**
+     * Asserts that the exception chain contains an instance of the given class.
+     *
+     * @param class-string $class
+     */
+    private static function assertChainContains(\Throwable $throwable, string $class): void
+    {
+        $current = $throwable;
+        while ($current !== null) {
+            if ($current instanceof $class) {
+                self::assertTrue(true);
+
+                return;
+            }
+            $current = $current->getPrevious();
+        }
+
+        self::fail(sprintf('Exception chain does not contain %s', $class));
     }
 
     public function testConsecutiveRebuildsProduceDistinctRunIds(): void

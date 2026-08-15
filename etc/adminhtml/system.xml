@@ -241,6 +241,12 @@
                     <validate>validate-digits validate-greater-than-zero</validate>
                     <backend_model>Aavirbhava\AiShoppingAssistant\Model\Config\Backend\InvalidateProductIndex</backend_model>
                 </field>
+                <field id="index_prefix" translate="label comment" type="text" sortOrder="70"
+                       showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Index Prefix</label>
+                    <comment>Prefix for the dedicated assistant index aliases and physical indexes. Lowercase letters, digits, underscore, or hyphen, max 64 characters. Changing this requires a full index rebuild.</comment>
+                    <backend_model>Aavirbhava\AiShoppingAssistant\Model\Config\Backend\InvalidateProductIndex</backend_model>
+                </field>
             </group>
         </section>
     </system>

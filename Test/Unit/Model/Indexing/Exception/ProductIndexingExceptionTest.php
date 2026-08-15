@@ -5,14 +5,28 @@ declare(strict_types=1);
 namespace Aavirbhava\AiShoppingAssistant\Test\Unit\Model\Indexing\Exception;
 
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\RebuildResultInterface;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\AliasActivationFailedException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\BulkIndexFailedException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\BulkResponseInvalidException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\EmbeddingEnrichmentException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexCompatibilityMismatchException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexRunStateInvalidException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexScopeMismatchException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\InvalidProductIndexEntityIdsException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchBackendUnavailableException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchCapabilityUnsupportedException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchConfigurationInvalidException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexAbortException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexAbortFailedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexActivationException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexBackendUnavailableException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexBatchNormalizationException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexBatchWriteException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexCreateFailedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexingException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexIncrementalSchedulerUnavailableException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexMappingInvalidException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexNameInvalidException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexRunInitException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexStorePrepException;
 use Magento\Framework\Phrase;
@@ -37,6 +51,20 @@ final class ProductIndexingExceptionTest extends TestCase
             'activation' => [ProductIndexActivationException::class, 'activation_failed'],
             'abort' => [ProductIndexAbortException::class, 'abort_failed'],
             'incremental unavailable' => [ProductIndexIncrementalSchedulerUnavailableException::class, 'incremental_scheduler_unavailable'],
+            'opensearch backend unavailable' => [OpenSearchBackendUnavailableException::class, 'opensearch_backend_unavailable'],
+            'opensearch configuration invalid' => [OpenSearchConfigurationInvalidException::class, 'opensearch_configuration_invalid'],
+            'opensearch capability unsupported' => [OpenSearchCapabilityUnsupportedException::class, 'opensearch_capability_unsupported'],
+            'index name invalid' => [ProductIndexNameInvalidException::class, 'index_name_invalid'],
+            'index create failed' => [ProductIndexCreateFailedException::class, 'index_create_failed'],
+            'index mapping invalid' => [ProductIndexMappingInvalidException::class, 'index_mapping_invalid'],
+            'embedding enrichment' => [EmbeddingEnrichmentException::class, 'embedding_enrichment_failed'],
+            'bulk index' => [BulkIndexFailedException::class, 'bulk_index_failed'],
+            'bulk response invalid' => [BulkResponseInvalidException::class, 'bulk_response_invalid'],
+            'alias activation' => [AliasActivationFailedException::class, 'alias_activation_failed'],
+            'index abort' => [ProductIndexAbortFailedException::class, 'index_abort_failed'],
+            'index run state invalid' => [IndexRunStateInvalidException::class, 'index_run_state_invalid'],
+            'index scope mismatch' => [IndexScopeMismatchException::class, 'index_scope_mismatch'],
+            'index compatibility mismatch' => [IndexCompatibilityMismatchException::class, 'index_compatibility_mismatch'],
         ];
     }
 

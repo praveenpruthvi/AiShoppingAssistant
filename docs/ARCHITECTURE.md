@@ -260,7 +260,14 @@ interface ProductDocumentWriterInterface
 }
 ```
 
-The default `UnavailableProductDocumentWriter` never fails open: every lifecycle call throws a sanitized `backend_unavailable` exception, and `abortRun()` is a safe idempotent no-op. A future OpenSearch writer replaces it through DI. `IncrementalProductIndexSchedulerInterface` receives row/list updates; the default validates positive ids (never silently discarding any) and refuses explicitly with `incremental_scheduler_unavailable` until the queue/consumer pipeline exists.
+The production default is `OpenSearchProductDocumentWriter` (Milestone 2C1). It is a two-phase store-scoped writer:
+
+- `beginRun()` freezes the run context, resolves per-store embedding configuration and index prefix, pings the OpenSearch backend and checks vector support (fail closed through `AssistantSearchClientInterface`), creates one physical index per enabled store, and self-cleans any partial index creation on failure.
+- `writeBatch()` validates document schema and store scope, enriches documents through `EmbeddingEnrichmentService` (bounded batches, positional correlation, vector content hashing), and writes bulk payloads in bounded chunks.
+- `activateRun()` refreshes every store index and atomically moves each store's read alias to the new physical index in one `updateAliases` call, removing only assistant-owned alias targets.
+- `abortRun()` is idempotent, never throws, and removes only run-owned unaliased indexes.
+
+`UnavailableProductDocumentWriter` remains as the fail-closed fallback: every lifecycle call throws a sanitized `backend_unavailable` exception and `abortRun()` is a safe idempotent no-op. `IncrementalProductIndexSchedulerInterface` receives row/list updates; the default validates positive ids (never silently discarding any) and refuses explicitly with `incremental_scheduler_unavailable` until the queue/consumer pipeline exists.
 
 ### Failure semantics
 
@@ -276,30 +283,32 @@ On any failure after the run began: no new batches are started, `abortRun()` is 
 
 ## Search index
 
-Use a dedicated versioned alias and physical index:
+The dedicated assistant index uses a versioned per-store alias and physical index:
 
 ```text
-Alias:    magento_ai_products_<store_id>
-Physical: magento_ai_products_<store_id>_<schema_version>_<timestamp>
+Alias:    <prefix>_store_<store_id>_current
+Physical: <prefix>_store_<store_id>_run_<safe_run_token>
 ```
 
-Rebuild into a new physical index and atomically move the alias after successful validation.
+The prefix is store-scoped configuration (`ai_shopping_assistant/indexing/index_prefix`, default `aavirbhava_ai_product_rag`) validated as `^[a-z][a-z0-9_-]{0,63}$`. `IndexNamingService` builds both names; the safe run token is a lowercase alphanumeric, max 32 characters derived from the UUID run id. Rebuilds write a new physical index and atomically move the alias to it after successful validation; activation removes only assistant-owned alias targets.
 
-Indexed fields may include identifiers, store scope, visibility, normalized attributes, categories, searchable text, content hash, retrieval-time filter fields, and embeddings.
+The `ProductIndexMapping` (versioned, `dynamic: false`) declares identifier, store scope, visibility, normalized attribute, category, searchable-text, content-hash, retrieval-time filter fields, and a `knn_vector` field with dimension and `l2` similarity. `_meta` records non-secret provenance: assistant index marker, schema version, mapping version, store/website id, run id, physical index, embedding fingerprint, dimensions, and base-URL hash. Alias/physical names and mapping fields must never expose secrets.
 
 Price and stock fields may help candidate retrieval but must be revalidated through Magento services before display or action.
+
+The client seam is `AssistantSearchClientInterface` (`OpenSearchAssistantClient` in production, `UnavailableAssistantSearchClient` as the fail-closed fallback). The production client builds the Magento OpenSearch client from `Magento\Elasticsearch\Model\Config::prepareClientOptions()` with bounded timeouts and no retries; backend, capability, configuration, create, bulk, and alias errors translate to sanitized exceptions.
 
 ## Indexing
 
 - Register a custom indexer named `ai_product_rag` (registered in Milestone 2B2).
-- Full reindex processes products in configurable batches.
+- Full reindex processes products in configurable batches through the OpenSearch writer (Milestone 2C1).
 - Product/category changes enqueue affected entity IDs.
 - Consumers normalize, hash, embed, and upsert documents.
 - Unchanged content hashes skip embedding generation.
 - Disabled, deleted, invisible, or unassigned products are removed for the relevant store scope.
 - A scheduled reconciliation detects missed events.
 
-Queue consumers, embedding generation, and the search-index backend are not yet implemented; until then the document writer and incremental scheduler refuse explicitly rather than failing open.
+Queue consumers, hybrid retrieval, and reranking are not yet implemented; until then the incremental scheduler refuses explicitly rather than failing open, and the embedding fingerprint/dimension invalidation path is in place (a model or endpoint change that alters the fingerprint or dimensions invalidates the assistant index).
 
 ## Failure policy
 

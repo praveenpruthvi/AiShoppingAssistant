@@ -19,7 +19,8 @@ final readonly class IndexingConfig implements IndexingConfigInterface
         private bool $includeShortDescription,
         private bool $includeLongDescription,
         private bool $aggregateConfigurableVariants,
-        private int $maxAttributeValuesPerProduct
+        private int $maxAttributeValuesPerProduct,
+        private string $indexPrefix
     ) {
         if ($batchSize < 1) {
             throw new ConfigurationException(__('Indexing batch size must be a positive integer.'));
@@ -33,6 +34,10 @@ final readonly class IndexingConfig implements IndexingConfigInterface
 
         if ($maxAttributeValuesPerProduct < 1) {
             throw new ConfigurationException(__('The maximum number of attribute values per product must be a positive integer.'));
+        }
+
+        if ($indexPrefix === '' || preg_match('/^[a-z][a-z0-9_-]{0,63}$/', $indexPrefix) !== 1) {
+            throw new ConfigurationException(__('The assistant index prefix is invalid.'));
         }
     }
 
@@ -64,5 +69,10 @@ final readonly class IndexingConfig implements IndexingConfigInterface
     public function maxAttributeValuesPerProduct(): int
     {
         return $this->maxAttributeValuesPerProduct;
+    }
+
+    public function indexPrefix(): string
+    {
+        return $this->indexPrefix;
     }
 }

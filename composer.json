@@ -7,7 +7,9 @@
     "php": ">=8.2 <8.6",
     "magento/framework": ">=103.0.7 <104.0",
     "magento/module-catalog": ">=104.0 <105.0",
-    "magento/module-indexer": ">=100.4 <101.0"
+    "magento/module-indexer": ">=100.4 <101.0",
+    "magento/module-elasticsearch": ">=100.4 <102.0",
+    "opensearch-project/opensearch-php": "^1.0 || ^2.0"
   },
   "require-dev": {
     "phpunit/phpunit": "^10.5 || ^11.0",

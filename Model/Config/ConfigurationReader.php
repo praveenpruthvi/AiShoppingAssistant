@@ -80,6 +80,8 @@ final class ConfigurationReader implements ConfigurationReaderInterface
     public const MAX_MAX_ATTRIBUTE_VALUES = 500;
     public const DEFAULT_MAX_ATTRIBUTE_VALUES = 100;
 
+    public const DEFAULT_INDEX_PREFIX = 'aavirbhava_ai_product_rag';
+
     /**
      * @var list<string>
      */
@@ -268,7 +270,8 @@ final class ConfigurationReader implements ConfigurationReaderInterface
                 self::MIN_MAX_ATTRIBUTE_VALUES,
                 self::MAX_MAX_ATTRIBUTE_VALUES,
                 self::DEFAULT_MAX_ATTRIBUTE_VALUES
-            )
+            ),
+            $this->readString(Path::INDEXING_INDEX_PREFIX, $storeId, self::DEFAULT_INDEX_PREFIX)
         );
     }
 
