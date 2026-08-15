@@ -65,7 +65,7 @@ final class IncrementalProductIndexConsumerTest extends TestCase
         ];
     }
 
-    public function testIndexingExceptionPropagatesForBrokerRetry(): void
+    public function testIndexingExceptionPropagatesFromHandler(): void
     {
         $expected = new ProductIndexBackendUnavailableException();
         $this->indexer->expects(self::once())

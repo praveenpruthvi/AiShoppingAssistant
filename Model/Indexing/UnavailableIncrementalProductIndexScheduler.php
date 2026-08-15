@@ -9,7 +9,7 @@ use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\InvalidProductIndexE
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexIncrementalSchedulerUnavailableException;
 
 /**
- * Default scheduler until the queue/consumer pipeline is implemented.
+ * Production scheduler until durable incremental recovery is implemented.
  *
  * Validates and normalizes the requested ids, then refuses explicitly with a
  * sanitized exception. It never indexes, embeds, or generates synchronously,

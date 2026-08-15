@@ -35,7 +35,8 @@ final class IncrementalQueueConfigTest extends TestCase
         $publisher = $this->loadXml('etc/queue_publisher.xml')->xpath('/config/publisher')[0] ?? null;
         self::assertNotNull($publisher);
         self::assertSame(IncrementalProductIndexQueue::TOPIC, (string)$publisher['topic']);
-        self::assertSame(IncrementalProductIndexQueue::QUEUE, (string)$publisher['queue']);
+        self::assertSame('', (string)$publisher['queue']);
+        self::assertSame('', (string)$publisher['connection']);
 
         $binding = $this->loadXml('etc/queue_topology.xml')->xpath('/config/exchange/binding')[0] ?? null;
         self::assertNotNull($binding);
@@ -49,17 +50,25 @@ final class IncrementalQueueConfigTest extends TestCase
         self::assertSame(IncrementalProductIndexConsumer::class . '::process', (string)$consumer['handler']);
     }
 
-    public function testProductionSchedulerPreferenceUsesMagentoQueuePublisher(): void
+    public function testProductionSchedulerPreferenceRemainsFailClosedUntilDurableRecovery(): void
     {
         $preference = $this->loadXml('etc/di.xml')->xpath(
             '/config/preference[@for="' . IncrementalProductIndexSchedulerInterface::class . '"]'
         )[0] ?? null;
 
         self::assertNotNull($preference);
-        self::assertSame(MagentoIncrementalProductIndexScheduler::class, (string)$preference['type']);
+        self::assertSame(UnavailableIncrementalProductIndexScheduler::class, (string)$preference['type']);
     }
 
-    public function testUnavailableSchedulerRemainsExplicitFallback(): void
+    public function testStagedMagentoQueueSchedulerRemainsDirectlyAvailable(): void
+    {
+        self::assertContains(
+            IncrementalProductIndexSchedulerInterface::class,
+            class_implements(MagentoIncrementalProductIndexScheduler::class)
+        );
+    }
+
+    public function testUnavailableSchedulerRemainsExplicitProductionFallback(): void
     {
         self::assertContains(
             IncrementalProductIndexSchedulerInterface::class,

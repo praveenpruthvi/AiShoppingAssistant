@@ -9,8 +9,9 @@ namespace Aavirbhava\AiShoppingAssistant\Api\Indexing;
  *
  * Implementations must never index, embed, or generate anything synchronously
  * inside the calling request. They publish identifiers for asynchronous
- * processing only. The production implementation publishes product identifiers
- * only; the unavailable implementation remains an explicit safe fallback.
+ * processing only. The queue publisher transport exists, but production DI
+ * remains on the unavailable fail-closed scheduler until durable recovery and
+ * reconciliation are implemented.
  */
 interface IncrementalProductIndexSchedulerInterface
 {

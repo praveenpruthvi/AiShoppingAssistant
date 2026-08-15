@@ -9,6 +9,11 @@ use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\InvalidProductIndexE
 
 /**
  * Magento queue consumer for one incremental product-index message.
+ *
+ * Ordinary indexing failures intentionally propagate from this handler.
+ * Magento's default consumer rejects ordinary handler exceptions without
+ * requeueing, so propagation prevents acknowledgement but is not sufficient
+ * durable retry semantics on its own.
  */
 final class IncrementalProductIndexConsumer
 {

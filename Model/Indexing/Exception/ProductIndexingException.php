@@ -46,7 +46,7 @@ class ProductIndexingException extends LocalizedException
     /** Cleaning up an aborted run failed. */
     public const ERROR_ABORT = 'abort_failed';
 
-    /** Incremental scheduling is not available because queues are not implemented. */
+    /** Incremental scheduling is not active until durable recovery is implemented. */
     public const ERROR_INCREMENTAL_SCHEDULER_UNAVAILABLE = 'incremental_scheduler_unavailable';
 
     /** Publishing an incremental product-index queue message failed. */
