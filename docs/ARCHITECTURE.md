@@ -271,6 +271,21 @@ After either activation or abort the writer is reusable for a fresh run. The emb
 
 `UnavailableProductDocumentWriter` remains as the fail-closed fallback: every lifecycle call throws a sanitized `backend_unavailable` exception and `abortRun()` is a safe idempotent no-op. `IncrementalProductIndexSchedulerInterface` receives row/list updates; the default validates positive ids (never silently discarding any) and refuses explicitly with `incremental_scheduler_unavailable` until the queue/consumer pipeline exists.
 
+### Incremental indexing core
+
+`ProductIncrementalIndexerInterface::process(int $productId)` is the transport-independent Milestone 2C2A core for one explicitly validated positive product entity id. It has no HTTP, session, customer, current-store, ObjectManager, observer, cron, or queue dependency; Magento queue publisher/consumer wiring is deferred to Milestone 2C2B. Each call resolves active frontend store scopes, reads store-scoped general/indexing configuration, skips disabled stores without touching OpenSearch or embeddings, validates the exact store read alias, reloads the current Magento snapshot, and reconciles one deterministic store document id (`<store_id>_<entity_id>`).
+
+Incremental writes never use wildcards. For each enabled store the core resolves the canonical read alias (`<prefix>_store_<store_id>_current`), requires exactly one physical target, parses the target as an assistant run index, reads exact `_meta`, and proves assistant marker, store id, website id, physical index, valid run id/token, current `ProductDocumentSchema::VERSION`, current `ProductIndexMappingInterface::MAPPING_VERSION`, and frozen embedding dimensions/fingerprint/base-URL hash before reading or writing a document. Missing, mixed, foreign, malformed, or incompatible aliases fail closed with `incremental_target_invalid` and are retried or repaired by a full rebuild.
+
+Per-store product decisions are idempotent:
+
+- Missing or ineligible product: delete the store-scoped document id through the validated alias. Delete-not-found is success.
+- Eligible product with existing compatible state and unchanged `completeDocumentHash`: no OpenSearch write and no embedding call.
+- Eligible product whose `completeDocumentHash` changed but whose `embeddingContentHash`, embedding fingerprint, and validated vector are unchanged: reuse the existing vector and write the updated document without an embedding call.
+- Eligible product with changed embedding content, absent state, incompatible fingerprint, or unproven/malformed/non-finite/wrong-dimension vector: generate a fresh document embedding through the frozen store-scoped embedding boundary and write the complete document.
+
+`embeddingHash` remains integrity/diagnostics only and is never used as a skip key. Duplicate delivery is harmless because every attempt reloads current Magento data, current alias metadata, and current indexed state; provider or OpenSearch failures are not recorded as success, and work is only complete after the delete/write succeeds.
+
 ### Failure semantics
 
 On any failure after the run began: no new batches are started, `abortRun()` is called exactly once, `activateRun()` is never called, and a sanitized `ProductIndexingException` (stable `errorCode()`: `backend_unavailable`, `invalid_entity_ids`, `run_init_failed`, `store_prep_failed`, `batch_normalization_failed`, `batch_write_failed`, `activation_failed`, `abort_failed`, `index_abort_failed`, `incremental_scheduler_unavailable`, `invalid_metrics`, `invalid_result`) is thrown carrying the aborted-run metrics. If abort cleanup also fails, `index_abort_failed` is surfaced with the primary rebuild failure preserved in the exception chain. Messages are generic and customer-safe.
@@ -304,8 +319,8 @@ The client seam is `AssistantSearchClientInterface` (`OpenSearchAssistantClient`
 
 - Register a custom indexer named `ai_product_rag` (registered in Milestone 2B2).
 - Full reindex processes products in configurable batches through the OpenSearch writer (Milestone 2C1).
-- Product/category changes enqueue affected entity IDs.
-- Consumers normalize, hash, embed, and upsert documents.
+- Product/category changes enqueue affected entity IDs (queue wiring deferred to Milestone 2C2B).
+- Consumers will invoke the Milestone 2C2A incremental core to normalize, hash, embed only when needed, and upsert/delete documents.
 - The vector content hash is an integrity and diagnostics value only. The Milestone 2C2 consumer skips embedding generation based on the normalized `embeddingContentHash` combined with the frozen embedding fingerprint and schema compatibility — not on the vector hash alone.
 - Disabled, deleted, invisible, or unassigned products are removed for the relevant store scope.
 - A scheduled reconciliation detects missed events.

@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace Aavirbhava\AiShoppingAssistant\Test\Unit\Fake;
 
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\AssistantSearchClientInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Indexing\IndexedDocumentStateInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\StoragePayloadInterface;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Document\IndexedDocumentState;
 
 /**
  * In-memory assistant-search client for writer lifecycle tests.
@@ -35,6 +37,11 @@ final class FakeAssistantSearchClient implements AssistantSearchClientInterface
     public array $documentsByIndex = [];
 
     /**
+     * @var array<string, array<string, array<string, mixed>>>
+     */
+    public array $documentSources = [];
+
+    /**
      * @var array<string, array<string, mixed>>
      */
     public array $metaByIndex = [];
@@ -58,6 +65,16 @@ final class FakeAssistantSearchClient implements AssistantSearchClientInterface
      * @var list<string>
      */
     public array $deleted = [];
+
+    /**
+     * @var list<array{index: string, id: string}>
+     */
+    public array $deletedDocuments = [];
+
+    /**
+     * @var list<array{index: string, id: string}>
+     */
+    public array $writtenDocuments = [];
 
     /**
      * @var array<string, \Throwable>
@@ -94,6 +111,7 @@ final class FakeAssistantSearchClient implements AssistantSearchClientInterface
         $this->assertNoFailure('createIndex');
         $this->indexes[$indexName] = true;
         $this->documentsByIndex[$indexName] = [];
+        $this->documentSources[$indexName] = [];
         $meta = $createBody['mappings']['_meta'] ?? null;
         $this->metaByIndex[$indexName] = is_array($meta) ? $meta : [];
     }
@@ -107,6 +125,32 @@ final class FakeAssistantSearchClient implements AssistantSearchClientInterface
             }
             $this->documentsByIndex[$indexName][] = $document->source();
         }
+    }
+
+    public function writeDocument(string $indexName, StoragePayloadInterface $document): void
+    {
+        $this->assertNoFailure('writeDocument');
+        $this->writeDocuments($indexName, [$document]);
+        $this->documentSources[$indexName][$document->id()] = $document->source();
+        $this->writtenDocuments[] = ['index' => $indexName, 'id' => $document->id()];
+    }
+
+    public function documentState(string $indexName, string $documentId): ?IndexedDocumentStateInterface
+    {
+        $this->assertNoFailure('documentState');
+        $source = $this->documentSources[$indexName][$documentId] ?? null;
+        if ($source === null) {
+            return null;
+        }
+
+        return IndexedDocumentState::fromSource($documentId, $source);
+    }
+
+    public function deleteDocument(string $indexName, string $documentId): void
+    {
+        $this->assertNoFailure('deleteDocument');
+        $this->deletedDocuments[] = ['index' => $indexName, 'id' => $documentId];
+        unset($this->documentSources[$indexName][$documentId]);
     }
 
     public function indexMeta(string $indexName): array
@@ -159,6 +203,7 @@ final class FakeAssistantSearchClient implements AssistantSearchClientInterface
         $this->deleted[] = $indexName;
         unset($this->indexes[$indexName]);
         unset($this->documentsByIndex[$indexName]);
+        unset($this->documentSources[$indexName]);
     }
 
     /**

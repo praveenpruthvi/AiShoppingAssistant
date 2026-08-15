@@ -49,6 +49,12 @@ class ProductIndexingException extends LocalizedException
     /** Incremental scheduling is not available because queues are not implemented. */
     public const ERROR_INCREMENTAL_SCHEDULER_UNAVAILABLE = 'incremental_scheduler_unavailable';
 
+    /** The live alias for incremental indexing is missing or incompatible. */
+    public const ERROR_INCREMENTAL_TARGET_INVALID = 'incremental_target_invalid';
+
+    /** Existing indexed document state could not be verified. */
+    public const ERROR_INDEX_DOCUMENT_STATE_INVALID = 'index_document_state_invalid';
+
     /** An immutable rebuild metrics value failed validation. */
     public const ERROR_INVALID_METRICS = 'invalid_metrics';
 

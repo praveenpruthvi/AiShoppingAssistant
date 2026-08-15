@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Aavirbhava\AiShoppingAssistant\Model\Indexing\Client;
 
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\AssistantSearchClientInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Indexing\IndexedDocumentStateInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Indexing\StoragePayloadInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchBackendUnavailableException;
 
 /**
@@ -43,6 +45,21 @@ final class UnavailableAssistantSearchClient implements AssistantSearchClientInt
     }
 
     public function writeDocuments(string $indexName, array $documents): void
+    {
+        throw new OpenSearchBackendUnavailableException();
+    }
+
+    public function writeDocument(string $indexName, StoragePayloadInterface $document): void
+    {
+        throw new OpenSearchBackendUnavailableException();
+    }
+
+    public function documentState(string $indexName, string $documentId): ?IndexedDocumentStateInterface
+    {
+        throw new OpenSearchBackendUnavailableException();
+    }
+
+    public function deleteDocument(string $indexName, string $documentId): void
     {
         throw new OpenSearchBackendUnavailableException();
     }

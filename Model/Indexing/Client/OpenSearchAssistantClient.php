@@ -5,10 +5,13 @@ declare(strict_types=1);
 namespace Aavirbhava\AiShoppingAssistant\Model\Indexing\Client;
 
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\AssistantSearchClientInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Indexing\IndexedDocumentStateInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\StoragePayloadInterface;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Document\IndexedDocumentState;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\AliasActivationFailedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\BulkIndexFailedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\BulkResponseInvalidException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexDocumentStateInvalidException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchBackendUnavailableException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchCapabilityUnsupportedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchConfigurationInvalidException;
@@ -213,6 +216,85 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
         }
     }
 
+    public function writeDocument(string $indexName, StoragePayloadInterface $document): void
+    {
+        $this->writeDocuments($indexName, [$document]);
+    }
+
+    public function documentState(string $indexName, string $documentId): ?IndexedDocumentStateInterface
+    {
+        if ($documentId === '') {
+            throw new IndexDocumentStateInvalidException();
+        }
+
+        try {
+            $response = $this->client()->get(
+                [
+                    'index' => $indexName,
+                    'id' => $documentId,
+                    'client' => ['timeout' => $this->timeout()],
+                ]
+            );
+        } catch (ProductIndexingException $exception) {
+            throw $exception;
+        } catch (\Throwable $throwable) {
+            if ($this->isNotFound($throwable)) {
+                return null;
+            }
+
+            throw new OpenSearchBackendUnavailableException();
+        }
+
+        if (!is_array($response)) {
+            throw new IndexDocumentStateInvalidException();
+        }
+
+        if (($response['found'] ?? true) === false) {
+            return null;
+        }
+
+        $source = $response['_source'] ?? null;
+        if (!is_array($source)) {
+            throw new IndexDocumentStateInvalidException();
+        }
+
+        return IndexedDocumentState::fromSource($documentId, $source);
+    }
+
+    public function deleteDocument(string $indexName, string $documentId): void
+    {
+        if ($documentId === '') {
+            throw new IndexDocumentStateInvalidException();
+        }
+
+        try {
+            $response = $this->client()->delete(
+                [
+                    'index' => $indexName,
+                    'id' => $documentId,
+                    'client' => ['timeout' => $this->timeout()],
+                ]
+            );
+        } catch (ProductIndexingException $exception) {
+            throw $exception;
+        } catch (\Throwable $throwable) {
+            if ($this->isNotFound($throwable)) {
+                return;
+            }
+
+            throw new OpenSearchBackendUnavailableException();
+        }
+
+        if (!is_array($response)) {
+            throw new IndexDocumentStateInvalidException();
+        }
+
+        $result = $response['result'] ?? null;
+        if (!is_string($result) || !in_array($result, ['deleted', 'not_found'], true)) {
+            throw new IndexDocumentStateInvalidException();
+        }
+    }
+
     public function indexMeta(string $indexName): array
     {
         try {
@@ -365,5 +447,11 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
         }
 
         return $timeout;
+    }
+
+    private function isNotFound(\Throwable $throwable): bool
+    {
+        return str_contains(get_class($throwable), 'Missing404Exception')
+            || $throwable->getCode() === 404;
     }
 }

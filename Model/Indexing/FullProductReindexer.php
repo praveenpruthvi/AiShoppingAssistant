@@ -24,8 +24,10 @@ use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\BulkIndexFailedExcep
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\BulkResponseInvalidException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\EmbeddingEnrichmentException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexCompatibilityMismatchException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexDocumentStateInvalidException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexRunStateInvalidException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexScopeMismatchException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IncrementalIndexTargetInvalidException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchBackendUnavailableException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchCapabilityUnsupportedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchConfigurationInvalidException;
@@ -354,6 +356,8 @@ final class FullProductReindexer implements FullProductReindexerInterface
             ProductIndexingException::ERROR_ACTIVATION => new ProductIndexActivationException($previous, $result),
             ProductIndexingException::ERROR_ABORT => new ProductIndexAbortException($previous, $result),
             ProductIndexingException::ERROR_INCREMENTAL_SCHEDULER_UNAVAILABLE => new ProductIndexIncrementalSchedulerUnavailableException($previous, $result),
+            ProductIndexingException::ERROR_INCREMENTAL_TARGET_INVALID => new IncrementalIndexTargetInvalidException($previous, $result),
+            ProductIndexingException::ERROR_INDEX_DOCUMENT_STATE_INVALID => new IndexDocumentStateInvalidException($previous, $result),
             ProductIndexingException::ERROR_OPENSEARCH_BACKEND_UNAVAILABLE => new OpenSearchBackendUnavailableException($previous, $result),
             ProductIndexingException::ERROR_OPENSEARCH_CONFIGURATION_INVALID => new OpenSearchConfigurationInvalidException($previous, $result),
             ProductIndexingException::ERROR_OPENSEARCH_CAPABILITY_UNSUPPORTED => new OpenSearchCapabilityUnsupportedException($previous, $result),
