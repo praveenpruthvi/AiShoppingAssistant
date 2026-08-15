@@ -1,0 +1,9 @@
+<?xml version="1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="urn:magento:framework-message-queue:etc/topology.xsd">
+    <exchange name="magento">
+        <binding id="AavirbhavaAiShoppingAssistantProductIncrementalIndex"
+                 topic="aavirbhava.ai_shopping_assistant.product.incremental_index"
+                 destination="aavirbhava.ai_shopping_assistant.product.incremental_index"/>
+    </exchange>
+</config>

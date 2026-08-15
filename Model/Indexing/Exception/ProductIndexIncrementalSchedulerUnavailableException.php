@@ -8,8 +8,8 @@ use Aavirbhava\AiShoppingAssistant\Api\Indexing\RebuildResultInterface;
 use Magento\Framework\Phrase;
 
 /**
- * Incremental scheduling was requested but the queue/consumer pipeline is not
- * implemented yet. Refuses explicitly rather than silently dropping ids.
+ * Incremental scheduling was requested before durable recovery is available.
+ * Refuses explicitly rather than silently dropping ids.
  */
 final class ProductIndexIncrementalSchedulerUnavailableException extends ProductIndexingException
 {

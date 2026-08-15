@@ -14,8 +14,8 @@ use Magento\Framework\Mview\ActionInterface as MviewActionInterface;
  *
  * A full reindex runs the complete store-scoped rebuild orchestration. Row/list
  * updates are forwarded to the incremental scheduler, which currently refuses
- * explicitly because the queue/consumer pipeline is not implemented; nothing is
- * ever indexed or embedded synchronously inside this request.
+ * explicitly because the queue transport is staged pending durable recovery;
+ * nothing is ever indexed or embedded synchronously inside this request.
  *
  * Not final: Magento generates an interceptor for every class implementing
  * ActionInterface (the platform caches after reindex), which requires a
