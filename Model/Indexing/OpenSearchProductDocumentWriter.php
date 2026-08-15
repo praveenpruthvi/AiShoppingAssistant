@@ -230,7 +230,7 @@ final class OpenSearchProductDocumentWriter implements ProductDocumentWriterInte
                     throw new AliasActivationFailedException();
                 }
 
-                if (!$this->metaProvesOwnership($target, $store, $targetMeta)) {
+                if (!$this->aliasTargetMetaProvesOwnership($target, $store, $targetMeta, $parsed['run_token'])) {
                     throw new AliasActivationFailedException();
                 }
 
@@ -285,7 +285,7 @@ final class OpenSearchProductDocumentWriter implements ProductDocumentWriterInte
                 continue;
             }
 
-            if (!$this->metaProvesOwnership($indexName, $store, $meta)) {
+            if (!$this->currentRunMetaProvesDeletionSafe($indexName, $store, $meta)) {
                 $failedIndexes[] = $indexName;
                 continue;
             }
@@ -401,14 +401,63 @@ final class OpenSearchProductDocumentWriter implements ProductDocumentWriterInte
      * } $store
      * @param array<string, mixed> $meta
      */
-    private function metaProvesOwnership(string $indexName, array $store, array $meta): bool
+    private function aliasTargetMetaProvesOwnership(
+        string $indexName,
+        array $store,
+        array $meta,
+        string $parsedRunToken
+    ): bool {
+        $runToken = $this->runTokenFromMeta($meta);
+
+        return $runToken !== null
+            && $runToken === $parsedRunToken
+            && $this->metaProvesAssistantOwnership($indexName, $store, $meta)
+            && $this->hasIntMetaValue($meta, 'schema_version')
+            && $this->hasIntMetaValue($meta, 'mapping_version');
+    }
+
+    /**
+     * @param array{
+     *   scope: StoreScopeInterface,
+     *   prefix: string,
+     *   indexName: string,
+     *   embedding: FrozenEmbeddingConfigInterface,
+     *   finished: bool
+     * } $store
+     * @param array<string, mixed> $meta
+     */
+    private function metaProvesAssistantOwnership(string $indexName, array $store, array $meta): bool
     {
         return ($meta['assistant_index'] ?? null) === true
             && ($meta['store_id'] ?? null) === $store['scope']->storeId()
             && ($meta['website_id'] ?? null) === $store['scope']->websiteId()
-            && ($meta['physical_index'] ?? null) === $indexName
-            && ($meta['schema_version'] ?? null) === $this->context->schemaVersion()
-            && ($meta['mapping_version'] ?? null) === ProductIndexMappingInterface::MAPPING_VERSION;
+            && ($meta['physical_index'] ?? null) === $indexName;
+    }
+
+    /**
+     * @param array{
+     *   scope: StoreScopeInterface,
+     *   prefix: string,
+     *   indexName: string,
+     *   embedding: FrozenEmbeddingConfigInterface,
+     *   finished: bool
+     * } $store
+     * @param array<string, mixed> $meta
+     */
+    private function currentRunMetaProvesDeletionSafe(string $indexName, array $store, array $meta): bool
+    {
+        $parsed = $this->namingService->parseAssistantIndex($store['prefix'], $indexName);
+        if ($parsed === null || $parsed['store_id'] !== $store['scope']->storeId()) {
+            return false;
+        }
+
+        $runToken = $this->runTokenFromMeta($meta);
+
+        return $this->metaProvesAssistantOwnership($indexName, $store, $meta)
+            && ($meta['run_id'] ?? null) === $this->context->runId()
+            && $runToken !== null
+            && $runToken === $parsed['run_token']
+            && ($meta['embedding_base_url_hash'] ?? null) === $store['embedding']->baseUrlHash();
     }
 
     /**
@@ -433,10 +482,43 @@ final class OpenSearchProductDocumentWriter implements ProductDocumentWriterInte
             return false;
         }
 
-        return $this->metaProvesOwnership($store['indexName'], $store, $meta)
+        $runToken = $this->runTokenFromMeta($meta);
+
+        return $this->metaProvesAssistantOwnership($store['indexName'], $store, $meta)
             && ($meta['run_id'] ?? null) === $this->context->runId()
+            && $runToken !== null
+            && $runToken === $parsed['run_token']
+            && ($meta['schema_version'] ?? null) === $this->context->schemaVersion()
+            && ($meta['mapping_version'] ?? null) === ProductIndexMappingInterface::MAPPING_VERSION
             && ($meta['embedding_dimensions'] ?? null) === $store['embedding']->dimensions()
-            && ($meta['embedding_fingerprint'] ?? null) === $store['embedding']->fingerprint();
+            && ($meta['embedding_fingerprint'] ?? null) === $store['embedding']->fingerprint()
+            && ($meta['embedding_base_url_hash'] ?? null) === $store['embedding']->baseUrlHash();
+    }
+
+    /**
+     * @param array<string, mixed> $meta
+     */
+    private function runTokenFromMeta(array $meta): ?string
+    {
+        $runId = $meta['run_id'] ?? null;
+        if (!is_string($runId)
+            || preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i', $runId) !== 1
+        ) {
+            return null;
+        }
+
+        $token = strtolower((string)preg_replace('/[^a-zA-Z0-9]/', '', $runId));
+        $token = substr($token, 0, IndexNamingServiceInterface::MAX_RUN_TOKEN_LENGTH);
+
+        return $token !== '' ? $token : null;
+    }
+
+    /**
+     * @param array<string, mixed> $meta
+     */
+    private function hasIntMetaValue(array $meta, string $key): bool
+    {
+        return isset($meta[$key]) && is_int($meta[$key]);
     }
 
     private function assertRunOpen(): void

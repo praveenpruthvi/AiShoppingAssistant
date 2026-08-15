@@ -290,12 +290,13 @@ final class FullProductReindexer implements FullProductReindexerInterface
         try {
             $this->documentWriter->abortRun();
         } catch (ProductIndexAbortFailedException $abortFailure) {
-            throw $this->withResult($abortFailure, $aborted);
+            $previous = $primary instanceof \Exception ? $primary : $abortFailure;
+            throw new ProductIndexAbortFailedException($previous, $aborted);
         } catch (\Throwable $throwable) {
             // Preserve the primary failure via the previous chain and report the
-            // failed cleanup as a sanitized secondary code.
+            // failed cleanup as the stable sanitized index-cleanup code.
             $previous = $primary instanceof \Exception ? $primary : null;
-            throw new ProductIndexAbortException($previous, $aborted);
+            throw new ProductIndexAbortFailedException($previous, $aborted);
         }
     }
 

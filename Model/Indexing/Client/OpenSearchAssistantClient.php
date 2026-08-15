@@ -229,18 +229,21 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
             throw new OpenSearchBackendUnavailableException();
         }
 
-        foreach ($response as $indexData) {
-            if (is_array($indexData)
-                && isset($indexData['mappings'])
-                && is_array($indexData['mappings'])
-                && isset($indexData['mappings']['_meta'])
-                && is_array($indexData['mappings']['_meta'])
-            ) {
-                return $indexData['mappings']['_meta'];
-            }
+        if (count($response) !== 1 || !array_key_exists($indexName, $response)) {
+            throw new OpenSearchBackendUnavailableException();
         }
 
-        return [];
+        $indexData = $response[$indexName];
+        if (!is_array($indexData)
+            || !isset($indexData['mappings'])
+            || !is_array($indexData['mappings'])
+            || !isset($indexData['mappings']['_meta'])
+            || !is_array($indexData['mappings']['_meta'])
+        ) {
+            throw new OpenSearchBackendUnavailableException();
+        }
+
+        return $indexData['mappings']['_meta'];
     }
 
     public function refresh(string $indexName): void

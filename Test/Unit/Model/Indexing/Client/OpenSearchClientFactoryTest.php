@@ -82,6 +82,12 @@ final class OpenSearchClientFactoryTest extends TestCase
         self::assertSame(['http://localhost:9200'], $this->capturedConfigs[0]['hosts']);
     }
 
+    public function testAcceptsNumericStringPort(): void
+    {
+        self::assertSame($this->client, $this->factory->create($this->options(['port' => '9300'])));
+        self::assertSame(['http://localhost:9300'], $this->capturedConfigs[0]['hosts']);
+    }
+
     public function testCredentialsAreAbsentFromHostUrl(): void
     {
         $this->factory->create($this->options([
@@ -99,6 +105,12 @@ final class OpenSearchClientFactoryTest extends TestCase
     {
         $this->expectException(OpenSearchConfigurationInvalidException::class);
         $this->factory->create($this->options(['hostname' => '']));
+    }
+
+    public function testRejectsHostnameEmptyAfterSchemeRemoval(): void
+    {
+        $this->expectException(OpenSearchConfigurationInvalidException::class);
+        $this->factory->create($this->options(['hostname' => 'http://']));
     }
 
     public function testRejectsEmbeddedCredentials(): void
@@ -137,11 +149,34 @@ final class OpenSearchClientFactoryTest extends TestCase
         $this->factory->create($this->options(['hostname' => 'search.internal:9200']));
     }
 
-    public function testRejectsInvalidPortRange(): void
+    public function testRejectsPortBelowRange(): void
     {
         $this->expectException(OpenSearchConfigurationInvalidException::class);
         $this->factory->create($this->options(['port' => 0]));
+    }
+
+    public function testRejectsPortAboveRange(): void
+    {
+        $this->expectException(OpenSearchConfigurationInvalidException::class);
         $this->factory->create($this->options(['port' => 65536]));
+    }
+
+    public function testRejectsNonNumericStringPort(): void
+    {
+        $this->expectException(OpenSearchConfigurationInvalidException::class);
+        $this->factory->create($this->options(['port' => '9200abc']));
+    }
+
+    public function testRejectsFloatPort(): void
+    {
+        $this->expectException(OpenSearchConfigurationInvalidException::class);
+        $this->factory->create($this->options(['port' => 9200.5]));
+    }
+
+    public function testRejectsBoolPort(): void
+    {
+        $this->expectException(OpenSearchConfigurationInvalidException::class);
+        $this->factory->create($this->options(['port' => true]));
     }
 
     public function testAuthEnabledRejectsMissingUsername(): void

@@ -21,7 +21,7 @@ use Aavirbhava\AiShoppingAssistant\Api\Store\StoreScopeProviderInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Catalog\Exception\CatalogException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\EmbeddingEnrichmentException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchBackendUnavailableException;
-use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexAbortException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexAbortFailedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexActivationException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexBackendUnavailableException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexBatchNormalizationException;
@@ -380,13 +380,15 @@ final class FullProductReindexerTest extends TestCase
         $this->stubSnapshots(1);
         $this->stubNormalizer(1);
         $this->writer->failOn('writeBatch', new \RuntimeException('disk full'));
-        $this->writer->failOn('abortRun', new \RuntimeException('cleanup failed'));
+        $this->writer->failOn('abortRun', new ProductIndexAbortFailedException());
 
         try {
             $this->buildReindexer()->rebuild();
-            self::fail('Expected ProductIndexAbortException');
-        } catch (ProductIndexAbortException $exception) {
-            self::assertSame('abort_failed', $exception->errorCode());
+            self::fail('Expected ProductIndexAbortFailedException');
+        } catch (ProductIndexAbortFailedException $exception) {
+            self::assertSame('index_abort_failed', $exception->errorCode());
+            self::assertNotNull($exception->rebuildResult());
+            self::assertTrue($exception->rebuildResult()->aborted());
             self::assertInstanceOf(ProductIndexBatchWriteException::class, $exception->getPrevious());
         }
     }

@@ -64,6 +64,10 @@ final class OpenSearchClientFactory implements OpenSearchClientFactoryInterface
             $hostname = substr($hostname, strlen($matches[0]));
         }
 
+        if ($hostname === '') {
+            throw new OpenSearchConfigurationInvalidException();
+        }
+
         if (str_contains($hostname, '#') || str_contains($hostname, '/') || str_contains($hostname, '?')) {
             throw new OpenSearchConfigurationInvalidException();
         }
@@ -83,7 +87,7 @@ final class OpenSearchClientFactory implements OpenSearchClientFactoryInterface
             $normalizedHost = $host;
         }
 
-        $port = isset($options['port']) ? (int)$options['port'] : 9200;
+        $port = $this->port($options);
         if ($port < 1 || $port > 65535) {
             throw new OpenSearchConfigurationInvalidException();
         }
@@ -115,5 +119,22 @@ final class OpenSearchClientFactory implements OpenSearchClientFactoryInterface
         }
 
         return true;
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     */
+    private function port(array $options): int
+    {
+        $rawPort = $options['port'] ?? 9200;
+        if (is_int($rawPort)) {
+            return $rawPort;
+        }
+
+        if (!is_string($rawPort) || preg_match('/^[1-9][0-9]*$/', $rawPort) !== 1) {
+            throw new OpenSearchConfigurationInvalidException();
+        }
+
+        return (int)$rawPort;
     }
 }

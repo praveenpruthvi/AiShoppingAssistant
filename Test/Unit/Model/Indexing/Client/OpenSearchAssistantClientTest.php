@@ -369,13 +369,45 @@ final class OpenSearchAssistantClientTest extends TestCase
         self::assertSame($meta, $this->client->indexMeta(self::INDEX));
     }
 
-    public function testIndexMetaReturnsEmptyWhenAbsent(): void
+    public function testIndexMetaRejectsMissingMeta(): void
     {
         $this->indices->method('getMapping')->willReturn([
             self::INDEX => ['mappings' => ['dynamic' => false]],
         ]);
 
-        self::assertSame([], $this->client->indexMeta(self::INDEX));
+        $this->expectException(OpenSearchBackendUnavailableException::class);
+        $this->client->indexMeta(self::INDEX);
+    }
+
+    public function testIndexMetaRejectsUnexpectedIndexKey(): void
+    {
+        $this->indices->method('getMapping')->willReturn([
+            'prefix_store_2_run_other' => ['mappings' => ['_meta' => ['assistant_index' => true]]],
+        ]);
+
+        $this->expectException(OpenSearchBackendUnavailableException::class);
+        $this->client->indexMeta(self::INDEX);
+    }
+
+    public function testIndexMetaRejectsMultiIndexResponse(): void
+    {
+        $this->indices->method('getMapping')->willReturn([
+            self::INDEX => ['mappings' => ['_meta' => ['assistant_index' => true]]],
+            'prefix_store_2_run_other' => ['mappings' => ['_meta' => ['assistant_index' => true]]],
+        ]);
+
+        $this->expectException(OpenSearchBackendUnavailableException::class);
+        $this->client->indexMeta(self::INDEX);
+    }
+
+    public function testIndexMetaRejectsMalformedMappings(): void
+    {
+        $this->indices->method('getMapping')->willReturn([
+            self::INDEX => ['mappings' => 'invalid'],
+        ]);
+
+        $this->expectException(OpenSearchBackendUnavailableException::class);
+        $this->client->indexMeta(self::INDEX);
     }
 
     public function testIndexMetaFailureIsSanitized(): void

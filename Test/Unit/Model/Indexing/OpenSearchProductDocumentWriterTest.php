@@ -374,14 +374,23 @@ final class OpenSearchProductDocumentWriterTest extends TestCase
         $writer->activateRun();
     }
 
-    public function testActivateRunRemovesOnlyMetaProvenAssistantTargets(): void
+    public function testActivateRunReplacesOwnedOlderSchemaMappingAliasTarget(): void
     {
         $writer = $this->buildWriter();
         $index = $this->physicalIndexName();
-        $staleAssistant = self::PREFIX . '_store_2_run_staleoldtoken';
+        $oldContext = new RebuildRunContext(
+            '11111111-2222-4333-8444-555555555555',
+            1,
+            [$this->scope],
+            1.0
+        );
+        $staleAssistant = (new IndexNamingService())->physicalIndex(self::PREFIX, $this->scope, $oldContext);
+        $oldMeta = $this->metaFor($this->scope, $oldContext, $staleAssistant);
+        $oldMeta['schema_version'] = 0;
+        $oldMeta['mapping_version'] = 0;
 
         $this->client->aliases[$this->readAliasName()] = [$staleAssistant];
-        $this->client->metaByIndex[$staleAssistant] = $this->metaFor($this->scope, $this->context, $staleAssistant);
+        $this->client->metaByIndex[$staleAssistant] = $oldMeta;
 
         $writer->beginRun($this->context);
         $writer->beginStore($this->scope);
@@ -473,6 +482,20 @@ final class OpenSearchProductDocumentWriterTest extends TestCase
 
         $writer->beginRun($this->context);
         unset($this->client->metaByIndex[$index]['embedding_fingerprint']);
+        $writer->beginStore($this->scope);
+        $writer->finishStore();
+
+        $this->expectException(AliasActivationFailedException::class);
+        $writer->activateRun();
+    }
+
+    public function testActivateRunRejectsNewIndexWithMismatchedEmbeddingBaseUrlHash(): void
+    {
+        $writer = $this->buildWriter();
+        $index = $this->physicalIndexName();
+
+        $writer->beginRun($this->context);
+        $this->client->metaByIndex[$index]['embedding_base_url_hash'] = str_repeat('d', 64);
         $writer->beginStore($this->scope);
         $writer->finishStore();
 
@@ -649,6 +672,44 @@ final class OpenSearchProductDocumentWriterTest extends TestCase
         try {
             $writer->abortRun();
             self::fail('abortRun should have reported the unproven index');
+        } catch (ProductIndexAbortFailedException $exception) {
+            self::assertSame('index_abort_failed', $exception->errorCode());
+        }
+
+        self::assertTrue($this->client->indexExists($index));
+        self::assertNotContains($index, $this->client->deleted);
+    }
+
+    public function testAbortNeverDeletesCurrentRunIndexWithMismatchedRunId(): void
+    {
+        $writer = $this->buildWriter();
+        $index = $this->physicalIndexName();
+
+        $writer->beginRun($this->context);
+        $this->client->metaByIndex[$index]['run_id'] = '11111111-2222-4333-8444-555555555555';
+
+        try {
+            $writer->abortRun();
+            self::fail('abortRun should have reported the mismatched run metadata');
+        } catch (ProductIndexAbortFailedException $exception) {
+            self::assertSame('index_abort_failed', $exception->errorCode());
+        }
+
+        self::assertTrue($this->client->indexExists($index));
+        self::assertNotContains($index, $this->client->deleted);
+    }
+
+    public function testAbortNeverDeletesCurrentRunIndexWithMismatchedEmbeddingBaseUrlHash(): void
+    {
+        $writer = $this->buildWriter();
+        $index = $this->physicalIndexName();
+
+        $writer->beginRun($this->context);
+        $this->client->metaByIndex[$index]['embedding_base_url_hash'] = str_repeat('d', 64);
+
+        try {
+            $writer->abortRun();
+            self::fail('abortRun should have reported the mismatched embedding metadata');
         } catch (ProductIndexAbortFailedException $exception) {
             self::assertSame('index_abort_failed', $exception->errorCode());
         }

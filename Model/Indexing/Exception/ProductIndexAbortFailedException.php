@@ -10,9 +10,10 @@ use Magento\Framework\Phrase;
 /**
  * Cleaning up an aborted run's physical indexes failed.
  *
- * The writer contract keeps cleanup failures from propagating to callers; this
- * class exists so cleanup errors can be surfaced through the taxonomy if a
- * future caller decides to log them.
+ * The writer reports this when it cannot prove ownership or cannot delete an
+ * unaliased current-run index during abort. Full rebuild orchestration surfaces
+ * the same stable code while preserving the primary rebuild failure in the
+ * exception chain.
  */
 final class ProductIndexAbortFailedException extends ProductIndexingException
 {
