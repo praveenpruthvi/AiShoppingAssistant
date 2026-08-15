@@ -44,20 +44,27 @@ final class IncrementalProductIndexConsumer
         }
 
         $primaryFailure = null;
+        $releaseFailed = false;
 
         try {
             $this->processLocked($id);
         } catch (\Throwable $throwable) {
             $primaryFailure = $throwable;
-            throw $throwable;
         } finally {
             try {
-                $this->lockManager->unlock($lockName);
+                $released = $this->lockManager->unlock($lockName);
+                $releaseFailed = !$released;
             } catch (\Throwable) {
-                if ($primaryFailure === null) {
-                    throw new IncrementalWorkerLockException();
-                }
+                $releaseFailed = true;
             }
+        }
+
+        if ($primaryFailure !== null) {
+            throw $primaryFailure;
+        }
+
+        if ($releaseFailed) {
+            throw new IncrementalWorkerLockException();
         }
     }
 

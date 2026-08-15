@@ -70,6 +70,7 @@ final class IncrementalProductIndexConsumerTest extends TestCase
     public function testProcessClaimsIndexesAndCompletesExactlyOnce(): void
     {
         $this->allowProductLock();
+        $this->allowProductUnlock();
         $this->ledger->expects(self::once())
             ->method('claimDueWork')
             ->with(42)
@@ -116,6 +117,7 @@ final class IncrementalProductIndexConsumerTest extends TestCase
     public function testDuplicateOrStaleMessageIsNoopWhenNoClaimExists(): void
     {
         $this->allowProductLock();
+        $this->allowProductUnlock();
         $this->ledger->expects(self::once())
             ->method('claimDueWork')
             ->with(42)
@@ -194,6 +196,7 @@ final class IncrementalProductIndexConsumerTest extends TestCase
     public function testSecondExecutionCannotIndexWhenProductLockIsHeld(): void
     {
         $this->lockManager->method('lock')->willReturnOnConsecutiveCalls(true, false);
+        $this->lockManager->method('unlock')->willReturn(true);
         $this->ledger->expects(self::once())->method('claimDueWork')->willReturn($this->claim);
         $this->indexer->expects(self::once())->method('process')->with(42);
         $this->ledger->method('complete')->willReturn(true);
@@ -205,6 +208,7 @@ final class IncrementalProductIndexConsumerTest extends TestCase
     public function testExpiredLeaseWakeupDoesNotIndexUntilOriginalWorkerReleasesProductLock(): void
     {
         $this->lockManager->method('lock')->willReturnOnConsecutiveCalls(false, true);
+        $this->lockManager->method('unlock')->willReturn(true);
         $this->ledger->expects(self::once())->method('claimDueWork')->with(42)->willReturn($this->claim);
         $this->indexer->expects(self::once())->method('process')->with(42);
         $this->ledger->expects(self::once())->method('complete')->with($this->claim)->willReturn(true);
@@ -230,7 +234,7 @@ final class IncrementalProductIndexConsumerTest extends TestCase
             ->method('recordRetry')
             ->with($this->claim, 'opensearch_backend_unavailable', 60)
             ->willReturn(true);
-        $this->lockManager->expects(self::once())->method('unlock');
+        $this->lockManager->expects(self::once())->method('unlock')->willReturn(true);
 
         $this->consumer()->process('42');
     }
@@ -248,7 +252,7 @@ final class IncrementalProductIndexConsumerTest extends TestCase
             ->method('recordTerminal')
             ->with($this->claim, 'unknown')
             ->willReturn(true);
-        $this->lockManager->expects(self::once())->method('unlock');
+        $this->lockManager->expects(self::once())->method('unlock')->willReturn(true);
 
         $this->consumer()->process('42');
     }
@@ -261,7 +265,7 @@ final class IncrementalProductIndexConsumerTest extends TestCase
         $this->policy->method('classify')
             ->willReturn(new IncrementalFailureDisposition(false, 'unknown', 0));
         $this->ledger->method('recordTerminal')->willReturn(false);
-        $this->lockManager->expects(self::once())->method('unlock');
+        $this->lockManager->expects(self::once())->method('unlock')->willReturn(true);
 
         $this->expectException(IncrementalLedgerPersistenceException::class);
         $this->consumer()->process('42');
@@ -276,7 +280,7 @@ final class IncrementalProductIndexConsumerTest extends TestCase
         $this->policy->expects(self::never())->method('classify');
         $this->ledger->expects(self::never())->method('recordTerminal');
         $this->ledger->expects(self::never())->method('recordRetry');
-        $this->lockManager->expects(self::once())->method('unlock');
+        $this->lockManager->expects(self::once())->method('unlock')->willReturn(true);
 
         $this->expectException(IncrementalLedgerPersistenceException::class);
         $this->consumer()->process('42');
@@ -291,7 +295,7 @@ final class IncrementalProductIndexConsumerTest extends TestCase
         $this->policy->expects(self::never())->method('classify');
         $this->ledger->expects(self::never())->method('recordTerminal');
         $this->ledger->expects(self::never())->method('recordRetry');
-        $this->lockManager->expects(self::once())->method('unlock');
+        $this->lockManager->expects(self::once())->method('unlock')->willReturn(true);
 
         $this->expectException(IncrementalLedgerPersistenceException::class);
         $this->consumer()->process('42');
@@ -321,6 +325,30 @@ final class IncrementalProductIndexConsumerTest extends TestCase
         $this->consumer()->process('42');
     }
 
+    public function testUnlockFalseWithoutPrimaryFailureIsSanitized(): void
+    {
+        $this->allowProductLock();
+        $this->ledger->method('claimDueWork')->willReturn($this->claim);
+        $this->indexer->method('process')->with(42);
+        $this->ledger->method('complete')->willReturn(true);
+        $this->lockManager->method('unlock')->willReturn(false);
+
+        $this->expectException(IncrementalWorkerLockException::class);
+        $this->consumer()->process('42');
+    }
+
+    public function testUnlockFalseDoesNotReplacePrimaryLedgerFailure(): void
+    {
+        $this->allowProductLock();
+        $this->ledger->method('claimDueWork')->willReturn($this->claim);
+        $this->indexer->method('process')->with(42);
+        $this->ledger->method('complete')->willThrowException(new IncrementalLedgerPersistenceException());
+        $this->lockManager->method('unlock')->willReturn(false);
+
+        $this->expectException(IncrementalLedgerPersistenceException::class);
+        $this->consumer()->process('42');
+    }
+
     public function testConstructionDoesNotIndex(): void
     {
         $this->indexer->expects(self::never())->method('process');
@@ -331,5 +359,10 @@ final class IncrementalProductIndexConsumerTest extends TestCase
     private function allowProductLock(): void
     {
         $this->lockManager->method('lock')->willReturn(true);
+    }
+
+    private function allowProductUnlock(): void
+    {
+        $this->lockManager->method('unlock')->willReturn(true);
     }
 }
