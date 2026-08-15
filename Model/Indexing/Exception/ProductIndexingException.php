@@ -52,6 +52,9 @@ class ProductIndexingException extends LocalizedException
     /** Publishing an incremental product-index queue message failed. */
     public const ERROR_INCREMENTAL_QUEUE_PUBLISH_FAILED = 'incremental_queue_publish_failed';
 
+    /** Durable incremental work state could not be recorded safely. */
+    public const ERROR_INCREMENTAL_LEDGER_PERSISTENCE = 'incremental_ledger_persistence_failed';
+
     /** The live alias for incremental indexing is missing or incompatible. */
     public const ERROR_INCREMENTAL_TARGET_INVALID = 'incremental_target_invalid';
 

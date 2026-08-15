@@ -4,27 +4,48 @@ declare(strict_types=1);
 
 namespace Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue;
 
+use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalWorkLedgerInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\ProductIncrementalIndexerInterface;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IncrementalLedgerPersistenceException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\InvalidProductIndexEntityIdsException;
 
 /**
  * Magento queue consumer for one incremental product-index message.
  *
- * Ordinary indexing failures intentionally propagate from this handler.
- * Magento's default consumer rejects ordinary handler exceptions without
- * requeueing, so propagation prevents acknowledgement but is not sufficient
- * durable retry semantics on its own.
+ * The queue message is only a wake-up. Durable completion, retry, or terminal
+ * state is recorded in the ledger before returning from handler failures.
  */
 final class IncrementalProductIndexConsumer
 {
     public function __construct(
-        private readonly ProductIncrementalIndexerInterface $indexer
+        private readonly ProductIncrementalIndexerInterface $indexer,
+        private readonly IncrementalWorkLedgerInterface $ledger,
+        private readonly IncrementalFailureDispositionPolicyInterface $failurePolicy
     ) {
     }
 
     public function process(mixed $productId): void
     {
-        $this->indexer->process($this->positiveProductId($productId));
+        $id = $this->positiveProductId($productId);
+        $claim = $this->ledger->claimDueWork($id);
+
+        if ($claim === null) {
+            return;
+        }
+
+        try {
+            $this->indexer->process($id);
+            $this->ledger->complete($claim);
+        } catch (\Throwable $throwable) {
+            $disposition = $this->failurePolicy->classify($throwable, 0);
+            $recorded = $disposition->retryable()
+                ? $this->ledger->recordRetry($claim, $disposition->errorCode(), $disposition->delaySeconds())
+                : $this->ledger->recordTerminal($claim, $disposition->errorCode());
+
+            if (!$recorded) {
+                throw new IncrementalLedgerPersistenceException();
+            }
+        }
     }
 
     private function positiveProductId(mixed $productId): int

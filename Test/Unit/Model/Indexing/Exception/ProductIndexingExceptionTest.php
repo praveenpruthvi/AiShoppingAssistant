@@ -10,6 +10,7 @@ use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\BulkIndexFailedExcep
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\BulkResponseInvalidException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\EmbeddingEnrichmentException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IncrementalIndexTargetInvalidException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IncrementalLedgerPersistenceException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IncrementalQueuePublishFailedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexCompatibilityMismatchException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexDocumentStateInvalidException;
@@ -60,6 +61,10 @@ final class ProductIndexingExceptionTest extends TestCase
             'incremental queue publish' => [
                 IncrementalQueuePublishFailedException::class,
                 'incremental_queue_publish_failed',
+            ],
+            'incremental ledger persistence' => [
+                IncrementalLedgerPersistenceException::class,
+                'incremental_ledger_persistence_failed',
             ],
             'incremental target invalid' => [
                 IncrementalIndexTargetInvalidException::class,
