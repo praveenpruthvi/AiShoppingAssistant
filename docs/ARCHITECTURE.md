@@ -271,6 +271,21 @@ After either activation or abort the writer is reusable for a fresh run. The emb
 
 `UnavailableProductDocumentWriter` remains as the fail-closed fallback: every lifecycle call throws a sanitized `backend_unavailable` exception and `abortRun()` is a safe idempotent no-op. `IncrementalProductIndexSchedulerInterface` receives row/list updates; the default validates positive ids (never silently discarding any) and refuses explicitly with `incremental_scheduler_unavailable` until the queue/consumer pipeline exists.
 
+### Incremental indexing core
+
+`ProductIncrementalIndexerInterface::process(int $productId)` is the transport-independent Milestone 2C2A core for one explicitly validated positive product entity id. It has no HTTP, session, customer, current-store, ObjectManager, observer, cron, or queue dependency; Magento queue publisher/consumer wiring is deferred to Milestone 2C2B. Each call resolves active frontend store scopes, reads store-scoped general/indexing configuration, skips disabled stores without touching OpenSearch or embeddings, validates the exact store read alias, reloads the current Magento snapshot, and reconciles one deterministic store document id (`<store_id>_<entity_id>`).
+
+Incremental writes never use wildcards. For each enabled store the core resolves the canonical read alias (`<prefix>_store_<store_id>_current`), requires exactly one physical target, parses the target as an assistant run index, reads exact `_meta`, and proves assistant marker, store id, website id, physical index, valid run id/token, current `ProductDocumentSchema::VERSION`, current `ProductIndexMappingInterface::MAPPING_VERSION`, and frozen embedding dimensions/fingerprint/base-URL hash before reading or writing a document. Missing, mixed, foreign, malformed, or incompatible aliases fail closed with `incremental_target_invalid` and are retried or repaired by a full rebuild.
+
+Per-store product decisions are idempotent:
+
+- Missing or ineligible product: delete the store-scoped document id through the validated alias. Delete-not-found is success.
+- Eligible product with existing compatible state and unchanged `completeDocumentHash`: no OpenSearch write and no embedding call.
+- Eligible product whose `completeDocumentHash` changed but whose `embeddingContentHash`, embedding fingerprint, and validated vector are unchanged: reuse the existing vector and write the updated document without an embedding call.
+- Eligible product with changed embedding content, absent state, incompatible fingerprint, or unproven/malformed/non-finite/wrong-dimension vector: generate a fresh document embedding through the frozen store-scoped embedding boundary and write the complete document.
+
+`embeddingHash` remains integrity/diagnostics only and is never used as a skip key. Duplicate delivery is harmless because every attempt reloads current Magento data, current alias metadata, and current indexed state; provider or OpenSearch failures are not recorded as success, and work is only complete after the delete/write succeeds.
+
 ### Failure semantics
 
 On any failure after the run began: no new batches are started, `abortRun()` is called exactly once, `activateRun()` is never called, and a sanitized `ProductIndexingException` (stable `errorCode()`: `backend_unavailable`, `invalid_entity_ids`, `run_init_failed`, `store_prep_failed`, `batch_normalization_failed`, `batch_write_failed`, `activation_failed`, `abort_failed`, `index_abort_failed`, `incremental_scheduler_unavailable`, `invalid_metrics`, `invalid_result`) is thrown carrying the aborted-run metrics. If abort cleanup also fails, `index_abort_failed` is surfaced with the primary rebuild failure preserved in the exception chain. Messages are generic and customer-safe.
@@ -292,7 +307,7 @@ Alias:    <prefix>_store_<store_id>_current
 Physical: <prefix>_store_<store_id>_run_<safe_run_token>
 ```
 
-The prefix is store-scoped configuration (`ai_shopping_assistant/indexing/index_prefix`, default `aavirbhava_ai_product_rag`) validated as `^[a-z][a-z0-9_-]{0,63}$`. `IndexNamingService` builds both names; the safe run token is a lowercase alphanumeric, max 32 characters derived from the UUID run id. Rebuilds write a new physical index and atomically move the alias to it after successful validation. Activation first proves the new index `_meta` (assistant marker, store/website ids, run id, physical index, schema/mapping versions, embedding dimensions, and embedding fingerprint), then proves every existing alias target through both strict name parsing and matching `_meta`; mixed aliases containing foreign or unproven targets fail closed before any alias update.
+The prefix is store-scoped configuration (`ai_shopping_assistant/indexing/index_prefix`, default `aavirbhava_ai_product_rag`) validated as `^[a-z][a-z0-9_-]{0,63}$`. `IndexNamingService` builds both names; the safe run token is a lowercase alphanumeric, max 32 characters derived from the UUID run id. Rebuilds write a new physical index and atomically move the alias to it after successful validation. Activation first proves the new index `_meta` for compatibility (assistant marker, store/website ids, current run id, physical index, schema/mapping versions, embedding dimensions, embedding fingerprint, and base-URL hash), then separately proves every existing alias target is owned by this assistant (strict run-shaped name, assistant marker, matching store/website ids, physical index echo, valid run id, and run token matching the parsed name). Existing owned targets may carry older schema/mapping versions so legitimate upgrades can replace them; mixed aliases containing foreign or unproven targets fail closed before any alias update.
 
 The `ProductIndexMapping` (versioned, `dynamic: false`) declares identifier, store scope, visibility, normalized attribute, category, searchable-text, content-hash, retrieval-time filter fields, and a `knn_vector` field with dimension, `cosinesimil` space type, and a Lucene HNSW method block (`ef_construction`, `m`). Index settings enable `index.knn` and use a bounded, non-disabled `refresh_interval`; the writer still refreshes explicitly before alias activation. `_meta` records non-secret provenance: assistant index marker, schema version, mapping version, store/website id, run id, physical index, embedding fingerprint, dimensions, and base-URL hash. Alias/physical names and mapping fields must never expose secrets.
 
@@ -304,13 +319,13 @@ The client seam is `AssistantSearchClientInterface` (`OpenSearchAssistantClient`
 
 - Register a custom indexer named `ai_product_rag` (registered in Milestone 2B2).
 - Full reindex processes products in configurable batches through the OpenSearch writer (Milestone 2C1).
-- Product/category changes enqueue affected entity IDs.
-- Consumers normalize, hash, embed, and upsert documents.
+- Product/category changes enqueue affected entity IDs (queue wiring deferred to Milestone 2C2B).
+- Consumers will invoke the Milestone 2C2A incremental core to normalize, hash, embed only when needed, and upsert/delete documents. The core resolves the store read alias to exactly one compatible physical index, reads state from that physical index, and writes/deletes only that physical index. Before no-op, write, or delete completion it rechecks the frozen embedding config and confirms the alias still points to the same compatible physical target; any change fails closed for retry/reconciliation.
 - The vector content hash is an integrity and diagnostics value only. The Milestone 2C2 consumer skips embedding generation based on the normalized `embeddingContentHash` combined with the frozen embedding fingerprint and schema compatibility — not on the vector hash alone.
 - Disabled, deleted, invisible, or unassigned products are removed for the relevant store scope.
 - A scheduled reconciliation detects missed events.
 
-Queue consumers, hybrid retrieval, and reranking are not yet implemented; until then the incremental scheduler refuses explicitly rather than failing open, and the embedding fingerprint/dimension invalidation path is in place (a model or endpoint change that alters the fingerprint or dimensions invalidates the assistant index).
+Queue consumers, hybrid retrieval, and reranking are not yet implemented; until then the incremental scheduler refuses explicitly rather than failing open, and the embedding fingerprint/dimension invalidation path is in place (a model or endpoint change that alters the fingerprint or dimensions invalidates the assistant index). Milestone 2C2A narrows local alias races for one incremental execution, but full-rebuild cutover coordination and replay of missed/contended product events remain mandatory Milestone 2C2B work.
 
 ## Failure policy
 

@@ -13,12 +13,14 @@ use Aavirbhava\AiShoppingAssistant\Model\Indexing\Document\StoragePayload;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\AliasActivationFailedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\BulkIndexFailedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\BulkResponseInvalidException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexDocumentStateInvalidException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchBackendUnavailableException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchCapabilityUnsupportedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchConfigurationInvalidException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexCreateFailedException;
 use Magento\Elasticsearch\Model\Config;
 use OpenSearch\Client;
+use OpenSearch\Common\Exceptions\Missing404Exception;
 use OpenSearch\Namespaces\IndicesNamespace;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
@@ -244,7 +246,10 @@ final class OpenSearchAssistantClientTest extends TestCase
 
     public function testBulkRejectsItemWithoutIndexKey(): void
     {
-        $this->opensearch->method('bulk')->willReturn(['errors' => false, 'items' => [['delete' => ['status' => 200]]]]);
+        $this->opensearch->method('bulk')->willReturn([
+            'errors' => false,
+            'items' => [['delete' => ['status' => 200]]],
+        ]);
 
         $this->expectException(BulkResponseInvalidException::class);
         $this->client->writeDocuments(self::INDEX, [$this->payload()]);
@@ -420,6 +425,205 @@ final class OpenSearchAssistantClientTest extends TestCase
         } catch (OpenSearchBackendUnavailableException $exception) {
             self::assertSanitized($exception);
         }
+    }
+
+    public function testDocumentStateReturnsSanitizedState(): void
+    {
+        $source = [
+            'document_id' => '2_42',
+            'complete_document_hash' => str_repeat('a', 64),
+            'embedding_content_hash' => str_repeat('b', 64),
+            'embedding_fingerprint' => str_repeat('c', 64),
+            'embedding' => [0.1, 0.2, 0.3, 0.4],
+        ];
+        $this->opensearch->method('get')->willReturn(['found' => true, '_id' => '2_42', '_source' => $source]);
+
+        $state = $this->client->documentState(self::INDEX, '2_42');
+
+        self::assertNotNull($state);
+        self::assertSame('2_42', $state->documentId());
+        self::assertSame(str_repeat('a', 64), $state->completeDocumentHash());
+    }
+
+    public function testDocumentStateRequestsOnlyStateFields(): void
+    {
+        $captured = null;
+        $this->opensearch->method('get')->willReturnCallback(
+            function (array $params) use (&$captured): array {
+                $captured = $params;
+
+                return ['found' => false];
+            }
+        );
+
+        $this->client->documentState(self::INDEX, '2_42');
+
+        self::assertSame(self::INDEX, $captured['index'] ?? null);
+        self::assertSame('2_42', $captured['id'] ?? null);
+        self::assertSame(
+            ['document_id', 'complete_document_hash', 'embedding_content_hash', 'embedding_fingerprint', 'embedding'],
+            $captured['_source_includes'] ?? null
+        );
+    }
+
+    public function testDocumentStateReturnsNullWhenMissing(): void
+    {
+        $this->opensearch->method('get')->willReturn(['found' => false]);
+
+        self::assertNull($this->client->documentState(self::INDEX, '2_42'));
+    }
+
+    public function testDocumentStateRejectsMissingFound(): void
+    {
+        $this->opensearch->method('get')->willReturn(['_id' => '2_42', '_source' => []]);
+
+        $this->expectException(IndexDocumentStateInvalidException::class);
+        $this->client->documentState(self::INDEX, '2_42');
+    }
+
+    public function testDocumentStateRejectsNonBooleanFound(): void
+    {
+        $this->opensearch->method('get')->willReturn(['found' => 'false']);
+
+        $this->expectException(IndexDocumentStateInvalidException::class);
+        $this->client->documentState(self::INDEX, '2_42');
+    }
+
+    public function testDocumentStateRejectsFoundTrueWithoutId(): void
+    {
+        $this->opensearch->method('get')->willReturn(['found' => true, '_source' => []]);
+
+        $this->expectException(IndexDocumentStateInvalidException::class);
+        $this->client->documentState(self::INDEX, '2_42');
+    }
+
+    public function testDocumentStateRejectsMismatchedId(): void
+    {
+        $this->opensearch->method('get')->willReturn(['found' => true, '_id' => '2_99', '_source' => []]);
+
+        $this->expectException(IndexDocumentStateInvalidException::class);
+        $this->client->documentState(self::INDEX, '2_42');
+    }
+
+    public function testDocumentStateRejectsMalformedFalseFoundResponse(): void
+    {
+        $this->opensearch->method('get')->willReturn(['found' => false, '_source' => []]);
+
+        $this->expectException(IndexDocumentStateInvalidException::class);
+        $this->client->documentState(self::INDEX, '2_42');
+    }
+
+    public function testDocumentStateRejectsFalseFoundWithMalformedId(): void
+    {
+        $this->opensearch->method('get')->willReturn(['found' => false, '_id' => 42]);
+
+        $this->expectException(IndexDocumentStateInvalidException::class);
+        $this->client->documentState(self::INDEX, '2_42');
+    }
+
+    public function testDocumentStateRejectsMalformedResponse(): void
+    {
+        $this->opensearch->method('get')->willReturn(['found' => true, '_id' => '2_42', '_source' => 'invalid']);
+
+        $this->expectException(IndexDocumentStateInvalidException::class);
+        $this->client->documentState(self::INDEX, '2_42');
+    }
+
+    public function testDocumentStateHandlesConcreteMissing404AsNotFound(): void
+    {
+        $this->opensearch->method('get')->willThrowException(new Missing404Exception('missing', 404));
+
+        self::assertNull($this->client->documentState(self::INDEX, '2_42'));
+    }
+
+    public function testDocumentStateFailureIsSanitized(): void
+    {
+        $this->opensearch->method('get')->willThrowException(
+            new \RuntimeException(self::SECRET_HOST . ' ' . self::SECRET_USER . ' ' . self::SECRET_PASS)
+        );
+
+        try {
+            $this->client->documentState(self::INDEX, '2_42');
+            self::fail('Expected OpenSearchBackendUnavailableException');
+        } catch (OpenSearchBackendUnavailableException $exception) {
+            self::assertSanitized($exception);
+        }
+    }
+
+    public function testDocumentStateGenericRuntime404IsBackendUnavailable(): void
+    {
+        $this->opensearch->method('get')->willThrowException(
+            new \RuntimeException(self::SECRET_HOST . ' sensitive 404', 404)
+        );
+
+        try {
+            $this->client->documentState(self::INDEX, '2_42');
+            self::fail('Expected OpenSearchBackendUnavailableException');
+        } catch (OpenSearchBackendUnavailableException $exception) {
+            self::assertSanitized($exception);
+        }
+    }
+
+    public function testDeleteDocumentAcceptsNotFoundResult(): void
+    {
+        $this->opensearch->method('delete')->willReturn(['_id' => '2_42', 'result' => 'not_found']);
+
+        $this->client->deleteDocument(self::INDEX, '2_42');
+        self::assertTrue(true);
+    }
+
+    public function testDeleteDocumentHandlesConcreteMissing404AsSuccess(): void
+    {
+        $this->opensearch->method('delete')->willThrowException(new Missing404Exception('missing', 404));
+
+        $this->client->deleteDocument(self::INDEX, '2_42');
+        self::assertTrue(true);
+    }
+
+    public function testDeleteDocumentGenericRuntime404IsBackendUnavailable(): void
+    {
+        $this->opensearch->method('delete')->willThrowException(
+            new \RuntimeException(self::SECRET_HOST . ' sensitive 404', 404)
+        );
+
+        try {
+            $this->client->deleteDocument(self::INDEX, '2_42');
+            self::fail('Expected OpenSearchBackendUnavailableException');
+        } catch (OpenSearchBackendUnavailableException $exception) {
+            self::assertSanitized($exception);
+        }
+    }
+
+    public function testDeleteDocumentRejectsMissingId(): void
+    {
+        $this->opensearch->method('delete')->willReturn(['result' => 'deleted']);
+
+        $this->expectException(IndexDocumentStateInvalidException::class);
+        $this->client->deleteDocument(self::INDEX, '2_42');
+    }
+
+    public function testDeleteDocumentRejectsMismatchedId(): void
+    {
+        $this->opensearch->method('delete')->willReturn(['_id' => '2_99', 'result' => 'deleted']);
+
+        $this->expectException(IndexDocumentStateInvalidException::class);
+        $this->client->deleteDocument(self::INDEX, '2_42');
+    }
+
+    public function testDeleteDocumentRejectsMalformedResponse(): void
+    {
+        $this->opensearch->method('delete')->willReturn(['result' => 'noop']);
+
+        $this->expectException(IndexDocumentStateInvalidException::class);
+        $this->client->deleteDocument(self::INDEX, '2_42');
+    }
+
+    public function testWriteDocumentUsesValidatedBulkBoundary(): void
+    {
+        $this->opensearch->method('bulk')->willReturn($this->bulkResponse(['2_42']));
+
+        $this->client->writeDocument(self::INDEX, $this->payload('2_42'));
+        self::assertTrue(true);
     }
 
     public function testPingReturnsFalseOnFailure(): void

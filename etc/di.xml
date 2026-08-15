@@ -43,6 +43,8 @@
                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\OpenSearchProductDocumentWriter"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalProductIndexSchedulerInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\UnavailableIncrementalProductIndexScheduler"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\ProductIncrementalIndexerInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\IncrementalProductIndexer"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\RebuildRunContextFactoryInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\RebuildRunContextFactory"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\AssistantSearchClientInterface"

@@ -14,8 +14,8 @@ use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexingExcep
  * sanitized ProductIndexingException subclasses; cluster hosts, credentials,
  * request and response bodies never appear in messages or logs.
  *
- * The writer depends on this interface so its lifecycle can be exercised
- * without a live cluster.
+ * The writer and incremental indexer depend on this interface so their
+ * lifecycles can be exercised without a live cluster.
  */
 interface AssistantSearchClientInterface
 {
@@ -68,11 +68,36 @@ interface AssistantSearchClientInterface
     public function writeDocuments(string $indexName, array $documents): void;
 
     /**
+     * Writes one validated storage payload to the given exact index or alias.
+     *
+     * @throws ProductIndexingException when the write cannot be verified
+     */
+    public function writeDocument(string $indexName, StoragePayloadInterface $document): void;
+
+    /**
+     * Returns sanitized existing document state for an exact id, or null when
+     * the document is absent.
+     *
+     * @throws ProductIndexingException when the lookup response is malformed or
+     *     the backend fails
+     */
+    public function documentState(string $indexName, string $documentId): ?IndexedDocumentStateInterface;
+
+    /**
+     * Idempotently deletes one document by exact id from the given exact index
+     * or alias. Missing documents are a successful no-op.
+     *
+     * @throws ProductIndexingException when the delete response is malformed or
+     *     the backend fails
+     */
+    public function deleteDocument(string $indexName, string $documentId): void;
+
+    /**
      * Returns the _meta section of a physical index mapping.
      *
      * Used to prove that an index was created by the assistant before it is
-     * dropped during cleanup. Implementations return an empty array when the
-     * index has no _meta or does not exist.
+     * dropped during cleanup or used for incremental writes. Implementations
+     * fail closed when the exact index _meta cannot be verified.
      *
      * @return array<string, mixed>
      *

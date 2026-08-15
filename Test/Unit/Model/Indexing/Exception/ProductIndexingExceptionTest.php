@@ -9,7 +9,9 @@ use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\AliasActivationFaile
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\BulkIndexFailedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\BulkResponseInvalidException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\EmbeddingEnrichmentException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IncrementalIndexTargetInvalidException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexCompatibilityMismatchException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexDocumentStateInvalidException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexRunStateInvalidException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexScopeMismatchException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\InvalidProductIndexEntityIdsException;
@@ -51,6 +53,8 @@ final class ProductIndexingExceptionTest extends TestCase
             'activation' => [ProductIndexActivationException::class, 'activation_failed'],
             'abort' => [ProductIndexAbortException::class, 'abort_failed'],
             'incremental unavailable' => [ProductIndexIncrementalSchedulerUnavailableException::class, 'incremental_scheduler_unavailable'],
+            'incremental target invalid' => [IncrementalIndexTargetInvalidException::class, 'incremental_target_invalid'],
+            'index document state invalid' => [IndexDocumentStateInvalidException::class, 'index_document_state_invalid'],
             'opensearch backend unavailable' => [OpenSearchBackendUnavailableException::class, 'opensearch_backend_unavailable'],
             'opensearch configuration invalid' => [OpenSearchConfigurationInvalidException::class, 'opensearch_configuration_invalid'],
             'opensearch capability unsupported' => [OpenSearchCapabilityUnsupportedException::class, 'opensearch_capability_unsupported'],

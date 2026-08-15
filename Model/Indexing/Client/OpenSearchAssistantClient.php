@@ -5,10 +5,13 @@ declare(strict_types=1);
 namespace Aavirbhava\AiShoppingAssistant\Model\Indexing\Client;
 
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\AssistantSearchClientInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Indexing\IndexedDocumentStateInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\StoragePayloadInterface;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Document\IndexedDocumentState;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\AliasActivationFailedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\BulkIndexFailedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\BulkResponseInvalidException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexDocumentStateInvalidException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchBackendUnavailableException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchCapabilityUnsupportedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchConfigurationInvalidException;
@@ -16,6 +19,7 @@ use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexCreateFa
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexingException;
 use Magento\Elasticsearch\Model\Config;
 use OpenSearch\Client;
+use OpenSearch\Common\Exceptions\Missing404Exception;
 
 /**
  * Production assistant-search client backed by the configured OpenSearch
@@ -42,6 +46,17 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
 
     /** Maximum accepted request timeout in seconds. */
     public const MAX_TIMEOUT = 120;
+
+    /**
+     * @var list<string>
+     */
+    private const DOCUMENT_STATE_SOURCE_FIELDS = [
+        'document_id',
+        'complete_document_hash',
+        'embedding_content_hash',
+        'embedding_fingerprint',
+        'embedding',
+    ];
 
     private ?Client $client = null;
 
@@ -213,6 +228,107 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
         }
     }
 
+    public function writeDocument(string $indexName, StoragePayloadInterface $document): void
+    {
+        $this->writeDocuments($indexName, [$document]);
+    }
+
+    public function documentState(string $indexName, string $documentId): ?IndexedDocumentStateInterface
+    {
+        if ($documentId === '') {
+            throw new IndexDocumentStateInvalidException();
+        }
+
+        try {
+            $response = $this->client()->get(
+                [
+                    'index' => $indexName,
+                    'id' => $documentId,
+                    '_source_includes' => self::DOCUMENT_STATE_SOURCE_FIELDS,
+                    'client' => ['timeout' => $this->timeout()],
+                ]
+            );
+        } catch (ProductIndexingException $exception) {
+            throw $exception;
+        } catch (\Throwable $throwable) {
+            if ($this->isNotFound($throwable)) {
+                return null;
+            }
+
+            throw new OpenSearchBackendUnavailableException();
+        }
+
+        if (!is_array($response)) {
+            throw new IndexDocumentStateInvalidException();
+        }
+
+        if (!array_key_exists('found', $response) || !is_bool($response['found'])) {
+            throw new IndexDocumentStateInvalidException();
+        }
+
+        $found = $response['found'];
+        $responseId = $response['_id'] ?? null;
+        if ($found === false) {
+            if (array_key_exists('_source', $response)
+                || ($responseId !== null && (!is_string($responseId) || $responseId !== $documentId))
+            ) {
+                throw new IndexDocumentStateInvalidException();
+            }
+
+            return null;
+        }
+
+        if (!is_string($responseId) || $responseId !== $documentId) {
+            throw new IndexDocumentStateInvalidException();
+        }
+
+        $source = $response['_source'] ?? null;
+        if (!is_array($source)) {
+            throw new IndexDocumentStateInvalidException();
+        }
+
+        return IndexedDocumentState::fromSource($documentId, $source);
+    }
+
+    public function deleteDocument(string $indexName, string $documentId): void
+    {
+        if ($documentId === '') {
+            throw new IndexDocumentStateInvalidException();
+        }
+
+        try {
+            $response = $this->client()->delete(
+                [
+                    'index' => $indexName,
+                    'id' => $documentId,
+                    'client' => ['timeout' => $this->timeout()],
+                ]
+            );
+        } catch (ProductIndexingException $exception) {
+            throw $exception;
+        } catch (\Throwable $throwable) {
+            if ($this->isNotFound($throwable)) {
+                return;
+            }
+
+            throw new OpenSearchBackendUnavailableException();
+        }
+
+        if (!is_array($response)) {
+            throw new IndexDocumentStateInvalidException();
+        }
+
+        $responseId = $response['_id'] ?? null;
+        if (!is_string($responseId) || $responseId !== $documentId) {
+            throw new IndexDocumentStateInvalidException();
+        }
+
+        $result = $response['result'] ?? null;
+        if (!is_string($result) || !in_array($result, ['deleted', 'not_found'], true)) {
+            throw new IndexDocumentStateInvalidException();
+        }
+    }
+
     public function indexMeta(string $indexName): array
     {
         try {
@@ -365,5 +481,10 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
         }
 
         return $timeout;
+    }
+
+    private function isNotFound(\Throwable $throwable): bool
+    {
+        return $throwable instanceof Missing404Exception;
     }
 }
