@@ -43,4 +43,26 @@
             <column name="lease_expires_at"/>
         </index>
     </table>
+    <table name="aavirbhava_ai_rebuild_fence" resource="default" engine="innodb"
+           comment="AI Shopping Assistant Full Rebuild Fence">
+        <column xsi:type="smallint" name="fence_id" unsigned="true" nullable="false" identity="false"
+                comment="Singleton Fence ID"/>
+        <column xsi:type="smallint" name="is_active" unsigned="true" nullable="false" identity="false"
+                default="0" comment="Fence Active"/>
+        <column xsi:type="varchar" name="owner_token" nullable="true" length="64"
+                comment="Opaque Owner Token"/>
+        <column xsi:type="datetime" name="lease_expires_at" on_update="false" nullable="true"
+                comment="Lease Expires At"/>
+        <column xsi:type="timestamp" name="created_at" on_update="false" nullable="false"
+                default="CURRENT_TIMESTAMP" comment="Created At"/>
+        <column xsi:type="timestamp" name="updated_at" on_update="true" nullable="false"
+                default="CURRENT_TIMESTAMP" comment="Updated At"/>
+        <constraint xsi:type="primary" referenceId="PRIMARY">
+            <column name="fence_id"/>
+        </constraint>
+        <index referenceId="AAVIRBHAVA_AI_REBUILD_FENCE_ACTIVE" indexType="btree">
+            <column name="is_active"/>
+            <column name="lease_expires_at"/>
+        </index>
+    </table>
 </schema>

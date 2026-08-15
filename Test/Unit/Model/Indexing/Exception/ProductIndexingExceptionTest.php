@@ -34,6 +34,7 @@ use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexMappingI
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexNameInvalidException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexRunInitException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexStorePrepException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\RebuildFenceException;
 use Magento\Framework\Phrase;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
@@ -70,6 +71,10 @@ final class ProductIndexingExceptionTest extends TestCase
             'incremental worker lock' => [
                 IncrementalWorkerLockException::class,
                 'incremental_worker_lock_failed',
+            ],
+            'rebuild fence' => [
+                RebuildFenceException::class,
+                'rebuild_fence_failed',
             ],
             'incremental target invalid' => [
                 IncrementalIndexTargetInvalidException::class,

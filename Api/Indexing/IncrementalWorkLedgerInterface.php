@@ -21,6 +21,8 @@ interface IncrementalWorkLedgerInterface
 
     public function recoverExpiredLeases(int $limit): int;
 
+    public function processingCount(): int;
+
     /**
      * @return list<int>
      */

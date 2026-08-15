@@ -58,6 +58,9 @@ class ProductIndexingException extends LocalizedException
     /** A per-product incremental worker lock could not be managed safely. */
     public const ERROR_INCREMENTAL_WORKER_LOCK_FAILED = 'incremental_worker_lock_failed';
 
+    /** A full-rebuild incremental work fence could not be managed safely. */
+    public const ERROR_REBUILD_FENCE_FAILED = 'rebuild_fence_failed';
+
     /** The live alias for incremental indexing is missing or incompatible. */
     public const ERROR_INCREMENTAL_TARGET_INVALID = 'incremental_target_invalid';
 
