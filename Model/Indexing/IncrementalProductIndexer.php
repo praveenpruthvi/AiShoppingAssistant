@@ -112,7 +112,16 @@ final class IncrementalProductIndexer implements ProductIncrementalIndexerInterf
 
         $snapshot = $this->snapshotForProduct($batch, $productId);
         $result = $this->normalize($snapshot, $scope);
-        if (!$result->eligible() || $result->document() === null) {
+        $eligible = $result->eligible();
+        $document = $result->document();
+
+        if ($eligible && !$document instanceof ProductDocumentInterface) {
+            throw new ProductIndexBatchNormalizationException();
+        }
+        if (!$eligible && $document !== null) {
+            throw new ProductIndexBatchNormalizationException();
+        }
+        if (!$eligible) {
             $this->deleteDocument($target, $indexing->indexPrefix(), $scope, $embedding, $documentId);
 
             return;
@@ -124,7 +133,7 @@ final class IncrementalProductIndexer implements ProductIncrementalIndexerInterf
             $scope,
             $embedding,
             $productId,
-            $result->document()
+            $document
         );
     }
 
@@ -301,11 +310,16 @@ final class IncrementalProductIndexer implements ProductIncrementalIndexerInterf
             return true;
         }
 
-        if (count($snapshots) === 1
-            && $missing === []
-            && $snapshots[0]->entityId() === $productId
-        ) {
-            return false;
+        if (count($snapshots) === 1 && $missing === []) {
+            $snapshot = $snapshots[0] ?? null;
+            if (!$snapshot instanceof ProductSnapshotInterface) {
+                throw new ProductIndexBatchNormalizationException();
+            }
+            if ($snapshot->entityId() === $productId) {
+                return false;
+            }
+
+            throw new ProductIndexBatchNormalizationException();
         }
 
         throw new ProductIndexBatchNormalizationException();
@@ -314,11 +328,20 @@ final class IncrementalProductIndexer implements ProductIncrementalIndexerInterf
     private function snapshotForProduct(ProductSnapshotBatchInterface $batch, int $productId): ProductSnapshotInterface
     {
         $snapshots = $batch->snapshots();
-        if (count($snapshots) !== 1 || $batch->missingProductIds() !== [] || $snapshots[0]->entityId() !== $productId) {
+        if (count($snapshots) !== 1 || $batch->missingProductIds() !== []) {
             throw new ProductIndexBatchNormalizationException();
         }
 
-        return $snapshots[0];
+        $snapshot = $snapshots[0] ?? null;
+        if (!$snapshot instanceof ProductSnapshotInterface) {
+            throw new ProductIndexBatchNormalizationException();
+        }
+
+        if ($snapshot->entityId() !== $productId) {
+            throw new ProductIndexBatchNormalizationException();
+        }
+
+        return $snapshot;
     }
 
     /**

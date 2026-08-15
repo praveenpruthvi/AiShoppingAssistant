@@ -262,14 +262,14 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
             throw new IndexDocumentStateInvalidException();
         }
 
-        $found = $response['found'] ?? null;
-        if ($found !== null && !is_bool($found)) {
+        if (!array_key_exists('found', $response) || !is_bool($response['found'])) {
             throw new IndexDocumentStateInvalidException();
         }
 
+        $found = $response['found'];
         $responseId = $response['_id'] ?? null;
         if ($found === false) {
-            if (isset($response['_source'])
+            if (array_key_exists('_source', $response)
                 || ($responseId !== null && (!is_string($responseId) || $responseId !== $documentId))
             ) {
                 throw new IndexDocumentStateInvalidException();
@@ -319,7 +319,7 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
         }
 
         $responseId = $response['_id'] ?? null;
-        if ($responseId !== null && (!is_string($responseId) || $responseId !== $documentId)) {
+        if (!is_string($responseId) || $responseId !== $documentId) {
             throw new IndexDocumentStateInvalidException();
         }
 
@@ -485,7 +485,6 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
 
     private function isNotFound(\Throwable $throwable): bool
     {
-        return $throwable instanceof Missing404Exception
-            || $throwable->getCode() === 404;
+        return $throwable instanceof Missing404Exception;
     }
 }

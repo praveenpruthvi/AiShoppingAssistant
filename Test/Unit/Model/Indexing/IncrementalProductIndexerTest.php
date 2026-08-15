@@ -6,6 +6,8 @@ namespace Aavirbhava\AiShoppingAssistant\Test\Unit\Model\Indexing;
 
 use Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductDocumentNormalizerInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductEligibilityResultInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductNormalizationResultInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductSnapshotBatchInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductSnapshotInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductSnapshotProviderInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\ConfigurationReaderInterface;
@@ -86,6 +88,10 @@ final class IncrementalProductIndexerTest extends TestCase
     private bool $readIndexingThrows = false;
 
     private bool $configMatches = true;
+
+    private ?ProductSnapshotBatchInterface $snapshotBatchOverride = null;
+
+    private ?ProductNormalizationResultInterface $normalizationResultOverride = null;
 
     protected function setUp(): void
     {
@@ -351,6 +357,60 @@ final class IncrementalProductIndexerTest extends TestCase
             $this->buildIndexer()->process(42);
         } finally {
             self::assertSame([], $this->client->writtenDocuments);
+            self::assertSame([], $this->embeddingGeneration->calls);
+        }
+    }
+
+    public function testEligibleNormalizationWithNullDocumentFailsClosed(): void
+    {
+        $result = $this->createMock(ProductNormalizationResultInterface::class);
+        $result->expects(self::once())->method('eligible')->willReturn(true);
+        $result->expects(self::once())->method('document')->willReturn(null);
+        $this->normalizationResultOverride = $result;
+
+        $this->expectException(ProductIndexBatchNormalizationException::class);
+
+        try {
+            $this->buildIndexer()->process(42);
+        } finally {
+            self::assertSame([], $this->client->writtenDocuments);
+            self::assertSame([], $this->client->deletedDocuments);
+            self::assertSame([], $this->embeddingGeneration->calls);
+        }
+    }
+
+    public function testIneligibleNormalizationWithDocumentFailsClosed(): void
+    {
+        $result = $this->createMock(ProductNormalizationResultInterface::class);
+        $result->expects(self::once())->method('eligible')->willReturn(false);
+        $result->expects(self::once())->method('document')->willReturn($this->documents[1]);
+        $this->normalizationResultOverride = $result;
+
+        $this->expectException(ProductIndexBatchNormalizationException::class);
+
+        try {
+            $this->buildIndexer()->process(42);
+        } finally {
+            self::assertSame([], $this->client->writtenDocuments);
+            self::assertSame([], $this->client->deletedDocuments);
+            self::assertSame([], $this->embeddingGeneration->calls);
+        }
+    }
+
+    public function testMalformedRuntimeSnapshotTypeFailsClosed(): void
+    {
+        $batch = $this->createMock(ProductSnapshotBatchInterface::class);
+        $batch->method('snapshots')->willReturn([new \stdClass()]);
+        $batch->method('missingProductIds')->willReturn([]);
+        $this->snapshotBatchOverride = $batch;
+
+        $this->expectException(ProductIndexBatchNormalizationException::class);
+
+        try {
+            $this->buildIndexer()->process(42);
+        } finally {
+            self::assertSame([], $this->client->writtenDocuments);
+            self::assertSame([], $this->client->deletedDocuments);
             self::assertSame([], $this->embeddingGeneration->calls);
         }
     }
@@ -669,7 +729,11 @@ final class IncrementalProductIndexerTest extends TestCase
 
         $snapshotProvider = $this->createMock(ProductSnapshotProviderInterface::class);
         $snapshotProvider->method('load')->willReturnCallback(
-            function (StoreScopeInterface $scope, IndexingConfigInterface $config, array $ids): ProductSnapshotBatch {
+            function (StoreScopeInterface $scope, IndexingConfigInterface $config, array $ids): ProductSnapshotBatchInterface {
+                if ($this->snapshotBatchOverride !== null) {
+                    return $this->snapshotBatchOverride;
+                }
+
                 $storeId = $scope->storeId();
                 if (($this->scenario[$storeId] ?? 'eligible') === 'missing'
                     && !isset($this->snapshotIds[$storeId], $this->missingIds[$storeId])
@@ -690,7 +754,11 @@ final class IncrementalProductIndexerTest extends TestCase
 
         $normalizer = $this->createMock(ProductDocumentNormalizerInterface::class);
         $normalizer->method('normalize')->willReturnCallback(
-            function (ProductSnapshotInterface $snapshot, $context): ProductNormalizationResult {
+            function (ProductSnapshotInterface $snapshot, $context): ProductNormalizationResultInterface {
+                if ($this->normalizationResultOverride !== null) {
+                    return $this->normalizationResultOverride;
+                }
+
                 $storeId = $context->storeId();
                 if (($this->scenario[$storeId] ?? 'eligible') === 'ineligible') {
                     return new ProductNormalizationResult(
