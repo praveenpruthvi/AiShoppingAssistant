@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="urn:magento:framework:Communication/etc/communication.xsd">
+    <topic name="aavirbhava.ai_shopping_assistant.product.incremental_index"
+           is_synchronous="false"
+           request="string">
+        <handler name="aavirbhava.ai_shopping_assistant.product.incremental_index.handler"
+                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\IncrementalProductIndexConsumer"
+                 method="process"/>
+    </topic>
+</config>

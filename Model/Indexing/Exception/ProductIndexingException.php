@@ -49,6 +49,9 @@ class ProductIndexingException extends LocalizedException
     /** Incremental scheduling is not available because queues are not implemented. */
     public const ERROR_INCREMENTAL_SCHEDULER_UNAVAILABLE = 'incremental_scheduler_unavailable';
 
+    /** Publishing an incremental product-index queue message failed. */
+    public const ERROR_INCREMENTAL_QUEUE_PUBLISH_FAILED = 'incremental_queue_publish_failed';
+
     /** The live alias for incremental indexing is missing or incompatible. */
     public const ERROR_INCREMENTAL_TARGET_INVALID = 'incremental_target_invalid';
 

@@ -9,6 +9,7 @@
     "magento/module-catalog": ">=104.0 <105.0",
     "magento/module-indexer": ">=100.4 <101.0",
     "magento/module-elasticsearch": ">=100.4 <102.0",
+    "magento/module-message-queue": ">=100.4 <101.0",
     "opensearch-project/opensearch-php": "^1.0 || ^2.0"
   },
   "require-dev": {

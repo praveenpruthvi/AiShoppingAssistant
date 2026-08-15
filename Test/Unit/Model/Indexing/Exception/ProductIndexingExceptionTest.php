@@ -10,6 +10,7 @@ use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\BulkIndexFailedExcep
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\BulkResponseInvalidException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\EmbeddingEnrichmentException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IncrementalIndexTargetInvalidException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IncrementalQueuePublishFailedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexCompatibilityMismatchException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexDocumentStateInvalidException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexRunStateInvalidException;
@@ -52,12 +53,34 @@ final class ProductIndexingExceptionTest extends TestCase
             'batch write' => [ProductIndexBatchWriteException::class, 'batch_write_failed'],
             'activation' => [ProductIndexActivationException::class, 'activation_failed'],
             'abort' => [ProductIndexAbortException::class, 'abort_failed'],
-            'incremental unavailable' => [ProductIndexIncrementalSchedulerUnavailableException::class, 'incremental_scheduler_unavailable'],
-            'incremental target invalid' => [IncrementalIndexTargetInvalidException::class, 'incremental_target_invalid'],
-            'index document state invalid' => [IndexDocumentStateInvalidException::class, 'index_document_state_invalid'],
-            'opensearch backend unavailable' => [OpenSearchBackendUnavailableException::class, 'opensearch_backend_unavailable'],
-            'opensearch configuration invalid' => [OpenSearchConfigurationInvalidException::class, 'opensearch_configuration_invalid'],
-            'opensearch capability unsupported' => [OpenSearchCapabilityUnsupportedException::class, 'opensearch_capability_unsupported'],
+            'incremental unavailable' => [
+                ProductIndexIncrementalSchedulerUnavailableException::class,
+                'incremental_scheduler_unavailable',
+            ],
+            'incremental queue publish' => [
+                IncrementalQueuePublishFailedException::class,
+                'incremental_queue_publish_failed',
+            ],
+            'incremental target invalid' => [
+                IncrementalIndexTargetInvalidException::class,
+                'incremental_target_invalid',
+            ],
+            'index document state invalid' => [
+                IndexDocumentStateInvalidException::class,
+                'index_document_state_invalid',
+            ],
+            'opensearch backend unavailable' => [
+                OpenSearchBackendUnavailableException::class,
+                'opensearch_backend_unavailable',
+            ],
+            'opensearch configuration invalid' => [
+                OpenSearchConfigurationInvalidException::class,
+                'opensearch_configuration_invalid',
+            ],
+            'opensearch capability unsupported' => [
+                OpenSearchCapabilityUnsupportedException::class,
+                'opensearch_capability_unsupported',
+            ],
             'index name invalid' => [ProductIndexNameInvalidException::class, 'index_name_invalid'],
             'index create failed' => [ProductIndexCreateFailedException::class, 'index_create_failed'],
             'index mapping invalid' => [ProductIndexMappingInvalidException::class, 'index_mapping_invalid'],
@@ -68,7 +91,10 @@ final class ProductIndexingExceptionTest extends TestCase
             'index abort' => [ProductIndexAbortFailedException::class, 'index_abort_failed'],
             'index run state invalid' => [IndexRunStateInvalidException::class, 'index_run_state_invalid'],
             'index scope mismatch' => [IndexScopeMismatchException::class, 'index_scope_mismatch'],
-            'index compatibility mismatch' => [IndexCompatibilityMismatchException::class, 'index_compatibility_mismatch'],
+            'index compatibility mismatch' => [
+                IndexCompatibilityMismatchException::class,
+                'index_compatibility_mismatch',
+            ],
         ];
     }
 
@@ -113,7 +139,9 @@ final class ProductIndexingExceptionTest extends TestCase
 
     public function testSanitizedMessageContainsNoInternalDetail(): void
     {
-        $exception = new ProductIndexBackendUnavailableException(new \RuntimeException('connection refused to 10.0.0.1:9200'));
+        $exception = new ProductIndexBackendUnavailableException(
+            new \RuntimeException('connection refused to 10.0.0.1:9200')
+        );
 
         self::assertStringNotContainsString('10.0.0.1', $exception->getMessage());
         self::assertStringNotContainsString('9200', $exception->getMessage());

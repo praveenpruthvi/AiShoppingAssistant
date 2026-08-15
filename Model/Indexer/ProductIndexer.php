@@ -13,9 +13,9 @@ use Magento\Framework\Mview\ActionInterface as MviewActionInterface;
  * Magento indexer action for the assistant product index.
  *
  * A full reindex runs the complete store-scoped rebuild orchestration. Row/list
- * updates are forwarded to the incremental scheduler, which currently refuses
- * explicitly because the queue/consumer pipeline is not implemented; nothing is
- * ever indexed or embedded synchronously inside this request.
+ * updates are forwarded to the incremental scheduler, which publishes product
+ * identifiers to Magento's asynchronous queue; nothing is ever indexed or
+ * embedded synchronously inside this request.
  *
  * Not final: Magento generates an interceptor for every class implementing
  * ActionInterface (the platform caches after reindex), which requires a

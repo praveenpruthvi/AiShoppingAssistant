@@ -9,9 +9,8 @@ namespace Aavirbhava\AiShoppingAssistant\Api\Indexing;
  *
  * Implementations must never index, embed, or generate anything synchronously
  * inside the calling request. They publish identifiers for asynchronous
- * processing only. Because queues and consumers are not implemented yet in this
- * module, the default implementation refuses explicitly instead of silently
- * discarding ids.
+ * processing only. The production implementation publishes product identifiers
+ * only; the unavailable implementation remains an explicit safe fallback.
  */
 interface IncrementalProductIndexSchedulerInterface
 {

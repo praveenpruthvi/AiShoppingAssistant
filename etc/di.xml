@@ -42,7 +42,7 @@
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\ProductDocumentWriterInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\OpenSearchProductDocumentWriter"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalProductIndexSchedulerInterface"
-                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\UnavailableIncrementalProductIndexScheduler"/>
+                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\MagentoIncrementalProductIndexScheduler"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\ProductIncrementalIndexerInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\IncrementalProductIndexer"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\RebuildRunContextFactoryInterface"
