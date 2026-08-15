@@ -55,6 +55,9 @@ class ProductIndexingException extends LocalizedException
     /** Durable incremental work state could not be recorded safely. */
     public const ERROR_INCREMENTAL_LEDGER_PERSISTENCE = 'incremental_ledger_persistence_failed';
 
+    /** A per-product incremental worker lock could not be managed safely. */
+    public const ERROR_INCREMENTAL_WORKER_LOCK_FAILED = 'incremental_worker_lock_failed';
+
     /** The live alias for incremental indexing is missing or incompatible. */
     public const ERROR_INCREMENTAL_TARGET_INVALID = 'incremental_target_invalid';
 

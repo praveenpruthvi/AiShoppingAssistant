@@ -8,7 +8,9 @@ use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalWorkLedgerInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalWorkClaimInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\ProductIncrementalIndexerInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IncrementalLedgerPersistenceException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IncrementalWorkerLockException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\InvalidProductIndexEntityIdsException;
+use Magento\Framework\Lock\LockManagerInterface;
 
 /**
  * Magento queue consumer for one incremental product-index message.
@@ -21,13 +23,46 @@ final class IncrementalProductIndexConsumer
     public function __construct(
         private readonly ProductIncrementalIndexerInterface $indexer,
         private readonly IncrementalWorkLedgerInterface $ledger,
-        private readonly IncrementalFailureDispositionPolicyInterface $failurePolicy
+        private readonly IncrementalFailureDispositionPolicyInterface $failurePolicy,
+        private readonly LockManagerInterface $lockManager
     ) {
     }
 
     public function process(mixed $productId): void
     {
         $id = $this->positiveProductId($productId);
+        $lockName = $this->productLockName($id);
+
+        try {
+            $locked = $this->lockManager->lock($lockName, 0);
+        } catch (\Throwable) {
+            throw new IncrementalWorkerLockException();
+        }
+
+        if (!$locked) {
+            return;
+        }
+
+        $primaryFailure = null;
+
+        try {
+            $this->processLocked($id);
+        } catch (\Throwable $throwable) {
+            $primaryFailure = $throwable;
+            throw $throwable;
+        } finally {
+            try {
+                $this->lockManager->unlock($lockName);
+            } catch (\Throwable) {
+                if ($primaryFailure === null) {
+                    throw new IncrementalWorkerLockException();
+                }
+            }
+        }
+    }
+
+    private function processLocked(int $id): void
+    {
         $claim = $this->ledger->claimDueWork($id);
 
         if ($claim === null) {
@@ -79,5 +114,10 @@ final class IncrementalProductIndexConsumer
         }
 
         throw new InvalidProductIndexEntityIdsException();
+    }
+
+    private function productLockName(int $productId): string
+    {
+        return 'aavirbhava_ai_incremental_product_' . $productId;
     }
 }

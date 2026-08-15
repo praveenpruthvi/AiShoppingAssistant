@@ -223,34 +223,56 @@ final class DbIncrementalWorkLedger implements IncrementalWorkLedgerInterface
         foreach ($ids as $productId) {
             $count += $this->wrap(
                 function (AdapterInterface $connection) use ($productId): int {
-                    $row = $connection->fetchRow(
-                        $connection->select()
-                            ->from($this->table())
-                            ->where('product_id = ?', $productId)
-                            ->where('state = ?', IncrementalWorkState::PROCESSING)
-                            ->where('lease_expires_at <= ?', $this->now())
-                            ->limit(1)
-                    );
+                    $connection->beginTransaction();
 
-                    if (!is_array($row)) {
-                        return 0;
+                    try {
+                        $row = $connection->fetchRow(
+                            $connection->select()
+                                ->from($this->table())
+                                ->where('product_id = ?', $productId)
+                                ->where('state = ?', IncrementalWorkState::PROCESSING)
+                                ->where('lease_expires_at <= ?', $this->now())
+                                ->limit(1)
+                                ->forUpdate(true)
+                        );
+
+                        if (!is_array($row)) {
+                            $connection->commit();
+
+                            return 0;
+                        }
+
+                        $data = (int)$row['generation'] > (int)$row['claimed_generation']
+                            ? $this->newerGenerationPendingData()
+                            : $this->expiredLeaseData((int)$row['attempts']);
+
+                        $updated = (int)$connection->update(
+                            $this->table(),
+                            $data,
+                            [
+                                'product_id = ?' => $productId,
+                                'generation = ?' => (int)$row['generation'],
+                                'state = ?' => IncrementalWorkState::PROCESSING,
+                                'claimed_generation = ?' => (int)$row['claimed_generation'],
+                                'lease_token = ?' => (string)$row['lease_token'],
+                                'lease_expires_at <= ?' => $this->now(),
+                            ]
+                        );
+
+                        if ($updated !== 1) {
+                            throw new IncrementalLedgerPersistenceException();
+                        }
+
+                        $connection->commit();
+
+                        return 1;
+                    } catch (\Throwable $throwable) {
+                        $connection->rollBack();
+
+                        throw $throwable instanceof IncrementalLedgerPersistenceException
+                            ? $throwable
+                            : new IncrementalLedgerPersistenceException();
                     }
-
-                    $data = (int)$row['generation'] > (int)$row['claimed_generation']
-                        ? $this->newerGenerationPendingData()
-                        : $this->expiredLeaseData((int)$row['attempts']);
-
-                    return (int)$connection->update(
-                        $this->table(),
-                        $data,
-                        [
-                            'product_id = ?' => $productId,
-                            'state = ?' => IncrementalWorkState::PROCESSING,
-                            'claimed_generation = ?' => (int)$row['claimed_generation'],
-                            'lease_token = ?' => (string)$row['lease_token'],
-                            'lease_expires_at <= ?' => $this->now(),
-                        ]
-                    );
                 }
             );
         }
@@ -387,30 +409,52 @@ final class DbIncrementalWorkLedger implements IncrementalWorkLedgerInterface
         $this->assertLeaseToken($claim->leaseToken());
 
         return $this->wrap(function (AdapterInterface $connection) use ($claim, $dataFactory): bool {
-            $row = $connection->fetchRow(
-                $connection->select()
-                    ->from($this->table())
-                    ->where('product_id = ?', $claim->productId())
-                    ->where('claimed_generation = ?', $claim->generation())
-                    ->where('lease_token = ?', $claim->leaseToken())
-                    ->where('state = ?', IncrementalWorkState::PROCESSING)
-                    ->limit(1)
-            );
+            $connection->beginTransaction();
 
-            if (!is_array($row)) {
-                return false;
+            try {
+                $row = $connection->fetchRow(
+                    $connection->select()
+                        ->from($this->table())
+                        ->where('product_id = ?', $claim->productId())
+                        ->where('claimed_generation = ?', $claim->generation())
+                        ->where('lease_token = ?', $claim->leaseToken())
+                        ->where('state = ?', IncrementalWorkState::PROCESSING)
+                        ->limit(1)
+                        ->forUpdate(true)
+                );
+
+                if (!is_array($row)) {
+                    $connection->commit();
+
+                    return false;
+                }
+
+                $updated = (int)$connection->update(
+                    $this->table(),
+                    $dataFactory($row),
+                    [
+                        'product_id = ?' => $claim->productId(),
+                        'generation = ?' => (int)$row['generation'],
+                        'claimed_generation = ?' => $claim->generation(),
+                        'lease_token = ?' => $claim->leaseToken(),
+                        'state = ?' => IncrementalWorkState::PROCESSING,
+                    ]
+                );
+
+                if ($updated !== 1) {
+                    throw new IncrementalLedgerPersistenceException();
+                }
+
+                $connection->commit();
+
+                return true;
+            } catch (\Throwable $throwable) {
+                $connection->rollBack();
+
+                throw $throwable instanceof IncrementalLedgerPersistenceException
+                    ? $throwable
+                    : new IncrementalLedgerPersistenceException();
             }
-
-            return (int)$connection->update(
-                $this->table(),
-                $dataFactory($row),
-                [
-                    'product_id = ?' => $claim->productId(),
-                    'claimed_generation = ?' => $claim->generation(),
-                    'lease_token = ?' => $claim->leaseToken(),
-                    'state = ?' => IncrementalWorkState::PROCESSING,
-                ]
-            ) === 1;
         });
     }
 
