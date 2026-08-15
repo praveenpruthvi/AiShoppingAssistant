@@ -15,12 +15,25 @@ final class DbIncrementalWorkLedgerTransactionTest extends TestCase
     {
         $source = (string)file_get_contents($this->ledgerPath());
 
-        self::assertGreaterThanOrEqual(2, substr_count($source, 'beginTransaction()'));
-        self::assertGreaterThanOrEqual(2, substr_count($source, '->forUpdate(true)'));
+        self::assertGreaterThanOrEqual(3, substr_count($source, 'beginTransaction()'));
+        self::assertGreaterThanOrEqual(4, substr_count($source, '->forUpdate(true)'));
         self::assertGreaterThanOrEqual(2, substr_count($source, "'generation = ?' => (int)\$row['generation']"));
         self::assertGreaterThanOrEqual(2, substr_count($source, 'commit()'));
         self::assertGreaterThanOrEqual(2, substr_count($source, 'rollBack()'));
         self::assertStringContainsString('new IncrementalLedgerPersistenceException()', $source);
+    }
+
+    public function testClaimsLockRebuildFenceBeforeProductRow(): void
+    {
+        $source = (string)file_get_contents($this->ledgerPath());
+        $claimStart = strpos($source, 'public function claimDueWork');
+        $fenceCheck = strpos($source, '$this->rebuildFenceActive($connection)', (int)$claimStart);
+        $productLock = strpos($source, "->from(\$this->table())", (int)$fenceCheck);
+
+        self::assertIsInt($claimStart);
+        self::assertIsInt($fenceCheck);
+        self::assertIsInt($productLock);
+        self::assertLessThan($productLock, $fenceCheck);
     }
 
     private function ledgerPath(): string

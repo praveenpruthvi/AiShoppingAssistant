@@ -20,6 +20,8 @@ use Magento\Framework\Lock\LockManagerInterface;
  */
 final class IncrementalProductIndexConsumer
 {
+    private const REBUILD_GATE_LOCK_NAME = 'aavirbhava_ai_full_rebuild_gate';
+
     public function __construct(
         private readonly ProductIncrementalIndexerInterface $indexer,
         private readonly IncrementalWorkLedgerInterface $ledger,
@@ -70,7 +72,7 @@ final class IncrementalProductIndexConsumer
 
     private function processLocked(int $id): void
     {
-        $claim = $this->ledger->claimDueWork($id);
+        $claim = $this->claimUnderRebuildGate($id);
 
         if ($claim === null) {
             return;
@@ -86,6 +88,46 @@ final class IncrementalProductIndexConsumer
         if (!$this->ledger->complete($claim)) {
             throw new IncrementalLedgerPersistenceException();
         }
+    }
+
+    private function claimUnderRebuildGate(int $id): ?IncrementalWorkClaimInterface
+    {
+        try {
+            $locked = $this->lockManager->lock(self::REBUILD_GATE_LOCK_NAME, 0);
+        } catch (\Throwable) {
+            throw new IncrementalWorkerLockException();
+        }
+
+        if (!$locked) {
+            return null;
+        }
+
+        $primaryFailure = null;
+        $releaseFailed = false;
+        $claim = null;
+
+        try {
+            $claim = $this->ledger->claimDueWork($id);
+        } catch (\Throwable $throwable) {
+            $primaryFailure = $throwable;
+        } finally {
+            try {
+                $released = $this->lockManager->unlock(self::REBUILD_GATE_LOCK_NAME);
+                $releaseFailed = !$released;
+            } catch (\Throwable) {
+                $releaseFailed = true;
+            }
+        }
+
+        if ($primaryFailure !== null) {
+            throw $primaryFailure;
+        }
+
+        if ($releaseFailed) {
+            throw new IncrementalWorkerLockException();
+        }
+
+        return $claim;
     }
 
     private function recordIndexingFailure(IncrementalWorkClaimInterface $claim, \Throwable $throwable): void

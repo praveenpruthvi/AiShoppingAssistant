@@ -9,6 +9,7 @@ use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalWorkLedgerInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Clock\ClockInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IncrementalLedgerPersistenceException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\InvalidProductIndexEntityIdsException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\RebuildFence\DbRebuildFence;
 use Magento\Framework\App\ResourceConnection;
 use Magento\Framework\DB\Adapter\AdapterInterface;
 use Zend_Db_Expr;
@@ -19,7 +20,6 @@ final class DbIncrementalWorkLedger implements IncrementalWorkLedgerInterface
     private const MAX_ATTEMPTS = IncrementalFailureDispositionPolicy::MAX_ATTEMPTS;
     private const BASE_DELAY_SECONDS = IncrementalFailureDispositionPolicy::BASE_DELAY_SECONDS;
     private const MAX_DELAY_SECONDS = IncrementalFailureDispositionPolicy::MAX_DELAY_SECONDS;
-    private const LEASE_SECONDS = 300;
     private const EXPIRED_LEASE_ERROR = 'lease_expired';
 
     public function __construct(
@@ -93,56 +93,80 @@ final class DbIncrementalWorkLedger implements IncrementalWorkLedgerInterface
         }
 
         return $this->wrap(function (AdapterInterface $connection) use ($productId): ?IncrementalWorkClaimInterface {
-            $dueCondition = sprintf(
-                'state = %s OR (state IN (%s) AND next_attempt_at <= %s)',
-                $connection->quote(IncrementalWorkState::QUEUED),
-                implode(
-                    ',',
+            $connection->beginTransaction();
+
+            try {
+                if ($this->rebuildFenceActive($connection)) {
+                    $this->releaseQueuedProductForReplay($connection, $productId);
+                    $connection->commit();
+
+                    return null;
+                }
+
+                $dueCondition = sprintf(
+                    'state = %s OR (state IN (%s) AND next_attempt_at <= %s)',
+                    $connection->quote(IncrementalWorkState::QUEUED),
+                    implode(
+                        ',',
+                        [
+                            $connection->quote(IncrementalWorkState::PENDING),
+                            $connection->quote(IncrementalWorkState::RETRY_WAIT),
+                        ]
+                    ),
+                    $connection->quote($this->now())
+                );
+                $row = $connection->fetchRow(
+                    $connection->select()
+                        ->from($this->table())
+                        ->where('product_id = ?', $productId)
+                        ->where('attempts < ?', self::MAX_ATTEMPTS)
+                        ->where('(' . $dueCondition . ')')
+                        ->limit(1)
+                        ->forUpdate(true)
+                );
+
+                if (!is_array($row)) {
+                    $connection->commit();
+
+                    return null;
+                }
+
+                $token = $this->tokenGenerator->generate();
+                $this->assertLeaseToken($token);
+                $generation = (int)$row['generation'];
+                $attempts = (int)$row['attempts'];
+                $updated = $connection->update(
+                    $this->table(),
                     [
-                        $connection->quote(IncrementalWorkState::PENDING),
-                        $connection->quote(IncrementalWorkState::RETRY_WAIT),
+                        'state' => IncrementalWorkState::PROCESSING,
+                        'claimed_generation' => $generation,
+                        'lease_token' => $token,
+                        'lease_expires_at' => $this->future(self::PROCESSING_LEASE_SECONDS),
+                        'updated_at' => $this->now(),
+                    ],
+                    [
+                        'product_id = ?' => $productId,
+                        'generation = ?' => $generation,
+                        'state = ?' => (string)$row['state'],
                     ]
-                ),
-                $connection->quote($this->now())
-            );
-            $row = $connection->fetchRow(
-                $connection->select()
-                    ->from($this->table())
-                    ->where('product_id = ?', $productId)
-                    ->where('attempts < ?', self::MAX_ATTEMPTS)
-                    ->where('(' . $dueCondition . ')')
-                    ->limit(1)
-            );
+                );
 
-            if (!is_array($row)) {
-                return null;
+                if ((int)$updated !== 1) {
+                    $connection->commit();
+
+                    return null;
+                }
+
+                $connection->commit();
+
+                return new IncrementalWorkClaim($productId, $generation, $attempts, $token);
+            } catch (\Throwable $throwable) {
+                $connection->rollBack();
+
+                throw $throwable instanceof IncrementalLedgerPersistenceException
+                    ? $throwable
+                    : new IncrementalLedgerPersistenceException();
             }
-
-            $token = $this->tokenGenerator->generate();
-            $this->assertLeaseToken($token);
-            $generation = (int)$row['generation'];
-            $attempts = (int)$row['attempts'];
-            $updated = $connection->update(
-                $this->table(),
-                [
-                    'state' => IncrementalWorkState::PROCESSING,
-                    'claimed_generation' => $generation,
-                    'lease_token' => $token,
-                    'lease_expires_at' => $this->future(self::LEASE_SECONDS),
-                    'updated_at' => $this->now(),
-                ],
-                [
-                    'product_id = ?' => $productId,
-                    'generation = ?' => $generation,
-                    'state = ?' => (string)$row['state'],
-                ]
-            );
-
-            if ((int)$updated !== 1) {
-                return null;
-            }
-
-            return new IncrementalWorkClaim($productId, $generation, $attempts, $token);
         });
     }
 
@@ -298,6 +322,17 @@ final class DbIncrementalWorkLedger implements IncrementalWorkLedgerInterface
             );
 
             return array_map('intval', $rows);
+        });
+    }
+
+    public function processingCount(): int
+    {
+        return $this->wrap(function (AdapterInterface $connection): int {
+            return (int)$connection->fetchOne(
+                $connection->select()
+                    ->from($this->table(), ['count' => new Zend_Db_Expr('COUNT(*)')])
+                    ->where('state = ?', IncrementalWorkState::PROCESSING)
+            );
         });
     }
 
@@ -481,6 +516,62 @@ final class DbIncrementalWorkLedger implements IncrementalWorkLedgerInterface
         });
     }
 
+    private function rebuildFenceActive(AdapterInterface $connection): bool
+    {
+        $row = $connection->fetchRow(
+            $connection->select()
+                ->from($this->rebuildFenceTable())
+                ->where('fence_id = ?', DbRebuildFence::FENCE_ID)
+                ->limit(1)
+                ->forUpdate(true)
+        );
+
+        if (!is_array($row)) {
+            return false;
+        }
+
+        $active = (string)($row['is_active'] ?? '');
+        if ($active !== '0' && $active !== '1') {
+            throw new IncrementalLedgerPersistenceException();
+        }
+
+        if ($active === '0') {
+            if ($row['owner_token'] !== null || $row['lease_expires_at'] !== null) {
+                throw new IncrementalLedgerPersistenceException();
+            }
+
+            return false;
+        }
+
+        if (!is_string($row['owner_token']) || !preg_match('/^[A-Za-z0-9_-]{32,64}$/', $row['owner_token'])) {
+            throw new IncrementalLedgerPersistenceException();
+        }
+
+        if (!is_string($row['lease_expires_at']) || !$this->validDateTime($row['lease_expires_at'])) {
+            throw new IncrementalLedgerPersistenceException();
+        }
+
+        return $row['lease_expires_at'] > $this->now();
+    }
+
+    private function releaseQueuedProductForReplay(AdapterInterface $connection, int $productId): void
+    {
+        $connection->update(
+            $this->table(),
+            [
+                'state' => IncrementalWorkState::PENDING,
+                'next_attempt_at' => $this->now(),
+                'lease_token' => null,
+                'lease_expires_at' => null,
+                'updated_at' => $this->now(),
+            ],
+            [
+                'product_id = ?' => $productId,
+                'state = ?' => IncrementalWorkState::QUEUED,
+            ]
+        );
+    }
+
     private function sanitizeCode(string $errorCode): string
     {
         return preg_match('/^[a-z][a-z0-9_]{0,63}$/', $errorCode) ? $errorCode : 'unknown';
@@ -546,9 +637,24 @@ final class DbIncrementalWorkLedger implements IncrementalWorkLedgerInterface
         }
     }
 
+    private function validDateTime(string $value): bool
+    {
+        $date = \DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $value);
+        $errors = \DateTimeImmutable::getLastErrors();
+
+        return $date instanceof \DateTimeImmutable
+            && ($errors === false || ((int)$errors['warning_count'] === 0 && (int)$errors['error_count'] === 0))
+            && $date->format('Y-m-d H:i:s') === $value;
+    }
+
     private function table(): string
     {
         return $this->resource->getTableName(self::TABLE);
+    }
+
+    private function rebuildFenceTable(): string
+    {
+        return $this->resource->getTableName(DbRebuildFence::TABLE);
     }
 
     private function now(): string

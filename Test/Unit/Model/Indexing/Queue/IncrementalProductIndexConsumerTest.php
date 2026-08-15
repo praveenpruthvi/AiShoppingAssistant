@@ -143,45 +143,65 @@ final class IncrementalProductIndexConsumerTest extends TestCase
 
     public function testLockIsHeldThroughClaimIndexAndCompletionThenReleased(): void
     {
-        $locked = false;
-        $this->lockManager->expects(self::once())
+        $productLocked = false;
+        $gateLocked = false;
+        $this->lockManager->expects(self::exactly(2))
             ->method('lock')
-            ->willReturnCallback(function () use (&$locked): bool {
-                $locked = true;
+            ->willReturnCallback(function (string $name) use (&$productLocked, &$gateLocked): bool {
+                if ($name === 'aavirbhava_ai_incremental_product_42') {
+                    $productLocked = true;
+
+                    return true;
+                }
+
+                self::assertTrue($productLocked);
+                $gateLocked = true;
 
                 return true;
             });
         $this->ledger->expects(self::once())
             ->method('claimDueWork')
-            ->willReturnCallback(function () use (&$locked) {
-                self::assertTrue($locked);
+            ->willReturnCallback(function () use (&$productLocked, &$gateLocked) {
+                self::assertTrue($productLocked);
+                self::assertTrue($gateLocked);
 
                 return $this->claim;
             });
         $this->indexer->expects(self::once())
             ->method('process')
-            ->willReturnCallback(function () use (&$locked): void {
-                self::assertTrue($locked);
+            ->willReturnCallback(function () use (&$productLocked, &$gateLocked): void {
+                self::assertTrue($productLocked);
+                self::assertFalse($gateLocked);
             });
         $this->ledger->expects(self::once())
             ->method('complete')
-            ->willReturnCallback(function () use (&$locked): bool {
-                self::assertTrue($locked);
+            ->willReturnCallback(function () use (&$productLocked, &$gateLocked): bool {
+                self::assertTrue($productLocked);
+                self::assertFalse($gateLocked);
 
                 return true;
             });
-        $this->lockManager->expects(self::once())
+        $this->lockManager->expects(self::exactly(2))
             ->method('unlock')
-            ->with('aavirbhava_ai_incremental_product_42')
-            ->willReturnCallback(function () use (&$locked): bool {
-                self::assertTrue($locked);
-                $locked = false;
+            ->willReturnCallback(function (string $name) use (&$productLocked, &$gateLocked): bool {
+                if ($name === 'aavirbhava_ai_full_rebuild_gate') {
+                    self::assertTrue($gateLocked);
+                    $gateLocked = false;
+
+                    return true;
+                }
+
+                self::assertSame('aavirbhava_ai_incremental_product_42', $name);
+                self::assertTrue($productLocked);
+                self::assertFalse($gateLocked);
+                $productLocked = false;
 
                 return true;
             });
 
         $this->consumer()->process('42');
-        self::assertFalse($locked);
+        self::assertFalse($productLocked);
+        self::assertFalse($gateLocked);
     }
 
     public function testLockExceptionIsSanitized(): void
@@ -195,7 +215,14 @@ final class IncrementalProductIndexConsumerTest extends TestCase
 
     public function testSecondExecutionCannotIndexWhenProductLockIsHeld(): void
     {
-        $this->lockManager->method('lock')->willReturnOnConsecutiveCalls(true, false);
+        $calls = 0;
+        $this->lockManager->method('lock')->willReturnCallback(
+            function (string $name) use (&$calls): bool {
+                ++$calls;
+
+                return $calls !== 3 || $name !== 'aavirbhava_ai_incremental_product_42';
+            }
+        );
         $this->lockManager->method('unlock')->willReturn(true);
         $this->ledger->expects(self::once())->method('claimDueWork')->willReturn($this->claim);
         $this->indexer->expects(self::once())->method('process')->with(42);
@@ -207,7 +234,14 @@ final class IncrementalProductIndexConsumerTest extends TestCase
 
     public function testExpiredLeaseWakeupDoesNotIndexUntilOriginalWorkerReleasesProductLock(): void
     {
-        $this->lockManager->method('lock')->willReturnOnConsecutiveCalls(false, true);
+        $calls = 0;
+        $this->lockManager->method('lock')->willReturnCallback(
+            function (string $name) use (&$calls): bool {
+                ++$calls;
+
+                return $calls !== 1 || $name !== 'aavirbhava_ai_incremental_product_42';
+            }
+        );
         $this->lockManager->method('unlock')->willReturn(true);
         $this->ledger->expects(self::once())->method('claimDueWork')->with(42)->willReturn($this->claim);
         $this->indexer->expects(self::once())->method('process')->with(42);
@@ -234,7 +268,7 @@ final class IncrementalProductIndexConsumerTest extends TestCase
             ->method('recordRetry')
             ->with($this->claim, 'opensearch_backend_unavailable', 60)
             ->willReturn(true);
-        $this->lockManager->expects(self::once())->method('unlock')->willReturn(true);
+        $this->lockManager->expects(self::exactly(2))->method('unlock')->willReturn(true);
 
         $this->consumer()->process('42');
     }
@@ -252,7 +286,7 @@ final class IncrementalProductIndexConsumerTest extends TestCase
             ->method('recordTerminal')
             ->with($this->claim, 'unknown')
             ->willReturn(true);
-        $this->lockManager->expects(self::once())->method('unlock')->willReturn(true);
+        $this->lockManager->expects(self::exactly(2))->method('unlock')->willReturn(true);
 
         $this->consumer()->process('42');
     }
@@ -265,7 +299,7 @@ final class IncrementalProductIndexConsumerTest extends TestCase
         $this->policy->method('classify')
             ->willReturn(new IncrementalFailureDisposition(false, 'unknown', 0));
         $this->ledger->method('recordTerminal')->willReturn(false);
-        $this->lockManager->expects(self::once())->method('unlock')->willReturn(true);
+        $this->lockManager->expects(self::exactly(2))->method('unlock')->willReturn(true);
 
         $this->expectException(IncrementalLedgerPersistenceException::class);
         $this->consumer()->process('42');
@@ -280,7 +314,7 @@ final class IncrementalProductIndexConsumerTest extends TestCase
         $this->policy->expects(self::never())->method('classify');
         $this->ledger->expects(self::never())->method('recordTerminal');
         $this->ledger->expects(self::never())->method('recordRetry');
-        $this->lockManager->expects(self::once())->method('unlock')->willReturn(true);
+        $this->lockManager->expects(self::exactly(2))->method('unlock')->willReturn(true);
 
         $this->expectException(IncrementalLedgerPersistenceException::class);
         $this->consumer()->process('42');
@@ -295,7 +329,7 @@ final class IncrementalProductIndexConsumerTest extends TestCase
         $this->policy->expects(self::never())->method('classify');
         $this->ledger->expects(self::never())->method('recordTerminal');
         $this->ledger->expects(self::never())->method('recordRetry');
-        $this->lockManager->expects(self::once())->method('unlock')->willReturn(true);
+        $this->lockManager->expects(self::exactly(2))->method('unlock')->willReturn(true);
 
         $this->expectException(IncrementalLedgerPersistenceException::class);
         $this->consumer()->process('42');
@@ -307,7 +341,13 @@ final class IncrementalProductIndexConsumerTest extends TestCase
         $this->ledger->method('claimDueWork')->willReturn($this->claim);
         $this->indexer->method('process')->with(42);
         $this->ledger->method('complete')->willThrowException(new IncrementalLedgerPersistenceException());
-        $this->lockManager->method('unlock')->willThrowException(new \RuntimeException('secret unlock detail'));
+        $this->lockManager->method('unlock')->willReturnCallback(static function (string $name): bool {
+            if ($name === 'aavirbhava_ai_full_rebuild_gate') {
+                return true;
+            }
+
+            throw new \RuntimeException('secret unlock detail');
+        });
 
         $this->expectException(IncrementalLedgerPersistenceException::class);
         $this->consumer()->process('42');
@@ -343,7 +383,9 @@ final class IncrementalProductIndexConsumerTest extends TestCase
         $this->ledger->method('claimDueWork')->willReturn($this->claim);
         $this->indexer->method('process')->with(42);
         $this->ledger->method('complete')->willThrowException(new IncrementalLedgerPersistenceException());
-        $this->lockManager->method('unlock')->willReturn(false);
+        $this->lockManager->method('unlock')->willReturnCallback(
+            static fn(string $name): bool => $name === 'aavirbhava_ai_full_rebuild_gate'
+        );
 
         $this->expectException(IncrementalLedgerPersistenceException::class);
         $this->consumer()->process('42');

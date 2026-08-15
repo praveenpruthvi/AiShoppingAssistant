@@ -14,11 +14,16 @@ use Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductSnapshotProviderInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\ConfigurationReaderInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\GeneralConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\IndexingConfigInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalWorkLedgerInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalWorkRecoveryInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Indexing\RebuildFenceInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\RebuildResultInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\RebuildRunContextFactoryInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Store\StoreScopeInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Store\StoreScopeProviderInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Catalog\Exception\CatalogException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Clock\ClockInterface;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Clock\SleeperInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\EmbeddingEnrichmentException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchBackendUnavailableException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexAbortFailedException;
@@ -27,9 +32,11 @@ use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexBackendU
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexBatchNormalizationException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexBatchWriteException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexRunInitException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\RebuildFenceException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\FullProductReindexer;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\RebuildRunContext;
 use Aavirbhava\AiShoppingAssistant\Test\Unit\Fake\FakeProductDocumentWriter;
+use Magento\Framework\Lock\LockManagerInterface;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
@@ -77,6 +84,36 @@ final class FullProductReindexerTest extends TestCase
     private $documentNormalizer;
 
     /**
+     * @var RebuildFenceInterface&MockObject
+     */
+    private $rebuildFence;
+
+    /**
+     * @var IncrementalWorkLedgerInterface&MockObject
+     */
+    private $incrementalWorkLedger;
+
+    /**
+     * @var IncrementalWorkRecoveryInterface&MockObject
+     */
+    private $incrementalWorkRecovery;
+
+    /**
+     * @var ClockInterface&MockObject
+     */
+    private $clock;
+
+    /**
+     * @var SleeperInterface&MockObject
+     */
+    private $sleeper;
+
+    /**
+     * @var LockManagerInterface&MockObject
+     */
+    private $lockManager;
+
+    /**
      * @var list<ProductSnapshotInterface>
      */
     private array $snapshots = [];
@@ -95,6 +132,20 @@ final class FullProductReindexerTest extends TestCase
         $this->idBatchProvider = $this->createMock(ProductIdBatchProviderInterface::class);
         $this->snapshotProvider = $this->createMock(ProductSnapshotProviderInterface::class);
         $this->documentNormalizer = $this->createMock(ProductDocumentNormalizerInterface::class);
+        $this->rebuildFence = $this->createMock(RebuildFenceInterface::class);
+        $this->incrementalWorkLedger = $this->createMock(IncrementalWorkLedgerInterface::class);
+        $this->incrementalWorkRecovery = $this->createMock(IncrementalWorkRecoveryInterface::class);
+        $this->clock = $this->createMock(ClockInterface::class);
+        $this->sleeper = $this->createMock(SleeperInterface::class);
+        $this->lockManager = $this->createMock(LockManagerInterface::class);
+
+        $this->rebuildFence->method('acquire')->willReturn('abcdefghijklmnopqrstuvwxyzABCDEF123456');
+        $this->incrementalWorkLedger->method('recoverExpiredLeases')->willReturn(0);
+        $this->incrementalWorkLedger->method('processingCount')->willReturn(0);
+        $this->incrementalWorkRecovery->method('recover')->willReturn(0);
+        $this->clock->method('now')->willReturn(new \DateTimeImmutable('2026-08-16 00:00:00'));
+        $this->lockManager->method('lock')->willReturn(true);
+        $this->lockManager->method('unlock')->willReturn(true);
     }
 
     private function buildReindexer(): FullProductReindexer
@@ -106,7 +157,35 @@ final class FullProductReindexerTest extends TestCase
             $this->idBatchProvider,
             $this->snapshotProvider,
             $this->documentNormalizer,
-            $this->writer
+            $this->writer,
+            $this->rebuildFence,
+            $this->incrementalWorkLedger,
+            $this->incrementalWorkRecovery,
+            $this->clock,
+            $this->sleeper,
+            $this->lockManager
+        );
+    }
+
+    private function buildFencedReindexer(
+        RebuildFenceInterface $rebuildFence,
+        IncrementalWorkLedgerInterface $incrementalWorkLedger,
+        IncrementalWorkRecoveryInterface $incrementalWorkRecovery
+    ): FullProductReindexer {
+        return new FullProductReindexer(
+            $this->storeScopeProvider,
+            $this->configurationReader,
+            $this->runContextFactory,
+            $this->idBatchProvider,
+            $this->snapshotProvider,
+            $this->documentNormalizer,
+            $this->writer,
+            $rebuildFence,
+            $incrementalWorkLedger,
+            $incrementalWorkRecovery,
+            $this->clock,
+            $this->sleeper,
+            $this->lockManager
         );
     }
 
@@ -232,6 +311,222 @@ final class FullProductReindexerTest extends TestCase
         self::assertSame(1, count($this->writer->writtenBatches));
         self::assertSame(2, count($this->writer->writtenBatches[0]['documents']));
         self::assertSame($context, $this->writer->lastContext);
+    }
+
+    public function testFencedRebuildDrainsRenewsVerifiesReleasesAndWakesRecovery(): void
+    {
+        $this->stubEnabledStore();
+        $this->stubBatches([[10]]);
+        $this->stubSnapshots(1);
+        $this->stubNormalizer(1);
+
+        $token = 'abcdefghijklmnopqrstuvwxyzABCDEF123456';
+        $fence = $this->createMock(RebuildFenceInterface::class);
+        $fence->expects(self::once())
+            ->method('acquire')
+            ->with(300)
+            ->willReturn($token);
+        $fence->expects(self::atLeastOnce())
+            ->method('renew')
+            ->with($token, 300);
+        $fence->expects(self::once())
+            ->method('assertOwned')
+            ->with($token);
+        $fence->expects(self::once())
+            ->method('release')
+            ->with($token);
+
+        $ledger = $this->createMock(IncrementalWorkLedgerInterface::class);
+        $ledger->expects(self::once())
+            ->method('recoverExpiredLeases')
+            ->with(50)
+            ->willReturn(0);
+        $ledger->expects(self::once())
+            ->method('processingCount')
+            ->willReturn(0);
+
+        $recovery = $this->createMock(IncrementalWorkRecoveryInterface::class);
+        $recovery->expects(self::once())->method('recover');
+
+        $result = $this->buildFencedReindexer($fence, $ledger, $recovery)->rebuild();
+
+        self::assertTrue($result->activated());
+        self::assertTrue($this->writer->activated);
+    }
+
+    public function testFenceDrainTimeoutFailsClosedWithoutBeginningRun(): void
+    {
+        $this->stubEnabledStore();
+        $this->stubBatches([]);
+        $now = new \DateTimeImmutable('2026-08-16 00:00:00');
+        $this->clock = $this->createMock(ClockInterface::class);
+        $this->clock->method('now')->willReturnCallback(static function () use (&$now): \DateTimeImmutable {
+            return $now;
+        });
+        $this->sleeper = $this->createMock(SleeperInterface::class);
+        $this->sleeper->method('sleep')->willReturnCallback(static function (int $seconds) use (&$now): void {
+            $now = $now->modify('+' . $seconds . ' seconds');
+        });
+
+        $token = 'abcdefghijklmnopqrstuvwxyzABCDEF123456';
+        $fence = $this->createMock(RebuildFenceInterface::class);
+        $fence->method('acquire')->willReturn($token);
+        $fence->expects(self::atLeastOnce())->method('renew')->with($token, 300);
+        $fence->expects(self::once())->method('release')->with($token);
+
+        $ledger = $this->createMock(IncrementalWorkLedgerInterface::class);
+        $ledger->method('recoverExpiredLeases')->willReturn(0);
+        $ledger->method('processingCount')->willReturn(1);
+
+        $recovery = $this->createMock(IncrementalWorkRecoveryInterface::class);
+        $recovery->expects(self::once())->method('recover');
+
+        try {
+            $this->buildFencedReindexer($fence, $ledger, $recovery)->rebuild();
+            self::fail('Expected RebuildFenceException');
+        } catch (RebuildFenceException $exception) {
+            self::assertSame('rebuild_fence_failed', $exception->errorCode());
+            self::assertNotNull($exception->rebuildResult());
+            self::assertTrue($exception->rebuildResult()->aborted());
+        }
+
+        self::assertFalse($this->writer->begun);
+        self::assertFalse($this->writer->activated);
+    }
+
+    public function testLostFenceOwnershipBeforeActivationAbortsAndReleases(): void
+    {
+        $this->stubEnabledStore();
+        $this->stubBatches([]);
+
+        $token = 'abcdefghijklmnopqrstuvwxyzABCDEF123456';
+        $fence = $this->createMock(RebuildFenceInterface::class);
+        $fence->method('acquire')->willReturn($token);
+        $fence->method('renew');
+        $fence->expects(self::once())
+            ->method('assertOwned')
+            ->with($token)
+            ->willThrowException(new RebuildFenceException());
+        $fence->expects(self::once())->method('release')->with($token);
+
+        $ledger = $this->createMock(IncrementalWorkLedgerInterface::class);
+        $ledger->method('recoverExpiredLeases')->willReturn(0);
+        $ledger->method('processingCount')->willReturn(0);
+
+        $recovery = $this->createMock(IncrementalWorkRecoveryInterface::class);
+        $recovery->expects(self::once())->method('recover');
+
+        try {
+            $this->buildFencedReindexer($fence, $ledger, $recovery)->rebuild();
+            self::fail('Expected RebuildFenceException');
+        } catch (RebuildFenceException $exception) {
+            self::assertSame('rebuild_fence_failed', $exception->errorCode());
+            self::assertNotNull($exception->rebuildResult());
+        }
+
+        self::assertTrue($this->writer->begun);
+        self::assertFalse($this->writer->activated);
+        self::assertSame(1, $this->writer->abortCount);
+    }
+
+    public function testHeartbeatRunsForEveryProductBatch(): void
+    {
+        $this->stubEnabledStore();
+        $this->stubBatches([[10], [11]]);
+        $this->stubSnapshots(0);
+        $this->stubNormalizer(0);
+        $this->runContextFactory->method('create')->willReturn(
+            new RebuildRunContext(self::RUN_ID, 1, [$this->scope], 1.0)
+        );
+
+        $renewCount = 0;
+        $this->rebuildFence->expects(self::once())->method('acquire')->willReturn('abcdefghijklmnopqrstuvwxyzABCDEF123456');
+        $this->rebuildFence->method('renew')->willReturnCallback(static function () use (&$renewCount): void {
+            ++$renewCount;
+        });
+
+        $this->buildReindexer()->rebuild();
+
+        self::assertGreaterThanOrEqual(8, $renewCount);
+    }
+
+    public function testRebuildGateContentionFailsClosedBeforeFenceAcquire(): void
+    {
+        $this->stubEnabledStore();
+        $this->stubBatches([]);
+        $this->lockManager = $this->createMock(LockManagerInterface::class);
+        $this->lockManager->expects(self::once())
+            ->method('lock')
+            ->with('aavirbhava_ai_full_rebuild_gate', 0)
+            ->willReturn(false);
+        $this->rebuildFence->expects(self::never())->method('acquire');
+
+        $this->expectException(RebuildFenceException::class);
+        $this->buildReindexer()->rebuild();
+    }
+
+    public function testCutoverGateIsHeldAcrossVerifyActivateAndRelease(): void
+    {
+        $this->stubEnabledStore();
+        $this->stubBatches([]);
+        $this->runContextFactory->method('create')->willReturn(
+            new RebuildRunContext(self::RUN_ID, 1, [$this->scope], 1.0)
+        );
+
+        $gateLocked = false;
+        $this->lockManager = $this->createMock(LockManagerInterface::class);
+        $this->lockManager->method('lock')->willReturnCallback(
+            function (string $name) use (&$gateLocked): bool {
+                if ($name === 'aavirbhava_ai_full_rebuild_gate') {
+                    $gateLocked = true;
+                }
+
+                return true;
+            }
+        );
+        $this->lockManager->method('unlock')->willReturnCallback(
+            function (string $name) use (&$gateLocked): bool {
+                if ($name === 'aavirbhava_ai_full_rebuild_gate') {
+                    self::assertTrue($gateLocked);
+                    $gateLocked = false;
+                }
+
+                return true;
+            }
+        );
+        $this->rebuildFence->expects(self::once())
+            ->method('assertOwned')
+            ->willReturnCallback(static function () use (&$gateLocked): void {
+                self::assertTrue($gateLocked);
+            });
+        $this->rebuildFence->expects(self::once())
+            ->method('release')
+            ->willReturnCallback(static function () use (&$gateLocked): void {
+                self::assertTrue($gateLocked);
+            });
+
+        $this->buildReindexer()->rebuild();
+    }
+
+    public function testReleaseFailureAfterActivationCarriesActivatedResultWithoutAbort(): void
+    {
+        $this->stubEnabledStore();
+        $this->stubBatches([]);
+        $this->runContextFactory->method('create')->willReturn(
+            new RebuildRunContext(self::RUN_ID, 1, [$this->scope], 1.0)
+        );
+        $this->rebuildFence->method('release')->willThrowException(new RebuildFenceException());
+
+        try {
+            $this->buildReindexer()->rebuild();
+            self::fail('Expected RebuildFenceException');
+        } catch (RebuildFenceException $exception) {
+            self::assertNotNull($exception->rebuildResult());
+            self::assertTrue($exception->rebuildResult()->activated());
+        }
+
+        self::assertTrue($this->writer->activated);
+        self::assertSame(0, $this->writer->abortCount);
     }
 
     public function testBatchSizeIsPassedThrough(): void

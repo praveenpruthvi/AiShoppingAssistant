@@ -47,8 +47,12 @@
                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\DbIncrementalWorkLedger"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalWorkRecoveryInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\IncrementalWorkRecovery"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\RebuildFenceInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\RebuildFence\DbRebuildFence"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Model\Indexing\Clock\ClockInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Clock\SystemClock"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Model\Indexing\Clock\SleeperInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Clock\SystemSleeper"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\LeaseTokenGeneratorInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\RandomLeaseTokenGenerator"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\IncrementalFailureDispositionPolicyInterface"

@@ -9,6 +9,7 @@ use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\InvalidProductIndexE
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\DbIncrementalWorkLedger;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\IncrementalWorkClaim;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\IncrementalWorkState;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\RebuildFence\DbRebuildFence;
 use Aavirbhava\AiShoppingAssistant\Test\Integration\Model\Indexing\Queue\Fixture\MutableClock;
 use Aavirbhava\AiShoppingAssistant\Test\Integration\Model\Indexing\Queue\Fixture\SequenceLeaseTokenGenerator;
 use Magento\Framework\App\ResourceConnection;
@@ -24,9 +25,11 @@ final class DbIncrementalWorkLedgerDatabaseTest extends TestCase
     private ResourceConnection $resource;
     private AdapterInterface $connection;
     private string $table;
+    private string $fenceTable;
     private MutableClock $clock;
     private SequenceLeaseTokenGenerator $tokens;
     private DbIncrementalWorkLedger $ledger;
+    private DbRebuildFence $fence;
 
     protected function setUp(): void
     {
@@ -44,9 +47,11 @@ final class DbIncrementalWorkLedgerDatabaseTest extends TestCase
         $this->resource = $objectManager->get(ResourceConnection::class);
         $this->connection = $this->resource->getConnection();
         $this->table = $this->resource->getTableName('aavirbhava_ai_incremental_product_work');
+        $this->fenceTable = $this->resource->getTableName(DbRebuildFence::TABLE);
         $this->clock = new MutableClock(new \DateTimeImmutable('2026-08-16 00:00:00'));
         $this->tokens = new SequenceLeaseTokenGenerator();
         $this->ledger = new DbIncrementalWorkLedger($this->resource, $this->clock, $this->tokens);
+        $this->fence = new DbRebuildFence($this->resource, $this->clock, $this->tokens);
         $this->cleanup();
     }
 
@@ -215,6 +220,64 @@ final class DbIncrementalWorkLedgerDatabaseTest extends TestCase
         self::assertSame([self::PRODUCT_ID], $this->ledger->dueProductIds(1));
     }
 
+    public function testClaimIsBlockedWhileRebuildFenceIsActive(): void
+    {
+        $this->ledger->recordProductChanges([self::PRODUCT_ID]);
+        $this->fence->acquire(300);
+
+        self::assertNull($this->ledger->claimDueWork(self::PRODUCT_ID));
+        $this->assertRow(['state' => IncrementalWorkState::PENDING, 'generation' => '1']);
+    }
+
+    public function testConsumedQueuedWakeupBecomesImmediatelyReplayableWhileFenced(): void
+    {
+        $this->ledger->recordProductChanges([self::PRODUCT_ID]);
+        self::assertNotNull($this->ledger->markQueuedForWakeup(self::PRODUCT_ID, 300));
+        self::assertSame([], $this->ledger->dueProductIds(10));
+        $this->fence->acquire(300);
+
+        self::assertNull($this->ledger->claimDueWork(self::PRODUCT_ID));
+
+        $this->assertRow([
+            'state' => IncrementalWorkState::PENDING,
+            'generation' => '1',
+            'attempts' => '0',
+            'lease_token' => null,
+        ]);
+        self::assertSame([self::PRODUCT_ID], $this->ledger->dueProductIds(10));
+    }
+
+    public function testGenerationScheduledDuringRebuildSurvivesCutover(): void
+    {
+        $token = $this->fence->acquire(300);
+        $this->ledger->recordProductChanges([self::PRODUCT_ID]);
+        $this->fence->release($token);
+
+        self::assertSame([self::PRODUCT_ID], $this->ledger->dueProductIds(10));
+        $claim = $this->ledger->claimDueWork(self::PRODUCT_ID);
+        self::assertNotNull($claim);
+        self::assertSame(1, $claim->generation());
+    }
+
+    public function testMalformedFenceRowFailsClaimClosed(): void
+    {
+        $this->ledger->recordProductChanges([self::PRODUCT_ID]);
+        $this->connection->insert(
+            $this->fenceTable,
+            [
+                'fence_id' => DbRebuildFence::FENCE_ID,
+                'is_active' => 1,
+                'owner_token' => 'bad token',
+                'lease_expires_at' => '2026-08-16 00:10:00',
+                'created_at' => $this->clock->now()->format('Y-m-d H:i:s'),
+                'updated_at' => $this->clock->now()->format('Y-m-d H:i:s'),
+            ]
+        );
+
+        $this->expectException(IncrementalLedgerPersistenceException::class);
+        $this->ledger->claimDueWork(self::PRODUCT_ID);
+    }
+
     /**
      * @param array<string, string|null> $expected
      */
@@ -256,5 +319,6 @@ final class DbIncrementalWorkLedgerDatabaseTest extends TestCase
     private function cleanup(): void
     {
         $this->connection->delete($this->table, ['product_id IN (?)' => [self::PRODUCT_ID, self::PRODUCT_ID_TWO]]);
+        $this->connection->delete($this->fenceTable, ['fence_id = ?' => DbRebuildFence::FENCE_ID]);
     }
 }
