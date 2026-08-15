@@ -1,0 +1,46 @@
+<?xml version="1.0"?>
+<schema xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="urn:magento:framework:Setup/Declaration/Schema/etc/schema.xsd">
+    <table name="aavirbhava_ai_incremental_product_work" resource="default" engine="innodb"
+           comment="AI Shopping Assistant Incremental Product Work">
+        <column xsi:type="int" name="work_id" unsigned="true" nullable="false" identity="true"
+                comment="Work ID"/>
+        <column xsi:type="int" name="product_id" unsigned="true" nullable="false" identity="false"
+                comment="Product Entity ID"/>
+        <column xsi:type="int" name="generation" unsigned="true" nullable="false" identity="false"
+                default="1" comment="Latest Requested Work Generation"/>
+        <column xsi:type="int" name="claimed_generation" unsigned="true" nullable="true" identity="false"
+                comment="Processing Lease Generation"/>
+        <column xsi:type="varchar" name="state" nullable="false" length="20" default="pending"
+                comment="Work State"/>
+        <column xsi:type="smallint" name="attempts" unsigned="true" nullable="false" identity="false"
+                default="0" comment="Attempt Count"/>
+        <column xsi:type="datetime" name="next_attempt_at" on_update="false" nullable="false"
+                comment="Next Attempt At"/>
+        <column xsi:type="varchar" name="lease_token" nullable="true" length="64"
+                comment="Opaque Lease Token"/>
+        <column xsi:type="datetime" name="lease_expires_at" on_update="false" nullable="true"
+                comment="Lease Expires At"/>
+        <column xsi:type="varchar" name="last_error_code" nullable="true" length="64"
+                comment="Last Sanitized Error Code"/>
+        <column xsi:type="timestamp" name="created_at" on_update="false" nullable="false"
+                default="CURRENT_TIMESTAMP" comment="Created At"/>
+        <column xsi:type="timestamp" name="updated_at" on_update="true" nullable="false"
+                default="CURRENT_TIMESTAMP" comment="Updated At"/>
+        <constraint xsi:type="primary" referenceId="PRIMARY">
+            <column name="work_id"/>
+        </constraint>
+        <constraint xsi:type="unique" referenceId="AAVIRBHAVA_AI_INCREMENTAL_PRODUCT_WORK_PRODUCT_ID">
+            <column name="product_id"/>
+        </constraint>
+        <index referenceId="AAVIRBHAVA_AI_INCREMENTAL_PRODUCT_WORK_DUE" indexType="btree">
+            <column name="state"/>
+            <column name="next_attempt_at"/>
+            <column name="product_id"/>
+        </index>
+        <index referenceId="AAVIRBHAVA_AI_INCREMENTAL_PRODUCT_WORK_LEASE" indexType="btree">
+            <column name="state"/>
+            <column name="lease_expires_at"/>
+        </index>
+    </table>
+</schema>

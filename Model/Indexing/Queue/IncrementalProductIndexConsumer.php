@@ -4,27 +4,100 @@ declare(strict_types=1);
 
 namespace Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue;
 
+use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalWorkLedgerInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalWorkClaimInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\ProductIncrementalIndexerInterface;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IncrementalLedgerPersistenceException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IncrementalWorkerLockException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\InvalidProductIndexEntityIdsException;
+use Magento\Framework\Lock\LockManagerInterface;
 
 /**
  * Magento queue consumer for one incremental product-index message.
  *
- * Ordinary indexing failures intentionally propagate from this handler.
- * Magento's default consumer rejects ordinary handler exceptions without
- * requeueing, so propagation prevents acknowledgement but is not sufficient
- * durable retry semantics on its own.
+ * The queue message is only a wake-up. Durable completion, retry, or terminal
+ * state is recorded in the ledger before returning from handler failures.
  */
 final class IncrementalProductIndexConsumer
 {
     public function __construct(
-        private readonly ProductIncrementalIndexerInterface $indexer
+        private readonly ProductIncrementalIndexerInterface $indexer,
+        private readonly IncrementalWorkLedgerInterface $ledger,
+        private readonly IncrementalFailureDispositionPolicyInterface $failurePolicy,
+        private readonly LockManagerInterface $lockManager
     ) {
     }
 
     public function process(mixed $productId): void
     {
-        $this->indexer->process($this->positiveProductId($productId));
+        $id = $this->positiveProductId($productId);
+        $lockName = $this->productLockName($id);
+
+        try {
+            $locked = $this->lockManager->lock($lockName, 0);
+        } catch (\Throwable) {
+            throw new IncrementalWorkerLockException();
+        }
+
+        if (!$locked) {
+            return;
+        }
+
+        $primaryFailure = null;
+        $releaseFailed = false;
+
+        try {
+            $this->processLocked($id);
+        } catch (\Throwable $throwable) {
+            $primaryFailure = $throwable;
+        } finally {
+            try {
+                $released = $this->lockManager->unlock($lockName);
+                $releaseFailed = !$released;
+            } catch (\Throwable) {
+                $releaseFailed = true;
+            }
+        }
+
+        if ($primaryFailure !== null) {
+            throw $primaryFailure;
+        }
+
+        if ($releaseFailed) {
+            throw new IncrementalWorkerLockException();
+        }
+    }
+
+    private function processLocked(int $id): void
+    {
+        $claim = $this->ledger->claimDueWork($id);
+
+        if ($claim === null) {
+            return;
+        }
+
+        try {
+            $this->indexer->process($id);
+        } catch (\Throwable $throwable) {
+            $this->recordIndexingFailure($claim, $throwable);
+            return;
+        }
+
+        if (!$this->ledger->complete($claim)) {
+            throw new IncrementalLedgerPersistenceException();
+        }
+    }
+
+    private function recordIndexingFailure(IncrementalWorkClaimInterface $claim, \Throwable $throwable): void
+    {
+        $disposition = $this->failurePolicy->classify($throwable, $claim->attempts());
+        $recorded = $disposition->retryable()
+            ? $this->ledger->recordRetry($claim, $disposition->errorCode(), $disposition->delaySeconds())
+            : $this->ledger->recordTerminal($claim, $disposition->errorCode());
+
+        if (!$recorded) {
+            throw new IncrementalLedgerPersistenceException();
+        }
     }
 
     private function positiveProductId(mixed $productId): int
@@ -48,5 +121,10 @@ final class IncrementalProductIndexConsumer
         }
 
         throw new InvalidProductIndexEntityIdsException();
+    }
+
+    private function productLockName(int $productId): string
+    {
+        return 'aavirbhava_ai_incremental_product_' . $productId;
     }
 }

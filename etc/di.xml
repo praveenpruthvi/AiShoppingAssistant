@@ -43,6 +43,16 @@
                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\OpenSearchProductDocumentWriter"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalProductIndexSchedulerInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\UnavailableIncrementalProductIndexScheduler"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalWorkLedgerInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\DbIncrementalWorkLedger"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalWorkRecoveryInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\IncrementalWorkRecovery"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Model\Indexing\Clock\ClockInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Clock\SystemClock"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\LeaseTokenGeneratorInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\RandomLeaseTokenGenerator"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\IncrementalFailureDispositionPolicyInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\IncrementalFailureDispositionPolicy"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\ProductIncrementalIndexerInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\IncrementalProductIndexer"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\RebuildRunContextFactoryInterface"

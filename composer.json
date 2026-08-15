@@ -7,6 +7,7 @@
     "php": ">=8.2 <8.6",
     "magento/framework": ">=103.0.7 <104.0",
     "magento/module-catalog": ">=104.0 <105.0",
+    "magento/module-cron": ">=100.4 <101.0",
     "magento/module-indexer": ">=100.4 <101.0",
     "magento/module-elasticsearch": ">=100.4 <102.0",
     "magento/module-message-queue": ">=100.4 <101.0",
