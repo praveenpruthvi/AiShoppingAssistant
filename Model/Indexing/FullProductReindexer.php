@@ -21,6 +21,8 @@ use Aavirbhava\AiShoppingAssistant\Api\Store\StoreScopeInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Store\StoreScopeProviderInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Catalog\Exception\CatalogException;
 use Aavirbhava\AiShoppingAssistant\Model\Catalog\ProductEligibilityContext;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Clock\ClockInterface;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Clock\SleeperInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\InvalidProductIndexEntityIdsException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\AliasActivationFailedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\BulkIndexFailedException;
@@ -48,6 +50,7 @@ use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexNameInva
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexRunInitException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexStorePrepException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\RebuildFenceException;
+use Magento\Framework\Lock\LockManagerInterface;
 
 /**
  * Safe full-rebuild orchestration for the assistant product index.
@@ -69,10 +72,11 @@ use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\RebuildFenceExceptio
  */
 final class FullProductReindexer implements FullProductReindexerInterface
 {
+    private const REBUILD_GATE_LOCK_NAME = 'aavirbhava_ai_full_rebuild_gate';
     private const FENCE_LEASE_SECONDS = 300;
-    private const DRAIN_ATTEMPTS = 10;
+    private const DRAIN_SAFETY_MARGIN_SECONDS = 30;
     private const DRAIN_BATCH_SIZE = 50;
-    private const DRAIN_SLEEP_MICROSECONDS = 50000;
+    private const DRAIN_POLL_SECONDS = 5;
 
     /**
      * @var list<array{scope: StoreScopeInterface, config: IndexingConfigInterface}>
@@ -112,9 +116,12 @@ final class FullProductReindexer implements FullProductReindexerInterface
         private readonly ProductSnapshotProviderInterface $snapshotProvider,
         private readonly ProductDocumentNormalizerInterface $documentNormalizer,
         private readonly ProductDocumentWriterInterface $documentWriter,
-        private readonly ?RebuildFenceInterface $rebuildFence = null,
-        private readonly ?IncrementalWorkLedgerInterface $incrementalWorkLedger = null,
-        private readonly ?IncrementalWorkRecoveryInterface $incrementalWorkRecovery = null
+        private readonly RebuildFenceInterface $rebuildFence,
+        private readonly IncrementalWorkLedgerInterface $incrementalWorkLedger,
+        private readonly IncrementalWorkRecoveryInterface $incrementalWorkRecovery,
+        private readonly ClockInterface $clock,
+        private readonly SleeperInterface $sleeper,
+        private readonly LockManagerInterface $lockManager
     ) {
     }
 
@@ -147,14 +154,26 @@ final class FullProductReindexer implements FullProductReindexerInterface
             foreach ($this->enabled as $entry) {
                 $this->renewFence($fenceToken);
                 $this->prepareStore($entry['scope']);
-                $this->reindexStore($entry['scope'], $entry['config']);
+                $this->renewFence($fenceToken);
+                $this->reindexStore($entry['scope'], $entry['config'], $fenceToken);
                 $this->renewFence($fenceToken);
                 $this->finishStore($entry['scope']);
+                $this->renewFence($fenceToken);
             }
 
-            $this->assertFenceOwned($fenceToken);
-            $this->activateRun();
+            $activated = new RebuildResult(
+                $this->buildMetrics($startedAt, true),
+                RebuildResultInterface::OUTCOME_ACTIVATED
+            );
+            $this->activateAndReleaseFence($fenceToken, $activated);
+            $this->recoverIncrementalWork($fenceToken, null, $activated);
+
+            return $activated;
         } catch (ProductIndexingException $exception) {
+            if ($exception->rebuildResult()?->activated()) {
+                throw $exception;
+            }
+
             $aborted = $this->abortedResult($startedAt);
             try {
                 $this->abort($runBegun, $exception, $aborted);
@@ -182,39 +201,23 @@ final class FullProductReindexer implements FullProductReindexerInterface
                 $aborted
             );
         }
+    }
 
-        $activated = new RebuildResult(
-            $this->buildMetrics($startedAt, true),
-            RebuildResultInterface::OUTCOME_ACTIVATED
+    private function acquireFence(): string
+    {
+        return $this->withRebuildGate(
+            fn(): string => $this->rebuildFence->acquire(self::FENCE_LEASE_SECONDS)
         );
-        $this->releaseFence($fenceToken, null, $activated);
-        $this->recoverIncrementalWork($fenceToken, null, $activated);
-
-        return $activated;
     }
 
-    private function acquireFence(): ?string
+    private function drainProcessingClaims(string $fenceToken): void
     {
-        if ($this->rebuildFence === null) {
-            return null;
-        }
+        $deadline = $this->clock->now()->modify(
+            '+' . (IncrementalWorkLedgerInterface::PROCESSING_LEASE_SECONDS + self::DRAIN_SAFETY_MARGIN_SECONDS)
+            . ' seconds'
+        );
 
-        try {
-            return $this->rebuildFence->acquire(self::FENCE_LEASE_SECONDS);
-        } catch (RebuildFenceException $exception) {
-            throw $exception;
-        } catch (\Throwable $throwable) {
-            throw new RebuildFenceException($this->safeCause($throwable));
-        }
-    }
-
-    private function drainProcessingClaims(?string $fenceToken): void
-    {
-        if ($this->incrementalWorkLedger === null) {
-            return;
-        }
-
-        for ($attempt = 0; $attempt < self::DRAIN_ATTEMPTS; $attempt++) {
+        while (true) {
             $this->renewFence($fenceToken);
             $this->incrementalWorkLedger->recoverExpiredLeases(self::DRAIN_BATCH_SIZE);
 
@@ -222,18 +225,20 @@ final class FullProductReindexer implements FullProductReindexerInterface
                 return;
             }
 
-            usleep(self::DRAIN_SLEEP_MICROSECONDS);
+            $now = $this->clock->now();
+            if ($now >= $deadline) {
+                break;
+            }
+
+            $remaining = $deadline->getTimestamp() - $now->getTimestamp();
+            $this->sleeper->sleep(max(1, min(self::DRAIN_POLL_SECONDS, $remaining)));
         }
 
         throw new RebuildFenceException();
     }
 
-    private function renewFence(?string $fenceToken): void
+    private function renewFence(string $fenceToken): void
     {
-        if ($this->rebuildFence === null || $fenceToken === null) {
-            return;
-        }
-
         try {
             $this->rebuildFence->renew($fenceToken, self::FENCE_LEASE_SECONDS);
         } catch (RebuildFenceException $exception) {
@@ -243,12 +248,8 @@ final class FullProductReindexer implements FullProductReindexerInterface
         }
     }
 
-    private function assertFenceOwned(?string $fenceToken): void
+    private function assertFenceOwned(string $fenceToken): void
     {
-        if ($this->rebuildFence === null || $fenceToken === null) {
-            return;
-        }
-
         try {
             $this->rebuildFence->assertOwned($fenceToken);
         } catch (RebuildFenceException $exception) {
@@ -258,12 +259,107 @@ final class FullProductReindexer implements FullProductReindexerInterface
         }
     }
 
+    private function activateAndReleaseFence(string $fenceToken, RebuildResultInterface $activated): void
+    {
+        try {
+            $locked = $this->lockManager->lock(self::REBUILD_GATE_LOCK_NAME, 0);
+        } catch (\Throwable $throwable) {
+            throw new RebuildFenceException($this->safeCause($throwable));
+        }
+
+        if (!$locked) {
+            throw new RebuildFenceException();
+        }
+
+        $primaryFailure = null;
+        $activatedAlias = false;
+        $releaseFailed = false;
+
+        try {
+            $this->renewFence($fenceToken);
+            $this->assertFenceOwned($fenceToken);
+            $this->activateRun();
+            $activatedAlias = true;
+            $this->rebuildFence->release($fenceToken);
+        } catch (\Throwable $throwable) {
+            $primaryFailure = $throwable;
+        } finally {
+            try {
+                $released = $this->lockManager->unlock(self::REBUILD_GATE_LOCK_NAME);
+                $releaseFailed = !$released;
+            } catch (\Throwable) {
+                $releaseFailed = true;
+            }
+        }
+
+        if ($primaryFailure !== null) {
+            if ($activatedAlias && !$primaryFailure instanceof ProductIndexingException) {
+                throw new RebuildFenceException($this->safeCause($primaryFailure), $activated);
+            }
+
+            if ($activatedAlias && $primaryFailure instanceof RebuildFenceException) {
+                throw new RebuildFenceException($primaryFailure, $activated);
+            }
+
+            throw $primaryFailure;
+        }
+
+        if ($releaseFailed) {
+            throw new RebuildFenceException(null, $activated);
+        }
+    }
+
+    /**
+     * @template T
+     * @param callable(): T $callback
+     * @return T
+     */
+    private function withRebuildGate(callable $callback): mixed
+    {
+        try {
+            $locked = $this->lockManager->lock(self::REBUILD_GATE_LOCK_NAME, 0);
+        } catch (\Throwable $throwable) {
+            throw new RebuildFenceException($this->safeCause($throwable));
+        }
+
+        if (!$locked) {
+            throw new RebuildFenceException();
+        }
+
+        $primaryFailure = null;
+        $releaseFailed = false;
+        $result = null;
+
+        try {
+            $result = $callback();
+        } catch (\Throwable $throwable) {
+            $primaryFailure = $throwable;
+        } finally {
+            try {
+                $released = $this->lockManager->unlock(self::REBUILD_GATE_LOCK_NAME);
+                $releaseFailed = !$released;
+            } catch (\Throwable) {
+                $releaseFailed = true;
+            }
+        }
+
+        if ($primaryFailure !== null) {
+            throw $primaryFailure;
+        }
+
+        if ($releaseFailed) {
+            throw new RebuildFenceException();
+        }
+
+        return $result;
+    }
+
     private function releaseFence(
         ?string $fenceToken,
         ?\Throwable $primary,
         RebuildResultInterface $result
     ): void {
-        if ($this->rebuildFence === null || $fenceToken === null) {
+        if ($fenceToken === null) {
             return;
         }
 
@@ -284,7 +380,7 @@ final class FullProductReindexer implements FullProductReindexerInterface
         RebuildResultInterface $result
     ): void
     {
-        if ($this->incrementalWorkRecovery === null || $fenceToken === null) {
+        if ($fenceToken === null) {
             return;
         }
 
@@ -364,9 +460,10 @@ final class FullProductReindexer implements FullProductReindexerInterface
         $this->counts['storesPrepared']++;
     }
 
-    private function reindexStore(StoreScopeInterface $scope, IndexingConfigInterface $config): void
+    private function reindexStore(StoreScopeInterface $scope, IndexingConfigInterface $config, string $fenceToken): void
     {
         foreach ($this->idBatchProvider->batches($scope, $config->batchSize()) as $batch) {
+            $this->renewFence($fenceToken);
             $this->counts['productIdsExamined'] += count($batch);
 
             try {
@@ -398,6 +495,8 @@ final class FullProductReindexer implements FullProductReindexerInterface
                 continue;
             }
 
+            $this->renewFence($fenceToken);
+
             try {
                 $this->documentWriter->writeBatch($eligible);
             } catch (ProductIndexingException $exception) {
@@ -410,6 +509,7 @@ final class FullProductReindexer implements FullProductReindexerInterface
             }
 
             $this->counts['batchesWritten']++;
+            $this->renewFence($fenceToken);
         }
     }
 

@@ -6,6 +6,8 @@ namespace Aavirbhava\AiShoppingAssistant\Api\Indexing;
 
 interface IncrementalWorkLedgerInterface
 {
+    public const PROCESSING_LEASE_SECONDS = 300;
+
     /**
      * @param list<int> $productIds
      */

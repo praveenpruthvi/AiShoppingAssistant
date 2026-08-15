@@ -34,6 +34,7 @@ final class DbRebuildFence implements RebuildFenceInterface
                 $this->ensureRow($connection);
                 $row = $this->lockedRow($connection);
                 $now = $this->now();
+                $this->assertStructurallyValidRow($row);
 
                 if ($this->active($row, $now)) {
                     throw new RebuildFenceException();
@@ -94,6 +95,20 @@ final class DbRebuildFence implements RebuildFenceInterface
             );
 
             if ($updated !== 1) {
+                $row = $connection->fetchRow(
+                    $connection->select()
+                        ->from($this->table())
+                        ->where('fence_id = ?', self::FENCE_ID)
+                        ->where('is_active = ?', 1)
+                        ->where('owner_token = ?', $ownerToken)
+                        ->where('lease_expires_at > ?', $this->now())
+                        ->limit(1)
+                );
+
+                if (is_array($row)) {
+                    return;
+                }
+
                 throw new RebuildFenceException();
             }
         });
@@ -178,7 +193,7 @@ final class DbRebuildFence implements RebuildFenceInterface
                 'created_at' => $this->now(),
                 'updated_at' => $this->now(),
             ],
-            []
+            ['fence_id']
         );
     }
 
@@ -187,10 +202,34 @@ final class DbRebuildFence implements RebuildFenceInterface
      */
     private function active(array $row, string $now): bool
     {
-        return (int)$row['is_active'] === 1
-            && is_string($row['owner_token'])
-            && is_string($row['lease_expires_at'])
-            && $row['lease_expires_at'] > $now;
+        return (string)$row['is_active'] === '1' && (string)$row['lease_expires_at'] > $now;
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     */
+    private function assertStructurallyValidRow(array $row): void
+    {
+        $active = (string)($row['is_active'] ?? '');
+        if ($active !== '0' && $active !== '1') {
+            throw new RebuildFenceException();
+        }
+
+        if ($active === '0') {
+            if ($row['owner_token'] !== null || $row['lease_expires_at'] !== null) {
+                throw new RebuildFenceException();
+            }
+
+            return;
+        }
+
+        if (!is_string($row['owner_token']) || !preg_match('/^[A-Za-z0-9_-]{32,64}$/', $row['owner_token'])) {
+            throw new RebuildFenceException();
+        }
+
+        if (!is_string($row['lease_expires_at']) || !$this->validDateTime($row['lease_expires_at'])) {
+            throw new RebuildFenceException();
+        }
     }
 
     private function assertOwnerToken(string $token): void
@@ -205,6 +244,16 @@ final class DbRebuildFence implements RebuildFenceInterface
         if ($leaseSeconds < 1 || $leaseSeconds > 3600) {
             throw new RebuildFenceException();
         }
+    }
+
+    private function validDateTime(string $value): bool
+    {
+        $date = \DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $value);
+        $errors = \DateTimeImmutable::getLastErrors();
+
+        return $date instanceof \DateTimeImmutable
+            && ($errors === false || ((int)$errors['warning_count'] === 0 && (int)$errors['error_count'] === 0))
+            && $date->format('Y-m-d H:i:s') === $value;
     }
 
     private function table(): string
@@ -238,4 +287,3 @@ final class DbRebuildFence implements RebuildFenceInterface
         }
     }
 }
-

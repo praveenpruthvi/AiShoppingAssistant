@@ -20,7 +20,6 @@ final class DbIncrementalWorkLedger implements IncrementalWorkLedgerInterface
     private const MAX_ATTEMPTS = IncrementalFailureDispositionPolicy::MAX_ATTEMPTS;
     private const BASE_DELAY_SECONDS = IncrementalFailureDispositionPolicy::BASE_DELAY_SECONDS;
     private const MAX_DELAY_SECONDS = IncrementalFailureDispositionPolicy::MAX_DELAY_SECONDS;
-    private const LEASE_SECONDS = 300;
     private const EXPIRED_LEASE_ERROR = 'lease_expired';
 
     public function __construct(
@@ -98,6 +97,7 @@ final class DbIncrementalWorkLedger implements IncrementalWorkLedgerInterface
 
             try {
                 if ($this->rebuildFenceActive($connection)) {
+                    $this->releaseQueuedProductForReplay($connection, $productId);
                     $connection->commit();
 
                     return null;
@@ -141,7 +141,7 @@ final class DbIncrementalWorkLedger implements IncrementalWorkLedgerInterface
                         'state' => IncrementalWorkState::PROCESSING,
                         'claimed_generation' => $generation,
                         'lease_token' => $token,
-                        'lease_expires_at' => $this->future(self::LEASE_SECONDS),
+                        'lease_expires_at' => $this->future(self::PROCESSING_LEASE_SECONDS),
                         'updated_at' => $this->now(),
                     ],
                     [
@@ -526,11 +526,50 @@ final class DbIncrementalWorkLedger implements IncrementalWorkLedgerInterface
                 ->forUpdate(true)
         );
 
-        return is_array($row)
-            && (int)$row['is_active'] === 1
-            && is_string($row['owner_token'])
-            && is_string($row['lease_expires_at'])
-            && $row['lease_expires_at'] > $this->now();
+        if (!is_array($row)) {
+            return false;
+        }
+
+        $active = (string)($row['is_active'] ?? '');
+        if ($active !== '0' && $active !== '1') {
+            throw new IncrementalLedgerPersistenceException();
+        }
+
+        if ($active === '0') {
+            if ($row['owner_token'] !== null || $row['lease_expires_at'] !== null) {
+                throw new IncrementalLedgerPersistenceException();
+            }
+
+            return false;
+        }
+
+        if (!is_string($row['owner_token']) || !preg_match('/^[A-Za-z0-9_-]{32,64}$/', $row['owner_token'])) {
+            throw new IncrementalLedgerPersistenceException();
+        }
+
+        if (!is_string($row['lease_expires_at']) || !$this->validDateTime($row['lease_expires_at'])) {
+            throw new IncrementalLedgerPersistenceException();
+        }
+
+        return $row['lease_expires_at'] > $this->now();
+    }
+
+    private function releaseQueuedProductForReplay(AdapterInterface $connection, int $productId): void
+    {
+        $connection->update(
+            $this->table(),
+            [
+                'state' => IncrementalWorkState::PENDING,
+                'next_attempt_at' => $this->now(),
+                'lease_token' => null,
+                'lease_expires_at' => null,
+                'updated_at' => $this->now(),
+            ],
+            [
+                'product_id = ?' => $productId,
+                'state = ?' => IncrementalWorkState::QUEUED,
+            ]
+        );
     }
 
     private function sanitizeCode(string $errorCode): string
@@ -596,6 +635,16 @@ final class DbIncrementalWorkLedger implements IncrementalWorkLedgerInterface
         if (!preg_match('/^[A-Za-z0-9_-]{32,64}$/', $token)) {
             throw new IncrementalLedgerPersistenceException();
         }
+    }
+
+    private function validDateTime(string $value): bool
+    {
+        $date = \DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $value);
+        $errors = \DateTimeImmutable::getLastErrors();
+
+        return $date instanceof \DateTimeImmutable
+            && ($errors === false || ((int)$errors['warning_count'] === 0 && (int)$errors['error_count'] === 0))
+            && $date->format('Y-m-d H:i:s') === $value;
     }
 
     private function table(): string
