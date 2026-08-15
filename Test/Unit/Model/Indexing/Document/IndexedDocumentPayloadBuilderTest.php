@@ -33,9 +33,12 @@ final class IndexedDocumentPayloadBuilderTest extends TestCase
         $vector = new EmbeddingVector([0.1, 0.2, 0.3, 0.4], 4);
         $indexed = new IndexedProductDocument($document, $vector, self::HASH, self::FINGERPRINT, '2026-01-01T00:00:00+00:00');
 
-        $payload = $this->builder->build($indexed);
+        $storage = $this->builder->build($indexed);
+        $payload = $storage->source();
 
-        self::assertSame('1_42', $payload['_id']);
+        self::assertSame('1_42', $storage->id());
+        self::assertArrayNotHasKey('_id', $payload);
+        self::assertArrayNotHasKey('_index', $payload);
         self::assertSame('1_42', $payload[ProductIndexMappingInterface::FIELD_DOCUMENT_ID]);
         self::assertSame(42, $payload[ProductIndexMappingInterface::FIELD_ENTITY_ID]);
         self::assertSame('SKU-42', $payload[ProductIndexMappingInterface::FIELD_SKU]);
@@ -58,7 +61,7 @@ final class IndexedDocumentPayloadBuilderTest extends TestCase
         $vector = new EmbeddingVector([0.1, 0.2, 0.3, 0.4], 4);
         $indexed = new IndexedProductDocument($document, $vector, self::HASH, self::FINGERPRINT, '2026-01-01T00:00:00+00:00');
 
-        $payload = $this->builder->build($indexed);
+        $payload = $this->builder->build($indexed)->source();
 
         self::assertSame(
             [[
@@ -105,7 +108,7 @@ final class IndexedDocumentPayloadBuilderTest extends TestCase
         );
         $indexed = new IndexedProductDocument($documentWithoutUpdate, $vector, self::HASH, self::FINGERPRINT, '2026-01-01T00:00:00+00:00');
 
-        $payload = $this->builder->build($indexed);
+        $payload = $this->builder->build($indexed)->source();
 
         self::assertArrayNotHasKey(ProductIndexMappingInterface::FIELD_UPDATED_AT, $payload);
     }

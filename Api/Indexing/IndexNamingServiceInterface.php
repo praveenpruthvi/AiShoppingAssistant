@@ -73,11 +73,23 @@ interface IndexNamingServiceInterface
      * True when an index name is owned by the assistant for the given prefix.
      *
      * Used to decide which targets an alias may safely drop during activation
-     * and which physical indexes a run may delete during cleanup. The check is
-     * prefix-prefixed only, so assistant-owned names are never confused with
-     * Magento's own catalogue indexes.
+     * and which physical indexes a run may delete during cleanup. Delegates to
+     * parseAssistantIndex: only run-shaped names
+     * (<prefix>_store_<storeId>_run_<token>) are assistant-owned, so read
+     * aliases and foreign indexes are never treated as run targets.
      */
     public function isAssistantOwnedIndex(string $prefix, string $indexName): bool;
+
+    /**
+     * Parses a run-shaped assistant physical index name.
+     *
+     * Returns null unless the name exactly matches
+     * <prefix>_store_<storeId>_run_<runToken> where <storeId> is a positive
+     * integer and <runToken> is 1-32 lowercase alphanumeric characters.
+     *
+     * @return array{store_id: int, run_token: string}|null
+     */
+    public function parseAssistantIndex(string $prefix, string $indexName): ?array;
 
     /**
      * Validates a configured index prefix.

@@ -38,7 +38,8 @@ final class ProductIndexMapping implements ProductIndexMappingInterface
                 'number_of_shards' => 1,
                 'number_of_replicas' => 1,
                 'index' => [
-                    'refresh_interval' => '-1',
+                    'knn' => true,
+                    'refresh_interval' => self::REFRESH_INTERVAL,
                 ],
             ],
             'mappings' => [
@@ -95,6 +96,16 @@ final class ProductIndexMapping implements ProductIndexMappingInterface
                     self::FIELD_EMBEDDING => [
                         'type' => 'knn_vector',
                         'dimension' => $embeddingDimensions,
+                        'space_type' => self::KNN_SPACE_TYPE,
+                        'method' => [
+                            'name' => 'hnsw',
+                            'space_type' => self::KNN_SPACE_TYPE,
+                            'engine' => 'lucene',
+                            'parameters' => [
+                                'ef_construction' => 128,
+                                'm' => 24,
+                            ],
+                        ],
                     ],
                     self::FIELD_EMBEDDING_HASH => ['type' => 'keyword'],
                     self::FIELD_EMBEDDING_FINGERPRINT => ['type' => 'keyword'],

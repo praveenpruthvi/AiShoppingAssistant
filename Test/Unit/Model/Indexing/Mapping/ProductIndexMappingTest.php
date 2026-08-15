@@ -44,6 +44,8 @@ final class ProductIndexMappingTest extends TestCase
         );
 
         self::assertFalse($body['mappings']['dynamic']);
+        self::assertTrue($body['settings']['index']['knn']);
+        self::assertSame(ProductIndexMappingInterface::REFRESH_INTERVAL, $body['settings']['index']['refresh_interval']);
         self::assertSame(1, $body['mappings']['_meta']['schema_version']);
         self::assertSame(ProductIndexMappingInterface::MAPPING_VERSION, $body['mappings']['_meta']['mapping_version']);
         self::assertSame(2, $body['mappings']['_meta']['store_id']);
@@ -65,8 +67,15 @@ final class ProductIndexMappingTest extends TestCase
 
         $body = $this->mapping->createBody($scope, $context, 1536, self::FINGERPRINT, self::BASE_URL_HASH, 'index');
 
-        self::assertSame('knn_vector', $body['mappings']['properties'][ProductIndexMappingInterface::FIELD_EMBEDDING]['type']);
-        self::assertSame(1536, $body['mappings']['properties'][ProductIndexMappingInterface::FIELD_EMBEDDING]['dimension']);
+        $embedding = $body['mappings']['properties'][ProductIndexMappingInterface::FIELD_EMBEDDING];
+        self::assertSame('knn_vector', $embedding['type']);
+        self::assertSame(1536, $embedding['dimension']);
+        self::assertSame(ProductIndexMappingInterface::KNN_SPACE_TYPE, $embedding['space_type']);
+        self::assertSame('hnsw', $embedding['method']['name']);
+        self::assertSame('lucene', $embedding['method']['engine']);
+        self::assertSame(ProductIndexMappingInterface::KNN_SPACE_TYPE, $embedding['method']['space_type']);
+        self::assertSame(128, $embedding['method']['parameters']['ef_construction']);
+        self::assertSame(24, $embedding['method']['parameters']['m']);
     }
 
     public function testRejectsInvalidDimensions(): void

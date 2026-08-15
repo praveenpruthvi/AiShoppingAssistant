@@ -84,14 +84,36 @@ final class IndexNamingServiceTest extends TestCase
         self::assertFalse($this->service->isPrefixValid('1prefix'));
     }
 
-    public function testIsAssistantOwnedIndexIsPrefixScoped(): void
+    public function testIsAssistantOwnedIndexIsRunShaped(): void
     {
         $prefix = 'aavirbhava_ai';
 
         self::assertTrue($this->service->isAssistantOwnedIndex($prefix, 'aavirbhava_ai_store_2_run_abc'));
-        self::assertTrue($this->service->isAssistantOwnedIndex($prefix, 'aavirbhava_ai_store_2_current'));
+        self::assertFalse($this->service->isAssistantOwnedIndex($prefix, 'aavirbhava_ai_store_2_current'));
         self::assertFalse($this->service->isAssistantOwnedIndex($prefix, 'magento_product_2_default'));
         self::assertFalse($this->service->isAssistantOwnedIndex($prefix, ''));
         self::assertFalse($this->service->isAssistantOwnedIndex('Invalid!', 'aavirbhava_ai_store_2_run_abc'));
+    }
+
+    public function testParseAssistantIndexReturnsStoreAndRunToken(): void
+    {
+        $parsed = $this->service->parseAssistantIndex('aavirbhava_ai', 'aavirbhava_ai_store_2_run_abc123');
+
+        self::assertNotNull($parsed);
+        self::assertSame(2, $parsed['store_id']);
+        self::assertSame('abc123', $parsed['run_token']);
+    }
+
+    public function testParseAssistantIndexRejectsNonRunShapedNames(): void
+    {
+        $prefix = 'aavirbhava_ai';
+
+        self::assertNull($this->service->parseAssistantIndex($prefix, 'aavirbhava_ai_store_2_current'));
+        self::assertNull($this->service->parseAssistantIndex($prefix, 'aavirbhava_ai_store_2'));
+        self::assertNull($this->service->parseAssistantIndex($prefix, 'aavirbhava_ai_store_x_run_abc'));
+        self::assertNull($this->service->parseAssistantIndex($prefix, 'aavirbhava_ai_store_2_run_ABC'));
+        self::assertNull($this->service->parseAssistantIndex($prefix, 'aavirbhava_ai_store_2_run_'));
+        self::assertNull($this->service->parseAssistantIndex($prefix, 'magento_product_2_run_abc'));
+        self::assertNull($this->service->parseAssistantIndex('Invalid!', 'aavirbhava_ai_store_2_run_abc'));
     }
 }

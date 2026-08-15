@@ -4,11 +4,12 @@ declare(strict_types=1);
 
 namespace Aavirbhava\AiShoppingAssistant\Model\Indexing;
 
-use Aavirbhava\AiShoppingAssistant\Api\Catalog\ContentHashServiceInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductDocumentInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\ConfigurationReaderInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\AssistantSearchClientInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Indexing\EmbeddingConfigSnapshotServiceInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\EmbeddingEnrichmentServiceInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Indexing\FrozenEmbeddingConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\IndexedProductDocumentInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\IndexNamingServiceInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\ProductDocumentWriterInterface;
@@ -23,6 +24,7 @@ use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexScopeMismatchEx
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchBackendUnavailableException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchCapabilityUnsupportedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchConfigurationInvalidException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexAbortFailedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexCreateFailedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexingException;
 
@@ -30,18 +32,21 @@ use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexingExcep
  * OpenSearch-backed product document writer implementing the two-phase
  * lifecycle.
  *
- * beginRun freezes per-store embedding configuration (dimensions and
- * fingerprint), verifies backend availability and capability, and creates one
- * isolated physical index per enabled store — including stores that will
- * receive no documents. beginStore/ writeBatch/ finishStore stream documents
- * into the isolated index; embeddings are generated in bounded batches and
- * every write is verified. activateRun performs one atomic alias update that
- * moves the store read aliases to the new physical indexes and drops only
- * assistant-owned targets; activation is the only moment the live index changes.
+ * beginRun freezes per-store embedding configuration (dimensions, fingerprint,
+ * base-url hash) via the snapshot service, verifies backend availability and
+ * capability, and creates one isolated physical index per enabled store —
+ * including stores that will receive no documents. beginStore/ writeBatch/
+ * finishStore stream documents into the isolated index; embeddings are
+ * generated in bounded batches and every write is verified. activateRun
+ * performs one atomic alias update that moves the store read aliases to the new
+ * physical indexes and drops only assistant-owned run targets; activation is
+ * the only moment the live index changes.
  *
- * abortRun is idempotent and never throws: it deletes only run-owned physical
- * indexes that are not currently aliased, so a partially built or failed run is
- * cleaned up without ever touching another store's live data.
+ * abortRun is idempotent: it deletes only run-owned physical indexes whose
+ * mapping _meta proves assistant ownership and that are not currently aliased.
+ * If any cleanup step fails the run state is still reset and a sanitized
+ * ProductIndexAbortFailedException reports the failure. After activation or
+ * abort the writer returns to the idle state and a new run may begin.
  */
 final class OpenSearchProductDocumentWriter implements ProductDocumentWriterInterface
 {
@@ -55,9 +60,7 @@ final class OpenSearchProductDocumentWriter implements ProductDocumentWriterInte
      *   scope: StoreScopeInterface,
      *   prefix: string,
      *   indexName: string,
-     *   embeddingDimensions: int,
-     *   embeddingFingerprint: string,
-     *   embeddingBaseUrlHash: string,
+     *   embedding: FrozenEmbeddingConfigInterface,
      *   finished: bool
      * }>
      */
@@ -71,12 +74,12 @@ final class OpenSearchProductDocumentWriter implements ProductDocumentWriterInte
 
     public function __construct(
         private readonly ConfigurationReaderInterface $configurationReader,
-        private readonly ContentHashServiceInterface $contentHashService,
         private readonly IndexNamingServiceInterface $namingService,
         private readonly AssistantSearchClientInterface $client,
         private readonly ProductIndexMappingInterface $mapping,
         private readonly EmbeddingEnrichmentServiceInterface $enrichment,
-        private readonly IndexedDocumentPayloadBuilder $payloadBuilder
+        private readonly IndexedDocumentPayloadBuilder $payloadBuilder,
+        private readonly EmbeddingConfigSnapshotServiceInterface $configSnapshot
     ) {
     }
 
@@ -96,12 +99,13 @@ final class OpenSearchProductDocumentWriter implements ProductDocumentWriterInte
         $created = [];
         try {
             foreach ($stores as $store) {
+                $embedding = $store['embedding'];
                 $body = $this->mapping->createBody(
                     $store['scope'],
                     $context,
-                    $store['embeddingDimensions'],
-                    $store['embeddingFingerprint'],
-                    $store['embeddingBaseUrlHash'],
+                    $embedding->dimensions(),
+                    $embedding->fingerprint(),
+                    $embedding->baseUrlHash(),
                     $store['indexName']
                 );
                 $this->client->createIndex($store['indexName'], $body);
@@ -111,7 +115,7 @@ final class OpenSearchProductDocumentWriter implements ProductDocumentWriterInte
             $this->cleanupCreated($created);
             throw $throwable instanceof ProductIndexingException
                 ? $throwable
-                : new ProductIndexCreateFailedException($this->safeCause($throwable));
+                : new ProductIndexCreateFailedException();
         }
 
         $this->context = $context;
@@ -127,6 +131,10 @@ final class OpenSearchProductDocumentWriter implements ProductDocumentWriterInte
         $this->assertActive();
 
         if (!isset($this->stores[$scope->storeId()])) {
+            throw new IndexScopeMismatchException();
+        }
+
+        if ($scope->websiteId() !== $this->stores[$scope->storeId()]['scope']->websiteId()) {
             throw new IndexScopeMismatchException();
         }
 
@@ -148,9 +156,13 @@ final class OpenSearchProductDocumentWriter implements ProductDocumentWriterInte
 
         $this->assertDocumentsValid($documents, $storeId);
 
-        $indexed = $this->enrichment->enrich($storeId, $store['embeddingFingerprint'], $documents);
+        $indexed = $this->enrichment->enrich($store['embedding'], $documents);
 
-        $this->assertEmbeddingsValid($indexed, $store['embeddingDimensions'], $store['embeddingFingerprint']);
+        $this->assertEmbeddingsValid(
+            $indexed,
+            $store['embedding']->dimensions(),
+            $store['embedding']->fingerprint()
+        );
 
         $payloads = [];
         foreach ($indexed as $item) {
@@ -210,7 +222,7 @@ final class OpenSearchProductDocumentWriter implements ProductDocumentWriterInte
 
         $this->client->updateAliases($actions);
 
-        $this->activated = true;
+        $this->resetState();
     }
 
     public function abortRun(): void
@@ -221,6 +233,7 @@ final class OpenSearchProductDocumentWriter implements ProductDocumentWriterInte
 
         $this->aborted = true;
 
+        $failedIndexes = [];
         foreach ($this->stores as $store) {
             $indexName = $store['indexName'];
 
@@ -229,6 +242,7 @@ final class OpenSearchProductDocumentWriter implements ProductDocumentWriterInte
                     continue;
                 }
             } catch (\Throwable $throwable) {
+                $failedIndexes[] = $indexName;
                 continue;
             }
 
@@ -239,19 +253,34 @@ final class OpenSearchProductDocumentWriter implements ProductDocumentWriterInte
                     continue;
                 }
             } catch (\Throwable $throwable) {
+                $failedIndexes[] = $indexName;
+                continue;
+            }
+
+            try {
+                $meta = $this->client->indexMeta($indexName);
+            } catch (\Throwable $throwable) {
+                $failedIndexes[] = $indexName;
+                continue;
+            }
+
+            if (!$this->metaProvesOwnership($indexName, $store, $meta)) {
+                $failedIndexes[] = $indexName;
                 continue;
             }
 
             try {
                 $this->client->deleteIndex($indexName);
             } catch (\Throwable $throwable) {
-                continue;
+                $failedIndexes[] = $indexName;
             }
         }
 
-        $this->stores = [];
-        $this->currentStoreId = null;
-        $this->context = null;
+        $this->resetState();
+
+        if ($failedIndexes !== []) {
+            throw new ProductIndexAbortFailedException();
+        }
     }
 
     /**
@@ -259,9 +288,7 @@ final class OpenSearchProductDocumentWriter implements ProductDocumentWriterInte
      *   scope: StoreScopeInterface,
      *   prefix: string,
      *   indexName: string,
-     *   embeddingDimensions: int,
-     *   embeddingFingerprint: string,
-     *   embeddingBaseUrlHash: string,
+     *   embedding: FrozenEmbeddingConfigInterface,
      *   finished: bool
      * }
      */
@@ -269,29 +296,16 @@ final class OpenSearchProductDocumentWriter implements ProductDocumentWriterInte
     {
         try {
             $indexing = $this->configurationReader->readIndexing($scope->storeId());
-            $embedding = $this->configurationReader->readEmbedding($scope->storeId());
+            $embedding = $this->configSnapshot->capture($scope->storeId());
         } catch (ConfigurationException $exception) {
-            throw new OpenSearchConfigurationInvalidException($exception);
+            throw new OpenSearchConfigurationInvalidException();
         }
-
-        $embeddingFingerprint = $this->contentHashService->hash([
-            'provider' => $embedding->provider(),
-            'model' => $embedding->model(),
-            'base_url' => $embedding->baseUrl(),
-            'dimensions' => $embedding->dimensions(),
-        ]);
-
-        $embeddingBaseUrlHash = $this->contentHashService->hash([
-            'base_url' => $embedding->baseUrl(),
-        ]);
 
         return [
             'scope' => $scope,
             'prefix' => $indexing->indexPrefix(),
             'indexName' => $this->namingService->physicalIndex($indexing->indexPrefix(), $scope, $context),
-            'embeddingDimensions' => $embedding->dimensions(),
-            'embeddingFingerprint' => $embeddingFingerprint,
-            'embeddingBaseUrlHash' => $embeddingBaseUrlHash,
+            'embedding' => $embedding,
             'finished' => false,
         ];
     }
@@ -323,6 +337,8 @@ final class OpenSearchProductDocumentWriter implements ProductDocumentWriterInte
 
     private function assertDocumentsValid(array $documents, int $storeId): void
     {
+        $websiteId = $this->stores[$storeId]['scope']->websiteId();
+
         foreach ($documents as $document) {
             if (!$document instanceof ProductDocumentInterface) {
                 throw new IndexScopeMismatchException();
@@ -331,6 +347,9 @@ final class OpenSearchProductDocumentWriter implements ProductDocumentWriterInte
                 throw new IndexCompatibilityMismatchException();
             }
             if ($document->storeId() !== $storeId) {
+                throw new IndexScopeMismatchException();
+            }
+            if (!in_array($websiteId, $document->websiteIds(), true)) {
                 throw new IndexScopeMismatchException();
             }
         }
@@ -349,6 +368,25 @@ final class OpenSearchProductDocumentWriter implements ProductDocumentWriterInte
                 throw new IndexCompatibilityMismatchException();
             }
         }
+    }
+
+    /**
+     * @param array{
+     *   scope: StoreScopeInterface,
+     *   prefix: string,
+     *   indexName: string,
+     *   embedding: FrozenEmbeddingConfigInterface,
+     *   finished: bool
+     * } $store
+     * @param array<string, mixed> $meta
+     */
+    private function metaProvesOwnership(string $indexName, array $store, array $meta): bool
+    {
+        return ($meta['assistant_index'] ?? null) === true
+            && (int)($meta['store_id'] ?? 0) === $store['scope']->storeId()
+            && ($meta['physical_index'] ?? null) === $indexName
+            && (int)($meta['schema_version'] ?? 0) === $this->context->schemaVersion()
+            && (int)($meta['mapping_version'] ?? 0) === ProductIndexMappingInterface::MAPPING_VERSION;
     }
 
     private function assertRunOpen(): void
@@ -372,8 +410,15 @@ final class OpenSearchProductDocumentWriter implements ProductDocumentWriterInte
         }
     }
 
-    private function safeCause(\Throwable $throwable): ?\Exception
+    /**
+     * Returns the writer to the idle state so a fresh run may begin.
+     */
+    private function resetState(): void
     {
-        return $throwable instanceof \Exception ? $throwable : null;
+        $this->context = null;
+        $this->stores = [];
+        $this->currentStoreId = null;
+        $this->activated = false;
+        $this->aborted = false;
     }
 }

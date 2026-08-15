@@ -5,15 +5,17 @@ declare(strict_types=1);
 namespace Aavirbhava\AiShoppingAssistant\Model\Indexing\Client;
 
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\AssistantSearchClientInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Indexing\StoragePayloadInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\AliasActivationFailedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\BulkIndexFailedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\BulkResponseInvalidException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchBackendUnavailableException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchCapabilityUnsupportedException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchConfigurationInvalidException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexCreateFailedException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexingException;
 use Magento\Elasticsearch\Model\Config;
 use OpenSearch\Client;
-use OpenSearch\ClientBuilder;
 
 /**
  * Production assistant-search client backed by the configured OpenSearch
@@ -21,14 +23,14 @@ use OpenSearch\ClientBuilder;
  *
  * Connection settings are reused from the Magento catalogue-search engine
  * configuration (same cluster and credentials as Magento's own search), so no
- * duplicate credentials are stored. The OpenSearch\Client is built lazily and
- * cached per process. All transport failures are translated into sanitized
- * ProductIndexingException subclasses; hosts, credentials, and request/response
- * bodies never leave this class.
+ * duplicate credentials are stored. The OpenSearch\Client is built lazily by
+ * OpenSearchClientFactory and cached per process.
  *
- * The timeouts and retries are bounded: request timeouts are clamped to the
- * configured window and automatic retries are disabled so the writer controls
- * failure handling.
+ * All transport failures are translated into sanitized ProductIndexingException
+ * subclasses without a raw previous cause: hosts, credentials, and request and
+ * response bodies never leave this class, not even in the exception chain.
+ * Request timeouts are bounded and automatic retries are disabled so the writer
+ * controls failure handling.
  */
 final class OpenSearchAssistantClient implements AssistantSearchClientInterface
 {
@@ -46,7 +48,8 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
     private ?int $requestTimeout = null;
 
     public function __construct(
-        private readonly Config $elasticsearchConfig
+        private readonly Config $elasticsearchConfig,
+        private readonly OpenSearchClientFactoryInterface $clientFactory
     ) {
     }
 
@@ -63,8 +66,10 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
     {
         try {
             $info = $this->client()->info(['client' => ['timeout' => $this->timeout()]]);
+        } catch (ProductIndexingException $exception) {
+            throw $exception;
         } catch (\Throwable $throwable) {
-            throw new OpenSearchBackendUnavailableException($this->safeCause($throwable));
+            throw new OpenSearchBackendUnavailableException();
         }
 
         $distribution = $info['version']['distribution'] ?? '';
@@ -86,8 +91,10 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
             return $this->client()->indices()->exists(
                 ['index' => $indexName, 'client' => ['timeout' => $this->timeout()]]
             );
+        } catch (ProductIndexingException $exception) {
+            throw $exception;
         } catch (\Throwable $throwable) {
-            throw new OpenSearchBackendUnavailableException($this->safeCause($throwable));
+            throw new OpenSearchBackendUnavailableException();
         }
     }
 
@@ -101,8 +108,10 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
                     'client' => ['timeout' => $this->timeout()],
                 ]
             );
+        } catch (ProductIndexingException $exception) {
+            throw $exception;
         } catch (\Throwable $throwable) {
-            throw new ProductIndexCreateFailedException($this->safeCause($throwable));
+            throw new ProductIndexCreateFailedException();
         }
     }
 
@@ -112,10 +121,22 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
             return;
         }
 
+        $seen = [];
+        foreach ($documents as $document) {
+            if (!$document instanceof StoragePayloadInterface) {
+                throw new BulkResponseInvalidException();
+            }
+            $id = $document->id();
+            if (isset($seen[$id])) {
+                throw new BulkResponseInvalidException();
+            }
+            $seen[$id] = true;
+        }
+
         $body = [];
         foreach ($documents as $document) {
-            $body[] = ['index' => ['_index' => $indexName, '_id' => $document['_id']]];
-            $body[] = $document;
+            $body[] = ['index' => ['_index' => $indexName, '_id' => $document->id()]];
+            $body[] = $document->source();
         }
 
         try {
@@ -125,27 +146,86 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
                     'client' => ['timeout' => $this->timeout()],
                 ]
             );
+        } catch (ProductIndexingException $exception) {
+            throw $exception;
         } catch (\Throwable $throwable) {
-            throw new BulkIndexFailedException($this->safeCause($throwable));
-        }
-
-        if (!is_array($response) || !isset($response['errors']) || !is_array($response['items'])) {
-            throw new BulkResponseInvalidException();
-        }
-
-        if ($response['errors'] !== false && $response['errors'] !== 0) {
             throw new BulkIndexFailedException();
         }
 
-        foreach ($response['items'] as $item) {
-            if (!is_array($item) || !isset($item['index'])) {
+        if (!is_array($response)) {
+            throw new BulkResponseInvalidException();
+        }
+
+        if (!isset($response['errors']) || !is_bool($response['errors'])) {
+            throw new BulkResponseInvalidException();
+        }
+
+        if (!isset($response['items']) || !is_array($response['items']) || !array_is_list($response['items'])) {
+            throw new BulkResponseInvalidException();
+        }
+
+        $items = $response['items'];
+        if (count($items) !== count($documents)) {
+            throw new BulkResponseInvalidException();
+        }
+
+        foreach ($items as $position => $item) {
+            if (!is_array($item) || count($item) !== 1 || !isset($item['index'])) {
                 throw new BulkResponseInvalidException();
             }
+
             $result = $item['index'];
-            if (!is_array($result) || (isset($result['status']) && (int)$result['status'] >= 400)) {
+            if (!is_array($result)) {
+                throw new BulkResponseInvalidException();
+            }
+
+            if (isset($result['error'])) {
                 throw new BulkIndexFailedException();
             }
+
+            if (!isset($result['status']) || !is_int($result['status'])) {
+                throw new BulkResponseInvalidException();
+            }
+
+            if ($result['status'] < 200 || $result['status'] >= 300) {
+                throw new BulkIndexFailedException();
+            }
+
+            $respondedId = $result['_id'] ?? null;
+            if (!is_string($respondedId) || $respondedId !== $documents[$position]->id()) {
+                throw new BulkResponseInvalidException();
+            }
         }
+    }
+
+    public function indexMeta(string $indexName): array
+    {
+        try {
+            $response = $this->client()->indices()->getMapping(
+                ['index' => $indexName, 'client' => ['timeout' => $this->timeout()]]
+            );
+        } catch (ProductIndexingException $exception) {
+            throw $exception;
+        } catch (\Throwable $throwable) {
+            throw new OpenSearchBackendUnavailableException();
+        }
+
+        if (!is_array($response)) {
+            throw new OpenSearchBackendUnavailableException();
+        }
+
+        foreach ($response as $indexData) {
+            if (is_array($indexData)
+                && isset($indexData['mappings'])
+                && is_array($indexData['mappings'])
+                && isset($indexData['mappings']['_meta'])
+                && is_array($indexData['mappings']['_meta'])
+            ) {
+                return $indexData['mappings']['_meta'];
+            }
+        }
+
+        return [];
     }
 
     public function refresh(string $indexName): void
@@ -154,8 +234,10 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
             $this->client()->indices()->refresh(
                 ['index' => $indexName, 'client' => ['timeout' => $this->timeout()]]
             );
+        } catch (ProductIndexingException $exception) {
+            throw $exception;
         } catch (\Throwable $throwable) {
-            throw new OpenSearchBackendUnavailableException($this->safeCause($throwable));
+            throw new OpenSearchBackendUnavailableException();
         }
     }
 
@@ -165,8 +247,10 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
             return $this->client()->indices()->existsAlias(
                 ['name' => $aliasName, 'client' => ['timeout' => $this->timeout()]]
             );
+        } catch (ProductIndexingException $exception) {
+            throw $exception;
         } catch (\Throwable $throwable) {
-            throw new OpenSearchBackendUnavailableException($this->safeCause($throwable));
+            throw new OpenSearchBackendUnavailableException();
         }
     }
 
@@ -180,8 +264,10 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
             $response = $this->client()->indices()->getAlias(
                 ['name' => $aliasName, 'client' => ['timeout' => $this->timeout()]]
             );
+        } catch (ProductIndexingException $exception) {
+            throw $exception;
         } catch (\Throwable $throwable) {
-            throw new OpenSearchBackendUnavailableException($this->safeCause($throwable));
+            throw new OpenSearchBackendUnavailableException();
         }
 
         if (!is_array($response)) {
@@ -204,8 +290,10 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
                     'client' => ['timeout' => $this->timeout()],
                 ]
             );
+        } catch (ProductIndexingException $exception) {
+            throw $exception;
         } catch (\Throwable $throwable) {
-            throw new AliasActivationFailedException($this->safeCause($throwable));
+            throw new AliasActivationFailedException();
         }
     }
 
@@ -215,48 +303,29 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
             $this->client()->indices()->delete(
                 ['index' => $indexName, 'client' => ['timeout' => $this->timeout()]]
             );
+        } catch (ProductIndexingException $exception) {
+            throw $exception;
         } catch (\Throwable $throwable) {
-            throw new OpenSearchBackendUnavailableException($this->safeCause($throwable));
+            throw new OpenSearchBackendUnavailableException();
         }
     }
 
     private function client(): Client
     {
         if ($this->client === null) {
-            $options = $this->elasticsearchConfig->prepareClientOptions();
-            $this->client = ClientBuilder::fromConfig($this->buildClientConfig($options), true);
+            try {
+                $options = $this->elasticsearchConfig->prepareClientOptions();
+                $this->client = $this->clientFactory->create($options);
+            } catch (ProductIndexingException $exception) {
+                throw $exception;
+            } catch (\Throwable $throwable) {
+                throw new OpenSearchConfigurationInvalidException();
+            }
+            $timeout = isset($options['timeout']) ? (int)$options['timeout'] : self::DEFAULT_TIMEOUT;
+            $this->requestTimeout = $this->clampTimeout($timeout);
         }
 
         return $this->client;
-    }
-
-    /**
-     * @param array<string, mixed> $options
-     *
-     * @return array<string, mixed>
-     */
-    private function buildClientConfig(array $options): array
-    {
-        $hostname = is_string($options['hostname'] ?? '') ? $options['hostname'] : '';
-        $scheme = parse_url($hostname, PHP_URL_SCHEME);
-        if (!is_string($scheme)) {
-            $scheme = 'http';
-        }
-
-        $host = preg_replace('/^[a-z][a-z0-9+.-]*:\/\//i', '', $hostname) ?? $hostname;
-        $port = (int)($options['port'] ?? 9200);
-        $auth = '';
-        if (($options['enableAuth'] ?? false) && !empty($options['username']) && $options['password'] !== '') {
-            $auth = $options['username'] . ':' . $options['password'] . '@';
-        }
-
-        $timeout = isset($options['timeout']) ? (int)$options['timeout'] : self::DEFAULT_TIMEOUT;
-        $this->requestTimeout = $this->clampTimeout($timeout);
-
-        return [
-            'hosts' => [sprintf('%s://%s%s:%d', $scheme, $auth, $host, $port)],
-            'retries' => 0,
-        ];
     }
 
     private function timeout(): int
@@ -278,10 +347,5 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
         }
 
         return $timeout;
-    }
-
-    private function safeCause(\Throwable $throwable): ?\Exception
-    {
-        return $throwable instanceof \Exception ? $throwable : null;
     }
 }

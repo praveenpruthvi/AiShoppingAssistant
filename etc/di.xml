@@ -53,6 +53,10 @@
                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Mapping\ProductIndexMapping"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\EmbeddingEnrichmentServiceInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Embedding\EmbeddingEnrichmentService"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\EmbeddingConfigSnapshotServiceInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Embedding\EmbeddingConfigSnapshotService"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Model\Indexing\Client\OpenSearchClientFactoryInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Client\OpenSearchClientFactory"/>
 
     <type name="Aavirbhava\AiShoppingAssistant\Model\Provider\LlmProviderRegistry">
         <arguments>

@@ -44,11 +44,27 @@ final class IndexNamingService implements IndexNamingServiceInterface
 
     public function isAssistantOwnedIndex(string $prefix, string $indexName): bool
     {
+        return $this->parseAssistantIndex($prefix, $indexName) !== null;
+    }
+
+    public function parseAssistantIndex(string $prefix, string $indexName): ?array
+    {
         if (!$this->isPrefixValid($prefix)) {
-            return false;
+            return null;
         }
 
-        return str_starts_with($indexName, $prefix . '_store_');
+        $pattern = sprintf('/^%s_store_(\d+)_run_([a-z0-9]{1,%d})$/', preg_quote($prefix, '/'), self::MAX_RUN_TOKEN_LENGTH);
+
+        if (preg_match($pattern, $indexName, $matches) !== 1) {
+            return null;
+        }
+
+        $storeId = (int)$matches[1];
+        if ($storeId < 1) {
+            return null;
+        }
+
+        return ['store_id' => $storeId, 'run_token' => $matches[2]];
     }
 
     public function isPrefixValid(string $prefix): bool

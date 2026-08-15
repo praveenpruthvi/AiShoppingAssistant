@@ -60,12 +60,25 @@ interface AssistantSearchClientInterface
      * malformed item fails the whole call. The call never partially succeeds
      * silently.
      *
-     * @param list<array<string, mixed>> $documents storage payloads
+     * @param list<StoragePayloadInterface> $documents storage payloads
      *
      * @throws ProductIndexingException when any item is rejected or the response
      *     cannot be verified
      */
     public function writeDocuments(string $indexName, array $documents): void;
+
+    /**
+     * Returns the _meta section of a physical index mapping.
+     *
+     * Used to prove that an index was created by the assistant before it is
+     * dropped during cleanup. Implementations return an empty array when the
+     * index has no _meta or does not exist.
+     *
+     * @return array<string, mixed>
+     *
+     * @throws ProductIndexingException when the index metadata cannot be read
+     */
+    public function indexMeta(string $indexName): array;
 
     /**
      * Makes recently written documents immediately searchable.

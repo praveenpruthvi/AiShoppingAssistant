@@ -6,6 +6,7 @@ namespace Aavirbhava\AiShoppingAssistant\Model\Indexing\Document;
 
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\IndexedProductDocumentInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\ProductIndexMappingInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Indexing\StoragePayloadInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexCompatibilityMismatchException;
 
 /**
@@ -13,15 +14,12 @@ use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexCompatibilityMi
  * to the assistant index.
  *
  * Field names come from ProductIndexMappingInterface so the payload always
- * matches the mapping. The embedded _id carries the stable document id used by
- * the write client for upserts.
+ * matches the mapping. The transport _id is returned separately via
+ * StoragePayload::id() and never embedded in the persisted _source.
  */
 final class IndexedDocumentPayloadBuilder
 {
-    /**
-     * @return array<string, mixed> payload including the _id key
-     */
-    public function build(IndexedProductDocumentInterface $indexed): array
+    public function build(IndexedProductDocumentInterface $indexed): StoragePayloadInterface
     {
         $document = $indexed->document();
 
@@ -44,7 +42,6 @@ final class IndexedDocumentPayloadBuilder
         }
 
         $payload = [
-            '_id' => $document->documentId(),
             ProductIndexMappingInterface::FIELD_DOCUMENT_ID => $document->documentId(),
             ProductIndexMappingInterface::FIELD_ENTITY_ID => $document->entityId(),
             ProductIndexMappingInterface::FIELD_SKU => $document->sku(),
@@ -73,7 +70,7 @@ final class IndexedDocumentPayloadBuilder
 
         $this->assertPayload($payload);
 
-        return $payload;
+        return new StoragePayload($document->documentId(), $payload);
     }
 
     /**

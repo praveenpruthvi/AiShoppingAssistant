@@ -4,10 +4,13 @@ declare(strict_types=1);
 
 namespace Aavirbhava\AiShoppingAssistant\Test\Unit\Model\Indexing\Embedding;
 
-use Aavirbhava\AiShoppingAssistant\Api\Embedding\EmbeddingVectorInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Indexing\EmbeddingConfigSnapshotServiceInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Indexing\FrozenEmbeddingConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Catalog\ContentHashService;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Embedding\EmbeddingEnrichmentService;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Embedding\FrozenEmbeddingConfig;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\EmbeddingEnrichmentException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexCompatibilityMismatchException;
 use Aavirbhava\AiShoppingAssistant\Test\Unit\Fake\FakeEmbeddingGenerationService;
 use Aavirbhava\AiShoppingAssistant\Test\Unit\Fake\FakeProductDocumentFactory;
 use PHPUnit\Framework\Attributes\CoversClass;
@@ -18,14 +21,53 @@ final class EmbeddingEnrichmentServiceTest extends TestCase
 {
     private const FINGERPRINT = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 
+    private const BASE_URL_HASH = 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
+
     private FakeEmbeddingGenerationService $generation;
 
+    /**
+     * @var EmbeddingConfigSnapshotServiceInterface&\PHPUnit\Framework\MockObject\MockObject
+     */
+    private $snapshot;
+
     private EmbeddingEnrichmentService $service;
+
+    /**
+     * Drives the mocked matches() result; the first call returns this, and when
+     * $flipAfterFirstCall is true later calls return false.
+     */
+    private bool $matchesResult = true;
+
+    private bool $flipAfterFirstCall = false;
+
+    private int $matchesCalls = 0;
 
     protected function setUp(): void
     {
         $this->generation = new FakeEmbeddingGenerationService();
-        $this->service = new EmbeddingEnrichmentService($this->generation, new ContentHashService());
+        $this->snapshot = $this->createMock(EmbeddingConfigSnapshotServiceInterface::class);
+        $this->snapshot->method('matches')->willReturnCallback(function (): bool {
+            $this->matchesCalls++;
+            if ($this->flipAfterFirstCall && $this->matchesCalls > 1) {
+                return false;
+            }
+
+            return $this->matchesResult;
+        });
+        $this->service = new EmbeddingEnrichmentService($this->generation, new ContentHashService(), $this->snapshot);
+    }
+
+    private function config(): FrozenEmbeddingConfigInterface
+    {
+        return new FrozenEmbeddingConfig(
+            1,
+            'openai',
+            'text-embedding-3-small',
+            'https://api.example.com',
+            4,
+            self::FINGERPRINT,
+            self::BASE_URL_HASH
+        );
     }
 
     public function testEnrichesDocumentsInOrder(): void
@@ -37,7 +79,7 @@ final class EmbeddingEnrichmentServiceTest extends TestCase
             $factory->make(1, 3, 'SKU-3'),
         ];
 
-        $indexed = $this->service->enrich(1, self::FINGERPRINT, $documents);
+        $indexed = $this->service->enrich($this->config(), $documents);
 
         self::assertCount(3, $indexed);
         self::assertSame('SKU-1', $indexed[0]->document()->sku());
@@ -49,7 +91,7 @@ final class EmbeddingEnrichmentServiceTest extends TestCase
 
     public function testUsesDocumentInputType(): void
     {
-        $this->service->enrich(1, self::FINGERPRINT, [(new FakeProductDocumentFactory())->make()]);
+        $this->service->enrich($this->config(), [(new FakeProductDocumentFactory())->make()]);
 
         self::assertTrue($this->generation->lastInputWasDocument);
         self::assertCount(1, $this->generation->calls);
@@ -58,14 +100,14 @@ final class EmbeddingEnrichmentServiceTest extends TestCase
 
     public function testReturnsEmptyForEmptyDocuments(): void
     {
-        self::assertSame([], $this->service->enrich(1, self::FINGERPRINT, []));
+        self::assertSame([], $this->service->enrich($this->config(), []));
         self::assertSame([], $this->generation->calls);
     }
 
     public function testHashCorrelatesWithVectorValues(): void
     {
         $document = (new FakeProductDocumentFactory())->make(1, 42, 'SKU-42');
-        $indexed = $this->service->enrich(1, self::FINGERPRINT, [$document]);
+        $indexed = $this->service->enrich($this->config(), [$document]);
 
         $expected = (new ContentHashService())->hash($this->generation->vectorFor('Test Product Shoes blue'));
 
@@ -80,7 +122,7 @@ final class EmbeddingEnrichmentServiceTest extends TestCase
             $documents[] = $factory->make(1, $i + 1, 'SKU-' . $i);
         }
 
-        $indexed = $this->service->enrich(1, self::FINGERPRINT, $documents);
+        $indexed = $this->service->enrich($this->config(), $documents);
 
         self::assertCount(110, $indexed);
         self::assertCount(3, $this->generation->calls);
@@ -93,6 +135,24 @@ final class EmbeddingEnrichmentServiceTest extends TestCase
         $this->generation->failOn(1);
 
         $this->expectException(EmbeddingEnrichmentException::class);
-        $this->service->enrich(1, self::FINGERPRINT, [(new FakeProductDocumentFactory())->make()]);
+        $this->service->enrich($this->config(), [(new FakeProductDocumentFactory())->make()]);
+    }
+
+    public function testFailsWhenConfigChangesBeforeProviderCall(): void
+    {
+        $this->matchesResult = false;
+
+        $this->expectException(IndexCompatibilityMismatchException::class);
+        $this->service->enrich($this->config(), [(new FakeProductDocumentFactory())->make()]);
+        self::assertSame([], $this->generation->calls);
+    }
+
+    public function testFailsWhenConfigChangesAfterProviderCall(): void
+    {
+        $this->flipAfterFirstCall = true;
+
+        $this->expectException(IndexCompatibilityMismatchException::class);
+        $this->service->enrich($this->config(), [(new FakeProductDocumentFactory())->make()]);
+        self::assertCount(1, $this->generation->calls);
     }
 }

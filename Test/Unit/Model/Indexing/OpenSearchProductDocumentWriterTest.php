@@ -7,6 +7,8 @@ namespace Aavirbhava\AiShoppingAssistant\Test\Unit\Model\Indexing;
 use Aavirbhava\AiShoppingAssistant\Api\Config\ConfigurationReaderInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\EmbeddingConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\IndexingConfigInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Indexing\EmbeddingConfigSnapshotServiceInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Indexing\FrozenEmbeddingConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\IndexNamingServiceInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\ProductDocumentWriterInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\ProductIndexMappingInterface;
@@ -16,11 +18,13 @@ use Aavirbhava\AiShoppingAssistant\Model\Catalog\ContentHashService;
 use Aavirbhava\AiShoppingAssistant\Model\Config\Exception\ConfigurationException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Document\IndexedDocumentPayloadBuilder;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Embedding\EmbeddingEnrichmentService;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Embedding\FrozenEmbeddingConfig;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexCompatibilityMismatchException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexRunStateInvalidException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexScopeMismatchException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchBackendUnavailableException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchCapabilityUnsupportedException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexAbortFailedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexCreateFailedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Naming\IndexNamingService;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Mapping\ProductIndexMapping;
@@ -39,12 +43,20 @@ final class OpenSearchProductDocumentWriterTest extends TestCase
     private const RUN_ID = '9f6f0c80-5d3b-4b2a-8e7c-1a2b3c4d5e6f';
     private const PREFIX = 'aavirbhava_ai';
     private const FINGERPRINT = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    private const BASE_URL_HASH = 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
 
     private FakeAssistantSearchClient $client;
 
     private FakeEmbeddingGenerationService $generation;
 
     private ConfigurationReaderInterface $configurationReader;
+
+    /**
+     * @var EmbeddingConfigSnapshotServiceInterface&\PHPUnit\Framework\MockObject\MockObject
+     */
+    private $configSnapshot;
+
+    private bool $configMatches = true;
 
     private StoreScope $scope;
 
@@ -68,18 +80,35 @@ final class OpenSearchProductDocumentWriterTest extends TestCase
         $embedding->method('baseUrl')->willReturn('https://api.example.com');
         $embedding->method('dimensions')->willReturn(4);
         $this->configurationReader->method('readEmbedding')->willReturn($embedding);
+
+        $this->configSnapshot = $this->createMock(EmbeddingConfigSnapshotServiceInterface::class);
+        $this->configSnapshot->method('capture')->willReturn($this->frozenConfig());
+        $this->configSnapshot->method('matches')->willReturnCallback(fn (): bool => $this->configMatches);
+    }
+
+    private function frozenConfig(): FrozenEmbeddingConfigInterface
+    {
+        return new FrozenEmbeddingConfig(
+            $this->scope->storeId(),
+            'openai',
+            'text-embedding-3-small',
+            'https://api.example.com',
+            4,
+            self::FINGERPRINT,
+            self::BASE_URL_HASH
+        );
     }
 
     private function buildWriter(): OpenSearchProductDocumentWriter
     {
         return new OpenSearchProductDocumentWriter(
             $this->configurationReader,
-            new ContentHashService(),
             new IndexNamingService(),
             $this->client,
             new ProductIndexMapping(),
-            new EmbeddingEnrichmentService($this->generation, new ContentHashService()),
-            new IndexedDocumentPayloadBuilder()
+            new EmbeddingEnrichmentService($this->generation, new ContentHashService(), $this->configSnapshot),
+            new IndexedDocumentPayloadBuilder(),
+            $this->configSnapshot
         );
     }
 
@@ -107,7 +136,7 @@ final class OpenSearchProductDocumentWriterTest extends TestCase
         $index = $this->physicalIndexName();
         self::assertTrue($this->client->indexExists($index));
         self::assertCount(1, $this->client->documentsByIndex[$index]);
-        self::assertSame('2_42', $this->client->documentsByIndex[$index][0]['_id']);
+        self::assertArrayNotHasKey('_id', $this->client->documentsByIndex[$index][0]);
         self::assertSame('2_42', $this->client->documentsByIndex[$index][0]['document_id']);
         self::assertContains($index, $this->client->refreshed);
         self::assertSame([$index], $this->client->aliasTargets($this->readAliasName()));
@@ -148,9 +177,9 @@ final class OpenSearchProductDocumentWriterTest extends TestCase
         $indexThree = (new IndexNamingService())->physicalIndex(self::PREFIX, $otherScope, $context);
 
         self::assertCount(1, $this->client->documentsByIndex[$indexTwo]);
-        self::assertSame('2_42', $this->client->documentsByIndex[$indexTwo][0]['_id']);
+        self::assertSame('2_42', $this->client->documentsByIndex[$indexTwo][0]['document_id']);
         self::assertCount(1, $this->client->documentsByIndex[$indexThree]);
-        self::assertSame('3_43', $this->client->documentsByIndex[$indexThree][0]['_id']);
+        self::assertSame('3_43', $this->client->documentsByIndex[$indexThree][0]['document_id']);
     }
 
     public function testRejectsDocumentForWrongStore(): void
@@ -368,15 +397,159 @@ final class OpenSearchProductDocumentWriterTest extends TestCase
 
         $writer = new OpenSearchProductDocumentWriter(
             $configurationReader,
-            new ContentHashService(),
             new IndexNamingService(),
             $this->client,
             new ProductIndexMapping(),
-            new EmbeddingEnrichmentService($this->generation, new ContentHashService()),
-            new IndexedDocumentPayloadBuilder()
+            new EmbeddingEnrichmentService($this->generation, new ContentHashService(), $this->configSnapshot),
+            new IndexedDocumentPayloadBuilder(),
+            $this->configSnapshot
         );
 
         $this->expectException(\Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchConfigurationInvalidException::class);
         $writer->beginRun($this->context);
+    }
+
+    public function testWriterCanBeReusedAfterActivation(): void
+    {
+        $writer = $this->buildWriter();
+        $documents = [(new FakeProductDocumentFactory())->make(2, 42, 'SKU-42')];
+
+        $writer->beginRun($this->context);
+        $writer->beginStore($this->scope);
+        $writer->writeBatch($documents);
+        $writer->finishStore();
+        $writer->activateRun();
+
+        $secondContext = new RebuildRunContext(
+            '9f6f0c80-5d3b-4b2a-8e7c-1a2b3c4d5e7f',
+            1,
+            [$this->scope],
+            1.0
+        );
+        $writer->beginRun($secondContext);
+        $writer->beginStore($this->scope);
+        $writer->finishStore();
+        $writer->activateRun();
+
+        $secondIndex = (new IndexNamingService())->physicalIndex(self::PREFIX, $this->scope, $secondContext);
+        self::assertTrue($this->client->indexExists($secondIndex));
+        self::assertContains($secondIndex, $this->client->refreshed);
+    }
+
+    public function testWriterCanBeReusedAfterAbort(): void
+    {
+        $writer = $this->buildWriter();
+
+        $writer->beginRun($this->context);
+        $writer->abortRun();
+
+        $secondContext = new RebuildRunContext(
+            '9f6f0c80-5d3b-4b2a-8e7c-1a2b3c4d5e7f',
+            1,
+            [$this->scope],
+            1.0
+        );
+        $writer->beginRun($secondContext);
+        $writer->beginStore($this->scope);
+        $writer->finishStore();
+        $writer->activateRun();
+
+        $secondIndex = (new IndexNamingService())->physicalIndex(self::PREFIX, $this->scope, $secondContext);
+        self::assertTrue($this->client->indexExists($secondIndex));
+    }
+
+    public function testWriteAfterActivatedRunIsImpossible(): void
+    {
+        $writer = $this->buildWriter();
+        $writer->beginRun($this->context);
+        $writer->beginStore($this->scope);
+        $writer->finishStore();
+        $writer->activateRun();
+
+        $this->expectException(IndexRunStateInvalidException::class);
+        $writer->writeBatch([(new FakeProductDocumentFactory())->make(2, 42, 'SKU-42')]);
+    }
+
+    public function testAbortReportsCleanupFailureAndResetsState(): void
+    {
+        $writer = $this->buildWriter();
+        $this->client->failOn('deleteIndex', new \RuntimeException('delete failed'));
+
+        $writer->beginRun($this->context);
+
+        try {
+            $writer->abortRun();
+            self::fail('abortRun should have reported the failed cleanup');
+        } catch (ProductIndexAbortFailedException $exception) {
+            self::assertSame('index_abort_failed', $exception->errorCode());
+        }
+
+        self::assertTrue($this->client->indexExists($this->physicalIndexName()));
+
+        $secondContext = new RebuildRunContext(
+            '9f6f0c80-5d3b-4b2a-8e7c-1a2b3c4d5e7f',
+            1,
+            [$this->scope],
+            1.0
+        );
+        $writer->beginRun($secondContext);
+        self::assertTrue($this->client->indexExists(
+            (new IndexNamingService())->physicalIndex(self::PREFIX, $this->scope, $secondContext)
+        ));
+    }
+
+    public function testAbortNeverDeletesIndexWithoutProvenMeta(): void
+    {
+        $writer = $this->buildWriter();
+        $index = $this->physicalIndexName();
+
+        $writer->beginRun($this->context);
+        $this->client->metaByIndex[$index] = [];
+
+        try {
+            $writer->abortRun();
+            self::fail('abortRun should have reported the unproven index');
+        } catch (ProductIndexAbortFailedException $exception) {
+            self::assertSame('index_abort_failed', $exception->errorCode());
+        }
+
+        self::assertTrue($this->client->indexExists($index));
+        self::assertNotContains($index, $this->client->deleted);
+    }
+
+    public function testBeginStoreRejectsWebsiteMismatch(): void
+    {
+        $writer = $this->buildWriter();
+        $writer->beginRun($this->context);
+
+        $this->expectException(IndexScopeMismatchException::class);
+        $writer->beginStore(new StoreScope(2, 99, 'other'));
+    }
+
+    public function testWriteRejectsDocumentNotOnActiveWebsite(): void
+    {
+        $writer = $this->buildWriter();
+        $writer->beginRun($this->context);
+        $writer->beginStore($this->scope);
+
+        $document = $this->createMock(\Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductDocumentInterface::class);
+        $document->method('schemaVersion')->willReturn(1);
+        $document->method('storeId')->willReturn(2);
+        $document->method('websiteIds')->willReturn([99]);
+
+        $this->expectException(IndexScopeMismatchException::class);
+        $writer->writeBatch([$document]);
+    }
+
+    public function testEnrichmentConfigChangeFailsBatch(): void
+    {
+        $this->configMatches = false;
+        $writer = $this->buildWriter();
+
+        $writer->beginRun($this->context);
+        $writer->beginStore($this->scope);
+
+        $this->expectException(IndexCompatibilityMismatchException::class);
+        $writer->writeBatch([(new FakeProductDocumentFactory())->make(2, 42, 'SKU-42')]);
     }
 }

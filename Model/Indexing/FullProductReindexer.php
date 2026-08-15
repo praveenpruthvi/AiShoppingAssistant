@@ -135,13 +135,15 @@ final class FullProductReindexer implements FullProductReindexerInterface
 
             $this->activateRun();
         } catch (ProductIndexingException $exception) {
-            $this->abort($runBegun, $exception);
-            throw $this->withResult($exception, $this->abortedResult($startedAt));
+            $aborted = $this->abortedResult($startedAt);
+            $this->abort($runBegun, $exception, $aborted);
+            throw $this->withResult($exception, $aborted);
         } catch (\Throwable $throwable) {
-            $this->abort($runBegun, $throwable);
+            $aborted = $this->abortedResult($startedAt);
+            $this->abort($runBegun, $throwable, $aborted);
             throw new ProductIndexRunInitException(
                 $this->safeCause($throwable),
-                $this->abortedResult($startedAt)
+                $aborted
             );
         }
 
@@ -279,7 +281,7 @@ final class FullProductReindexer implements FullProductReindexerInterface
         }
     }
 
-    private function abort(bool $runBegun, ?\Throwable $primary): void
+    private function abort(bool $runBegun, ?\Throwable $primary, RebuildResultInterface $aborted): void
     {
         if (!$runBegun) {
             return;
@@ -287,12 +289,13 @@ final class FullProductReindexer implements FullProductReindexerInterface
 
         try {
             $this->documentWriter->abortRun();
+        } catch (ProductIndexAbortFailedException $abortFailure) {
+            throw $this->withResult($abortFailure, $aborted);
         } catch (\Throwable $throwable) {
             // Preserve the primary failure via the previous chain and report the
             // failed cleanup as a sanitized secondary code.
             $previous = $primary instanceof \Exception ? $primary : null;
-            $result = $primary instanceof ProductIndexingException ? $primary->rebuildResult() : null;
-            throw new ProductIndexAbortException($previous, $result);
+            throw new ProductIndexAbortException($previous, $aborted);
         }
     }
 

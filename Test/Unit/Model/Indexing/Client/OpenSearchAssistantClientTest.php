@@ -1,0 +1,445 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Aavirbhava\AiShoppingAssistant\Test\Unit\Model\Indexing\Client;
+
+use Aavirbhava\AiShoppingAssistant\Api\Indexing\StoragePayloadInterface;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Client\OpenSearchAssistantClient;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Client\OpenSearchClientFactoryInterface;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Document\StoragePayload;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\AliasActivationFailedException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\BulkIndexFailedException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\BulkResponseInvalidException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchBackendUnavailableException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchCapabilityUnsupportedException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchConfigurationInvalidException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexCreateFailedException;
+use Magento\Elasticsearch\Model\Config;
+use OpenSearch\Client;
+use OpenSearch\Namespaces\IndicesNamespace;
+use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\TestCase;
+
+#[CoversClass(OpenSearchAssistantClient::class)]
+final class OpenSearchAssistantClientTest extends TestCase
+{
+    private const INDEX = 'prefix_store_2_run_token';
+
+    private const SECRET_HOST = 'https://secret-search.example.internal';
+
+    private const SECRET_USER = 'super-secret-user';
+
+    private const SECRET_PASS = 'super-secret-pass';
+
+    /**
+     * @var Config&\PHPUnit\Framework\MockObject\MockObject
+     */
+    private $elasticsearchConfig;
+
+    /**
+     * @var OpenSearchClientFactoryInterface&\PHPUnit\Framework\MockObject\MockObject
+     */
+    private $factory;
+
+    /**
+     * @var Client&\PHPUnit\Framework\MockObject\MockObject
+     */
+    private $opensearch;
+
+    /**
+     * @var IndicesNamespace&\PHPUnit\Framework\MockObject\MockObject
+     */
+    private $indices;
+
+    private OpenSearchAssistantClient $client;
+
+    protected function setUp(): void
+    {
+        $this->elasticsearchConfig = $this->createMock(Config::class);
+        $this->elasticsearchConfig->method('prepareClientOptions')->willReturn([
+            'hostname' => self::SECRET_HOST,
+            'port' => 9200,
+            'index' => 'magento2',
+            'enableAuth' => 1,
+            'username' => self::SECRET_USER,
+            'password' => self::SECRET_PASS,
+            'timeout' => 15,
+        ]);
+
+        $this->opensearch = $this->createMock(Client::class);
+        $this->indices = $this->createMock(IndicesNamespace::class);
+        $this->opensearch->method('indices')->willReturn($this->indices);
+
+        $this->factory = $this->createMock(OpenSearchClientFactoryInterface::class);
+        $this->factory->method('create')->willReturn($this->opensearch);
+
+        $this->client = new OpenSearchAssistantClient($this->elasticsearchConfig, $this->factory);
+    }
+
+    private function payload(string $id = '2_42'): StoragePayloadInterface
+    {
+        return new StoragePayload($id, ['document_id' => $id, 'name' => 'Test']);
+    }
+
+    /**
+     * @param list<string> $ids
+     * @param array<string, mixed> $overrides
+     *
+     * @return array<string, mixed>
+     */
+    private function bulkResponse(array $ids, array $overrides = []): array
+    {
+        $items = [];
+        foreach ($ids as $id) {
+            $items[] = ['index' => ['_index' => self::INDEX, '_id' => $id, 'status' => 201]];
+        }
+
+        return array_merge(['errors' => false, 'items' => $items], $overrides);
+    }
+
+    private static function assertSanitized(\Throwable $throwable): void
+    {
+        self::assertNull($throwable->getPrevious());
+        self::assertStringNotContainsString(self::SECRET_HOST, $throwable->getMessage());
+        self::assertStringNotContainsString(self::SECRET_USER, $throwable->getMessage());
+        self::assertStringNotContainsString(self::SECRET_PASS, $throwable->getMessage());
+    }
+
+    public function testBuildsClientLazilyAndCaches(): void
+    {
+        $this->factory->expects(self::once())->method('create');
+
+        $this->client->ping();
+        $this->client->ping();
+    }
+
+    public function testWritesBulkMetadataAndSourceSeparately(): void
+    {
+        $captured = [];
+        $this->opensearch->method('bulk')->willReturnCallback(
+            function (array $params) use (&$captured): array {
+                $captured[] = $params;
+                return $this->bulkResponse(['2_42']);
+            }
+        );
+
+        $this->client->writeDocuments(self::INDEX, [$this->payload('2_42')]);
+
+        $body = $captured[0]['body'];
+        self::assertSame(['index' => ['_index' => self::INDEX, '_id' => '2_42']], $body[0]);
+        self::assertSame(['document_id' => '2_42', 'name' => 'Test'], $body[1]);
+        self::assertArrayNotHasKey('_id', $body[1]);
+        self::assertArrayNotHasKey('_index', $body[1]);
+    }
+
+    public function testEmptyDocumentListIsNoOp(): void
+    {
+        $this->opensearch->expects(self::never())->method('bulk');
+
+        $this->client->writeDocuments(self::INDEX, []);
+    }
+
+    public function testBulkRejectsDuplicateSubmittedIdsBeforeTransport(): void
+    {
+        $this->opensearch->expects(self::never())->method('bulk');
+
+        $this->expectException(BulkResponseInvalidException::class);
+        $this->client->writeDocuments(self::INDEX, [$this->payload('2_42'), $this->payload('2_42')]);
+    }
+
+    public function testBulkRejectsNonStoragePayloadInput(): void
+    {
+        $this->opensearch->expects(self::never())->method('bulk');
+
+        $this->expectException(BulkResponseInvalidException::class);
+        $this->client->writeDocuments(self::INDEX, [['document_id' => 'x']]);
+    }
+
+    public function testBulkAcceptsValidResponses(): void
+    {
+        $this->opensearch->method('bulk')->willReturn($this->bulkResponse(['2_42', '2_43']));
+
+        $this->client->writeDocuments(self::INDEX, [$this->payload('2_42'), $this->payload('2_43')]);
+        self::assertTrue(true);
+    }
+
+    public function testBulkRejectsNonArrayResponse(): void
+    {
+        $this->opensearch->method('bulk')->willReturn('nope');
+
+        $this->expectException(BulkResponseInvalidException::class);
+        $this->client->writeDocuments(self::INDEX, [$this->payload()]);
+    }
+
+    public function testBulkRejectsMissingErrorsKey(): void
+    {
+        $this->opensearch->method('bulk')->willReturn(['items' => []]);
+
+        $this->expectException(BulkResponseInvalidException::class);
+        $this->client->writeDocuments(self::INDEX, [$this->payload()]);
+    }
+
+    public function testBulkRejectsNonBoolErrors(): void
+    {
+        $this->opensearch->method('bulk')->willReturn($this->bulkResponse(['2_42'], ['errors' => 1]));
+
+        $this->expectException(BulkResponseInvalidException::class);
+        $this->client->writeDocuments(self::INDEX, [$this->payload()]);
+    }
+
+    public function testBulkRejectsMissingItemsKey(): void
+    {
+        $this->opensearch->method('bulk')->willReturn(['errors' => false]);
+
+        $this->expectException(BulkResponseInvalidException::class);
+        $this->client->writeDocuments(self::INDEX, [$this->payload()]);
+    }
+
+    public function testBulkRejectsNonListItems(): void
+    {
+        $this->opensearch->method('bulk')->willReturn($this->bulkResponse(['2_42'], ['items' => ['x' => []]]));
+
+        $this->expectException(BulkResponseInvalidException::class);
+        $this->client->writeDocuments(self::INDEX, [$this->payload()]);
+    }
+
+    public function testBulkRejectsItemCountMismatch(): void
+    {
+        $this->opensearch->method('bulk')->willReturn($this->bulkResponse(['2_42']));
+
+        $this->expectException(BulkResponseInvalidException::class);
+        $this->client->writeDocuments(self::INDEX, [$this->payload('2_42'), $this->payload('2_43')]);
+    }
+
+    public function testBulkRejectsItemWithoutIndexKey(): void
+    {
+        $this->opensearch->method('bulk')->willReturn(['errors' => false, 'items' => [['delete' => ['status' => 200]]]]);
+
+        $this->expectException(BulkResponseInvalidException::class);
+        $this->client->writeDocuments(self::INDEX, [$this->payload()]);
+    }
+
+    public function testBulkRejectsItemWithExtraKeys(): void
+    {
+        $response = $this->bulkResponse(['2_42']);
+        $response['items'][0]['extra'] = true;
+
+        $this->opensearch->method('bulk')->willReturn($response);
+
+        $this->expectException(BulkResponseInvalidException::class);
+        $this->client->writeDocuments(self::INDEX, [$this->payload()]);
+    }
+
+    public function testBulkRejectsNonArrayIndexResult(): void
+    {
+        $this->opensearch->method('bulk')->willReturn(['errors' => false, 'items' => [['index' => 'oops']]]);
+
+        $this->expectException(BulkResponseInvalidException::class);
+        $this->client->writeDocuments(self::INDEX, [$this->payload()]);
+    }
+
+    public function testBulkRejectsItemWithError(): void
+    {
+        $response = $this->bulkResponse(['2_42']);
+        $response['items'][0]['index']['error'] = ['type' => 'mapper_parsing_exception'];
+
+        $this->opensearch->method('bulk')->willReturn($response);
+
+        $this->expectException(BulkIndexFailedException::class);
+        $this->client->writeDocuments(self::INDEX, [$this->payload()]);
+    }
+
+    public function testBulkRejectsNon2xxStatus(): void
+    {
+        $response = $this->bulkResponse(['2_42']);
+        $response['items'][0]['index']['status'] = 409;
+
+        $this->opensearch->method('bulk')->willReturn($response);
+
+        $this->expectException(BulkIndexFailedException::class);
+        $this->client->writeDocuments(self::INDEX, [$this->payload()]);
+    }
+
+    public function testBulkRejectsMissingStatus(): void
+    {
+        $response = $this->bulkResponse(['2_42']);
+        unset($response['items'][0]['index']['status']);
+
+        $this->opensearch->method('bulk')->willReturn($response);
+
+        $this->expectException(BulkResponseInvalidException::class);
+        $this->client->writeDocuments(self::INDEX, [$this->payload()]);
+    }
+
+    public function testBulkRejectsNonIntStatus(): void
+    {
+        $response = $this->bulkResponse(['2_42']);
+        $response['items'][0]['index']['status'] = 'created';
+
+        $this->opensearch->method('bulk')->willReturn($response);
+
+        $this->expectException(BulkResponseInvalidException::class);
+        $this->client->writeDocuments(self::INDEX, [$this->payload()]);
+    }
+
+    public function testBulkRejectsReorderedOrWrongIds(): void
+    {
+        $this->opensearch->method('bulk')->willReturn($this->bulkResponse(['2_43', '2_42']));
+
+        $this->expectException(BulkResponseInvalidException::class);
+        $this->client->writeDocuments(self::INDEX, [$this->payload('2_42'), $this->payload('2_43')]);
+    }
+
+    public function testBulkTransportFailureIsSanitized(): void
+    {
+        $this->opensearch->method('bulk')->willThrowException(
+            new \RuntimeException(self::SECRET_HOST . ' ' . self::SECRET_USER . ' ' . self::SECRET_PASS)
+        );
+
+        try {
+            $this->client->writeDocuments(self::INDEX, [$this->payload()]);
+            self::fail('Expected BulkIndexFailedException');
+        } catch (BulkIndexFailedException $exception) {
+            self::assertSanitized($exception);
+        }
+    }
+
+    public function testIndexMetaReturnsMetaWhenPresent(): void
+    {
+        $meta = ['assistant_index' => true, 'store_id' => 2, 'physical_index' => self::INDEX];
+        $this->indices->method('getMapping')->willReturn([
+            self::INDEX => ['mappings' => ['_meta' => $meta]],
+        ]);
+
+        self::assertSame($meta, $this->client->indexMeta(self::INDEX));
+    }
+
+    public function testIndexMetaReturnsEmptyWhenAbsent(): void
+    {
+        $this->indices->method('getMapping')->willReturn([
+            self::INDEX => ['mappings' => ['dynamic' => false]],
+        ]);
+
+        self::assertSame([], $this->client->indexMeta(self::INDEX));
+    }
+
+    public function testIndexMetaFailureIsSanitized(): void
+    {
+        $this->indices->method('getMapping')->willThrowException(new \RuntimeException(self::SECRET_HOST));
+
+        try {
+            $this->client->indexMeta(self::INDEX);
+            self::fail('Expected OpenSearchBackendUnavailableException');
+        } catch (OpenSearchBackendUnavailableException $exception) {
+            self::assertSanitized($exception);
+        }
+    }
+
+    public function testPingReturnsFalseOnFailure(): void
+    {
+        $this->opensearch->method('ping')->willThrowException(new \RuntimeException(self::SECRET_HOST));
+
+        self::assertFalse($this->client->ping());
+    }
+
+    public function testDistributionFailureIsSanitized(): void
+    {
+        $this->opensearch->method('info')->willThrowException(new \RuntimeException(self::SECRET_HOST));
+
+        try {
+            $this->client->distribution();
+            self::fail('Expected OpenSearchBackendUnavailableException');
+        } catch (OpenSearchBackendUnavailableException $exception) {
+            self::assertSanitized($exception);
+        }
+    }
+
+    public function testDistributionWithoutDistributionFieldIsUnsupported(): void
+    {
+        $this->opensearch->method('info')->willReturn(['version' => []]);
+
+        $this->expectException(OpenSearchCapabilityUnsupportedException::class);
+        $this->client->distribution();
+    }
+
+    public function testCreateIndexFailureIsSanitized(): void
+    {
+        $this->indices->method('create')->willThrowException(new \RuntimeException(self::SECRET_HOST));
+
+        try {
+            $this->client->createIndex(self::INDEX, []);
+            self::fail('Expected ProductIndexCreateFailedException');
+        } catch (ProductIndexCreateFailedException $exception) {
+            self::assertSanitized($exception);
+        }
+    }
+
+    public function testRefreshFailureIsSanitized(): void
+    {
+        $this->indices->method('refresh')->willThrowException(new \RuntimeException(self::SECRET_HOST));
+
+        try {
+            $this->client->refresh(self::INDEX);
+            self::fail('Expected OpenSearchBackendUnavailableException');
+        } catch (OpenSearchBackendUnavailableException $exception) {
+            self::assertSanitized($exception);
+        }
+    }
+
+    public function testAliasTargetsReturnsIndexKeys(): void
+    {
+        $this->indices->method('existsAlias')->willReturn(true);
+        $this->indices->method('getAlias')->willReturn([
+            'prefix_store_2_run_old' => ['aliases' => ['a' => []]],
+        ]);
+
+        self::assertSame(['prefix_store_2_run_old'], $this->client->aliasTargets('alias'));
+    }
+
+    public function testAliasTargetsEmptyWhenAliasMissing(): void
+    {
+        $this->indices->method('existsAlias')->willReturn(false);
+        $this->indices->expects(self::never())->method('getAlias');
+
+        self::assertSame([], $this->client->aliasTargets('alias'));
+    }
+
+    public function testUpdateAliasesFailureIsSanitized(): void
+    {
+        $this->indices->method('updateAliases')->willThrowException(new \RuntimeException(self::SECRET_HOST));
+
+        try {
+            $this->client->updateAliases([['add' => ['alias' => 'a', 'index' => self::INDEX]]]);
+            self::fail('Expected AliasActivationFailedException');
+        } catch (AliasActivationFailedException $exception) {
+            self::assertSanitized($exception);
+        }
+    }
+
+    public function testDeleteIndexFailureIsSanitized(): void
+    {
+        $this->indices->method('delete')->willThrowException(new \RuntimeException(self::SECRET_HOST));
+
+        try {
+            $this->client->deleteIndex(self::INDEX);
+            self::fail('Expected OpenSearchBackendUnavailableException');
+        } catch (OpenSearchBackendUnavailableException $exception) {
+            self::assertSanitized($exception);
+        }
+    }
+
+    public function testClientBuildFailureIsSanitizedConfigurationError(): void
+    {
+        $this->factory->method('create')->willThrowException(
+            new \RuntimeException(self::SECRET_HOST . ' ' . self::SECRET_PASS)
+        );
+
+        try {
+            $this->client->distribution();
+            self::fail('Expected OpenSearchConfigurationInvalidException');
+        } catch (OpenSearchConfigurationInvalidException $exception) {
+            self::assertSanitized($exception);
+        }
+    }
+}

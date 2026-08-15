@@ -5,12 +5,14 @@ declare(strict_types=1);
 namespace Aavirbhava\AiShoppingAssistant\Test\Unit\Fake;
 
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\AssistantSearchClientInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Indexing\StoragePayloadInterface;
 
 /**
  * In-memory assistant-search client for writer lifecycle tests.
  *
  * Tracks created indexes, written documents, refreshes, alias targets, and
- * alias actions. Can be configured to fail closed (unavailable backend), report
+ * alias actions. Stores the _meta of every created index so ownership checks can
+ * be exercised. Can be configured to fail closed (unavailable backend), report
  * an unsupported distribution, or throw on a specific method so failure paths
  * are exercised deterministically. Lives under Test/ only.
  */
@@ -31,6 +33,11 @@ final class FakeAssistantSearchClient implements AssistantSearchClientInterface
      * @var array<string, list<array<string, mixed>>>
      */
     public array $documentsByIndex = [];
+
+    /**
+     * @var array<string, array<string, mixed>>
+     */
+    public array $metaByIndex = [];
 
     /**
      * @var array<string, list<string>>
@@ -87,14 +94,26 @@ final class FakeAssistantSearchClient implements AssistantSearchClientInterface
         $this->assertNoFailure('createIndex');
         $this->indexes[$indexName] = true;
         $this->documentsByIndex[$indexName] = [];
+        $meta = $createBody['mappings']['_meta'] ?? null;
+        $this->metaByIndex[$indexName] = is_array($meta) ? $meta : [];
     }
 
     public function writeDocuments(string $indexName, array $documents): void
     {
         $this->assertNoFailure('writeDocuments');
         foreach ($documents as $document) {
-            $this->documentsByIndex[$indexName][] = $document;
+            if (!$document instanceof StoragePayloadInterface) {
+                throw new \RuntimeException('expected StoragePayloadInterface');
+            }
+            $this->documentsByIndex[$indexName][] = $document->source();
         }
+    }
+
+    public function indexMeta(string $indexName): array
+    {
+        $this->assertNoFailure('indexMeta');
+
+        return $this->metaByIndex[$indexName] ?? [];
     }
 
     public function refresh(string $indexName): void

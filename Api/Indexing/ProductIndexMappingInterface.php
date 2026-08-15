@@ -20,9 +20,23 @@ interface ProductIndexMappingInterface
 {
     /**
      * Version of the assistant mapping structure. Increment when field layout
-     * changes incompatibly.
+     * or settings change incompatibly.
      */
-    public const MAPPING_VERSION = 1;
+    public const MAPPING_VERSION = 2;
+
+    /**
+     * Bounded, non-disabled refresh interval applied at index creation so
+     * incremental documents eventually become searchable without refreshing
+     * each document. The writer still refreshes explicitly before alias
+     * activation.
+     */
+    public const REFRESH_INTERVAL = '30s';
+
+    /**
+     * OpenSearch k-NN space type for semantic embeddings (cosine similarity).
+     * Mirrored inside the knn_vector method block.
+     */
+    public const KNN_SPACE_TYPE = 'cosinesimil';
 
     /** Stable physical index field names. Shared with the document payload builder. */
     public const FIELD_DOCUMENT_ID = 'document_id';

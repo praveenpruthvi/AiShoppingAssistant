@@ -7,12 +7,14 @@ namespace Aavirbhava\AiShoppingAssistant\Model\Indexing\Embedding;
 use Aavirbhava\AiShoppingAssistant\Api\Catalog\ContentHashServiceInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductDocumentInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Embedding\EmbeddingGenerationServiceInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Indexing\EmbeddingConfigSnapshotServiceInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\EmbeddingEnrichmentServiceInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Indexing\FrozenEmbeddingConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\IndexedProductDocumentInterface;
-use Aavirbhava\AiShoppingAssistant\Model\Catalog\Exception\CatalogException;
 use Aavirbhava\AiShoppingAssistant\Model\Embedding\EmbeddingInputType;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Document\IndexedProductDocument;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\EmbeddingEnrichmentException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexCompatibilityMismatchException;
 
 /**
  * Bounded, store-scoped embedding enrichment for indexed product documents.
@@ -20,9 +22,12 @@ use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\EmbeddingEnrichmentE
  * Documents are chunked into provider-sized batches (max 50 per request) and
  * always embedded as document-type inputs so retrieval vectors are comparable
  * to query vectors. Every response vector is correlated to its input by
- * position; any mismatch fails the whole batch. The vector hash and the
- * embedding fingerprint are computed here so the writer stores stable
- * fingerprints, never raw vector or provider data.
+ * position; any mismatch fails the whole batch. The frozen embedding config is
+ * re-validated before and after each provider request so a mid-run
+ * configuration change fails the run instead of silently producing an
+ * incompatible index. The vector hash and the embedding fingerprint are
+ * computed here so the writer stores stable fingerprints, never raw vector or
+ * provider data.
  */
 final class EmbeddingEnrichmentService implements EmbeddingEnrichmentServiceInterface
 {
@@ -31,11 +36,12 @@ final class EmbeddingEnrichmentService implements EmbeddingEnrichmentServiceInte
 
     public function __construct(
         private readonly EmbeddingGenerationServiceInterface $embeddingGeneration,
-        private readonly ContentHashServiceInterface $contentHashService
+        private readonly ContentHashServiceInterface $contentHashService,
+        private readonly EmbeddingConfigSnapshotServiceInterface $configSnapshot
     ) {
     }
 
-    public function enrich(int $storeId, string $embeddingFingerprint, array $documents): array
+    public function enrich(FrozenEmbeddingConfigInterface $config, array $documents): array
     {
         if ($documents === []) {
             return [];
@@ -44,7 +50,7 @@ final class EmbeddingEnrichmentService implements EmbeddingEnrichmentServiceInte
         $indexed = [];
 
         foreach ($this->chunks($documents) as $chunk) {
-            $indexed = array_merge($indexed, $this->enrichChunk($storeId, $embeddingFingerprint, $chunk));
+            $indexed = array_merge($indexed, $this->enrichChunk($config, $chunk));
         }
 
         return $indexed;
@@ -55,8 +61,10 @@ final class EmbeddingEnrichmentService implements EmbeddingEnrichmentServiceInte
      *
      * @return list<IndexedProductDocumentInterface>
      */
-    private function enrichChunk(int $storeId, string $embeddingFingerprint, array $chunk): array
+    private function enrichChunk(FrozenEmbeddingConfigInterface $config, array $chunk): array
     {
+        $this->assertConfigStable($config);
+
         $texts = array_map(
             static fn (ProductDocumentInterface $document): string => $document->searchableText(),
             $chunk
@@ -64,13 +72,15 @@ final class EmbeddingEnrichmentService implements EmbeddingEnrichmentServiceInte
 
         try {
             $result = $this->embeddingGeneration->embed(
-                $storeId,
+                $config->storeId(),
                 EmbeddingInputType::document(),
                 $texts
             );
         } catch (\Throwable $throwable) {
-            throw new EmbeddingEnrichmentException($this->safeCause($throwable));
+            throw new EmbeddingEnrichmentException();
         }
+
+        $this->assertConfigStable($config);
 
         $vectors = $result->vectors();
 
@@ -90,20 +100,27 @@ final class EmbeddingEnrichmentService implements EmbeddingEnrichmentServiceInte
 
             try {
                 $embeddingHash = $this->contentHashService->hash($vector->values());
-            } catch (CatalogException $exception) {
-                throw new EmbeddingEnrichmentException($exception);
+            } catch (\Throwable $throwable) {
+                throw new EmbeddingEnrichmentException();
             }
 
             $indexed[] = new IndexedProductDocument(
                 $document,
                 $vector,
                 $embeddingHash,
-                $embeddingFingerprint,
+                $config->fingerprint(),
                 $indexedAt
             );
         }
 
         return $indexed;
+    }
+
+    private function assertConfigStable(FrozenEmbeddingConfigInterface $config): void
+    {
+        if (!$this->configSnapshot->matches($config)) {
+            throw new IndexCompatibilityMismatchException();
+        }
     }
 
     /**
@@ -114,10 +131,5 @@ final class EmbeddingEnrichmentService implements EmbeddingEnrichmentServiceInte
     private function chunks(array $documents): array
     {
         return array_chunk($documents, self::MAX_DOCUMENTS_PER_BATCH);
-    }
-
-    private function safeCause(\Throwable $throwable): ?\Exception
-    {
-        return $throwable instanceof \Exception ? $throwable : null;
     }
 }

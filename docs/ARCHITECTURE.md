@@ -262,10 +262,12 @@ interface ProductDocumentWriterInterface
 
 The production default is `OpenSearchProductDocumentWriter` (Milestone 2C1). It is a two-phase store-scoped writer:
 
-- `beginRun()` freezes the run context, resolves per-store embedding configuration and index prefix, pings the OpenSearch backend and checks vector support (fail closed through `AssistantSearchClientInterface`), creates one physical index per enabled store, and self-cleans any partial index creation on failure.
-- `writeBatch()` validates document schema and store scope, enriches documents through `EmbeddingEnrichmentService` (bounded batches, positional correlation, vector content hashing), and writes bulk payloads in bounded chunks.
-- `activateRun()` refreshes every store index and atomically moves each store's read alias to the new physical index in one `updateAliases` call, removing only assistant-owned alias targets.
-- `abortRun()` is idempotent, never throws, and removes only run-owned unaliased indexes.
+- `beginRun()` freezes the run context, snapshots each store's embedding configuration (provider, model, base URL, dimensions, fingerprint, base-URL hash — never secrets) and index prefix, pings the OpenSearch backend and checks vector support (fail closed through `AssistantSearchClientInterface`), creates one physical index per enabled store, and self-cleans any partial index creation on failure.
+- `writeBatch()` validates document schema, store scope, and website assignment, re-validates the frozen embedding configuration before and after every provider request, enriches documents through `EmbeddingEnrichmentService` (bounded batches, positional correlation, vector content hashing), and writes bulk payloads in bounded chunks. Storage payloads separate the transport `_id` from the persisted `_source`; bulk responses are verified item-by-item (count, status, per-item error, `_id` order) and any malformed or rejected item fails the whole chunk.
+- `activateRun()` refreshes every store index and atomically moves each store's read alias to the new physical index in one `updateAliases` call, removing only assistant-owned run targets. After activation the writer returns to the idle state.
+- `abortRun()` is idempotent and removes only run-owned unaliased indexes whose mapping `_meta` proves assistant ownership (assistant marker, store id, physical index, schema and mapping versions). Any failed cleanup is reported as a sanitized error after the run state is reset; later calls are no-ops.
+
+After either activation or abort the writer is reusable for a fresh run. The embedding configuration snapshot is re-validated during enrichment so a mid-run provider/model/dimension change fails the run instead of producing an incompatible index.
 
 `UnavailableProductDocumentWriter` remains as the fail-closed fallback: every lifecycle call throws a sanitized `backend_unavailable` exception and `abortRun()` is a safe idempotent no-op. `IncrementalProductIndexSchedulerInterface` receives row/list updates; the default validates positive ids (never silently discarding any) and refuses explicitly with `incremental_scheduler_unavailable` until the queue/consumer pipeline exists.
 
@@ -292,11 +294,11 @@ Physical: <prefix>_store_<store_id>_run_<safe_run_token>
 
 The prefix is store-scoped configuration (`ai_shopping_assistant/indexing/index_prefix`, default `aavirbhava_ai_product_rag`) validated as `^[a-z][a-z0-9_-]{0,63}$`. `IndexNamingService` builds both names; the safe run token is a lowercase alphanumeric, max 32 characters derived from the UUID run id. Rebuilds write a new physical index and atomically move the alias to it after successful validation; activation removes only assistant-owned alias targets.
 
-The `ProductIndexMapping` (versioned, `dynamic: false`) declares identifier, store scope, visibility, normalized attribute, category, searchable-text, content-hash, retrieval-time filter fields, and a `knn_vector` field with dimension and `l2` similarity. `_meta` records non-secret provenance: assistant index marker, schema version, mapping version, store/website id, run id, physical index, embedding fingerprint, dimensions, and base-URL hash. Alias/physical names and mapping fields must never expose secrets.
+The `ProductIndexMapping` (versioned, `dynamic: false`) declares identifier, store scope, visibility, normalized attribute, category, searchable-text, content-hash, retrieval-time filter fields, and a `knn_vector` field with dimension, `cosinesimil` space type, and a Lucene HNSW method block (`ef_construction`, `m`). Index settings enable `index.knn` and use a bounded, non-disabled `refresh_interval`; the writer still refreshes explicitly before alias activation. `_meta` records non-secret provenance: assistant index marker, schema version, mapping version, store/website id, run id, physical index, embedding fingerprint, dimensions, and base-URL hash. Alias/physical names and mapping fields must never expose secrets.
 
 Price and stock fields may help candidate retrieval but must be revalidated through Magento services before display or action.
 
-The client seam is `AssistantSearchClientInterface` (`OpenSearchAssistantClient` in production, `UnavailableAssistantSearchClient` as the fail-closed fallback). The production client builds the Magento OpenSearch client from `Magento\Elasticsearch\Model\Config::prepareClientOptions()` with bounded timeouts and no retries; backend, capability, configuration, create, bulk, and alias errors translate to sanitized exceptions.
+The client seam is `AssistantSearchClientInterface` (`OpenSearchAssistantClient` in production, `UnavailableAssistantSearchClient` as the fail-closed fallback). The production client builds the Magento OpenSearch client through `OpenSearchClientFactory` from `Magento\Elasticsearch\Model\Config::prepareClientOptions()` with bounded timeouts, no retries, and credentials passed via `setBasicAuthentication` (never embedded in a host URI). Hosts, credentials, and request/response bodies never leave the client, not even in exception chains: every transport failure is translated into a sanitized `ProductIndexingException` with no raw previous cause. The factory validates the scheme, hostname, and port and rejects embedded credentials, fragments, paths, and embedded ports.
 
 ## Indexing
 
@@ -304,7 +306,7 @@ The client seam is `AssistantSearchClientInterface` (`OpenSearchAssistantClient`
 - Full reindex processes products in configurable batches through the OpenSearch writer (Milestone 2C1).
 - Product/category changes enqueue affected entity IDs.
 - Consumers normalize, hash, embed, and upsert documents.
-- Unchanged content hashes skip embedding generation.
+- The vector content hash is an integrity and diagnostics value only. The Milestone 2C2 consumer skips embedding generation based on the normalized `embeddingContentHash` combined with the frozen embedding fingerprint and schema compatibility — not on the vector hash alone.
 - Disabled, deleted, invisible, or unassigned products are removed for the relevant store scope.
 - A scheduled reconciliation detects missed events.
 

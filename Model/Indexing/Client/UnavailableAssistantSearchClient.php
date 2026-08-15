@@ -47,6 +47,11 @@ final class UnavailableAssistantSearchClient implements AssistantSearchClientInt
         throw new OpenSearchBackendUnavailableException();
     }
 
+    public function indexMeta(string $indexName): array
+    {
+        throw new OpenSearchBackendUnavailableException();
+    }
+
     public function refresh(string $indexName): void
     {
         throw new OpenSearchBackendUnavailableException();
