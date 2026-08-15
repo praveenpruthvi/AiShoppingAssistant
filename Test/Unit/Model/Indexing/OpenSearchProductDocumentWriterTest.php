@@ -19,6 +19,7 @@ use Aavirbhava\AiShoppingAssistant\Model\Config\Exception\ConfigurationException
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Document\IndexedDocumentPayloadBuilder;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Embedding\EmbeddingEnrichmentService;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Embedding\FrozenEmbeddingConfig;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\AliasActivationFailedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexCompatibilityMismatchException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexRunStateInvalidException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexScopeMismatchException;
@@ -122,6 +123,25 @@ final class OpenSearchProductDocumentWriterTest extends TestCase
         return (new IndexNamingService())->readAlias(self::PREFIX, $this->scope);
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    private function metaFor(StoreScopeInterface $scope, RebuildRunContextInterface $context, string $index): array
+    {
+        return [
+            'assistant_index' => true,
+            'schema_version' => $context->schemaVersion(),
+            'mapping_version' => ProductIndexMappingInterface::MAPPING_VERSION,
+            'store_id' => $scope->storeId(),
+            'website_id' => $scope->websiteId(),
+            'run_id' => $context->runId(),
+            'physical_index' => $index,
+            'embedding_fingerprint' => self::FINGERPRINT,
+            'embedding_dimensions' => 4,
+            'embedding_base_url_hash' => self::BASE_URL_HASH,
+        ];
+    }
+
     public function testFullLifecycleActivatesAtomically(): void
     {
         $writer = $this->buildWriter();
@@ -213,6 +233,40 @@ final class OpenSearchProductDocumentWriterTest extends TestCase
         $this->expectException(IndexRunStateInvalidException::class);
         $writer->beginStore($this->scope);
         $writer->writeBatch([(new FakeProductDocumentFactory())->make(2, 42, 'SKU-42')]);
+    }
+
+    public function testBeginStoreRejectsSameStoreDuplicateBegin(): void
+    {
+        $writer = $this->buildWriter();
+        $writer->beginRun($this->context);
+        $writer->beginStore($this->scope);
+
+        $this->expectException(IndexRunStateInvalidException::class);
+        $writer->beginStore($this->scope);
+    }
+
+    public function testBeginStoreRejectsDifferentStoreInterleavingWithoutOverwritingCurrentStore(): void
+    {
+        $writer = $this->buildWriter();
+        $otherScope = new StoreScope(3, 1, 'other');
+        $context = new RebuildRunContext(self::RUN_ID, 1, [$this->scope, $otherScope], 1.0);
+
+        $writer->beginRun($context);
+        $writer->beginStore($this->scope);
+
+        try {
+            $writer->beginStore($otherScope);
+            self::fail('beginStore should reject interleaved store processing');
+        } catch (IndexRunStateInvalidException $exception) {
+            self::assertSame('index_run_state_invalid', $exception->errorCode());
+        }
+
+        $writer->writeBatch([(new FakeProductDocumentFactory())->make(2, 42, 'SKU-42')]);
+        $writer->finishStore();
+        self::assertCount(
+            1,
+            $this->client->documentsByIndex[(new IndexNamingService())->physicalIndex(self::PREFIX, $this->scope, $context)]
+        );
     }
 
     public function testRejectsBeginStoreForUnknownScope(): void
@@ -320,14 +374,14 @@ final class OpenSearchProductDocumentWriterTest extends TestCase
         $writer->activateRun();
     }
 
-    public function testActivateRunRemovesOnlyAssistantOwnedTargets(): void
+    public function testActivateRunRemovesOnlyMetaProvenAssistantTargets(): void
     {
         $writer = $this->buildWriter();
         $index = $this->physicalIndexName();
         $staleAssistant = self::PREFIX . '_store_2_run_staleoldtoken';
-        $foreign = 'magento_product_2_default';
 
-        $this->client->aliases[$this->readAliasName()] = [$staleAssistant, $foreign];
+        $this->client->aliases[$this->readAliasName()] = [$staleAssistant];
+        $this->client->metaByIndex[$staleAssistant] = $this->metaFor($this->scope, $this->context, $staleAssistant);
 
         $writer->beginRun($this->context);
         $writer->beginStore($this->scope);
@@ -337,7 +391,93 @@ final class OpenSearchProductDocumentWriterTest extends TestCase
         $targets = $this->client->aliasTargets($this->readAliasName());
         self::assertContains($index, $targets);
         self::assertNotContains($staleAssistant, $targets);
-        self::assertContains($foreign, $targets);
+    }
+
+    public function testActivateRunRejectsMixedAliasWithForeignTargetBeforeChangingAlias(): void
+    {
+        $writer = $this->buildWriter();
+        $foreign = 'magento_product_2_default';
+
+        $this->client->aliases[$this->readAliasName()] = [$foreign];
+
+        $writer->beginRun($this->context);
+        $writer->beginStore($this->scope);
+        $writer->finishStore();
+
+        try {
+            $writer->activateRun();
+            self::fail('activateRun should reject a mixed alias');
+        } catch (AliasActivationFailedException $exception) {
+            self::assertSame('alias_activation_failed', $exception->errorCode());
+        }
+
+        self::assertSame([$foreign], $this->client->aliasTargets($this->readAliasName()));
+        self::assertSame([], $this->client->aliasActions);
+    }
+
+    public function testActivateRunRejectsAssistantNamedAliasTargetWithoutProvenMeta(): void
+    {
+        $writer = $this->buildWriter();
+        $staleAssistant = self::PREFIX . '_store_2_run_staleoldtoken';
+        $this->client->aliases[$this->readAliasName()] = [$staleAssistant];
+        $this->client->metaByIndex[$staleAssistant] = [];
+
+        $writer->beginRun($this->context);
+        $writer->beginStore($this->scope);
+        $writer->finishStore();
+
+        $this->expectException(AliasActivationFailedException::class);
+        $writer->activateRun();
+    }
+
+    public function testActivateRunVerifiesNewPhysicalIndexMetaBeforeAliasChange(): void
+    {
+        $writer = $this->buildWriter();
+        $index = $this->physicalIndexName();
+
+        $writer->beginRun($this->context);
+        $this->client->metaByIndex[$index]['run_id'] = '00000000-0000-4000-8000-000000000000';
+        $writer->beginStore($this->scope);
+        $writer->finishStore();
+
+        try {
+            $writer->activateRun();
+            self::fail('activateRun should reject a new index with mismatched meta');
+        } catch (AliasActivationFailedException $exception) {
+            self::assertSame('alias_activation_failed', $exception->errorCode());
+        }
+
+        self::assertSame([], $this->client->aliasTargets($this->readAliasName()));
+        self::assertSame([], $this->client->aliasActions);
+        self::assertNotContains($index, $this->client->refreshed);
+    }
+
+    public function testActivateRunRejectsNewIndexWithMismatchedEmbeddingDimensions(): void
+    {
+        $writer = $this->buildWriter();
+        $index = $this->physicalIndexName();
+
+        $writer->beginRun($this->context);
+        $this->client->metaByIndex[$index]['embedding_dimensions'] = 8;
+        $writer->beginStore($this->scope);
+        $writer->finishStore();
+
+        $this->expectException(AliasActivationFailedException::class);
+        $writer->activateRun();
+    }
+
+    public function testActivateRunRejectsNewIndexWithMissingEmbeddingFingerprint(): void
+    {
+        $writer = $this->buildWriter();
+        $index = $this->physicalIndexName();
+
+        $writer->beginRun($this->context);
+        unset($this->client->metaByIndex[$index]['embedding_fingerprint']);
+        $writer->beginStore($this->scope);
+        $writer->finishStore();
+
+        $this->expectException(AliasActivationFailedException::class);
+        $writer->activateRun();
     }
 
     public function testChunksBulkWrites(): void

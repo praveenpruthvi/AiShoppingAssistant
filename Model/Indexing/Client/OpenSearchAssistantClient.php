@@ -72,12 +72,21 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
             throw new OpenSearchBackendUnavailableException();
         }
 
-        $distribution = $info['version']['distribution'] ?? '';
-        if (!is_string($distribution) || $distribution === '') {
+        if (!is_array($info) || !isset($info['version']) || !is_array($info['version'])) {
             throw new OpenSearchCapabilityUnsupportedException();
         }
 
-        return $distribution;
+        $version = $info['version'];
+        $distribution = $version['distribution'] ?? null;
+        $number = $version['number'] ?? null;
+        if (!is_scalar($distribution) || trim((string)$distribution) === '') {
+            throw new OpenSearchCapabilityUnsupportedException();
+        }
+        if (!is_scalar($number) || trim((string)$number) === '') {
+            throw new OpenSearchCapabilityUnsupportedException();
+        }
+
+        return strtolower((string)$distribution);
     }
 
     public function supportsVectorSearch(): bool
@@ -127,6 +136,9 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
                 throw new BulkResponseInvalidException();
             }
             $id = $document->id();
+            if ($id === '') {
+                throw new BulkResponseInvalidException();
+            }
             if (isset($seen[$id])) {
                 throw new BulkResponseInvalidException();
             }
@@ -159,6 +171,9 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
         if (!isset($response['errors']) || !is_bool($response['errors'])) {
             throw new BulkResponseInvalidException();
         }
+        if ($response['errors'] === true) {
+            throw new BulkIndexFailedException();
+        }
 
         if (!isset($response['items']) || !is_array($response['items']) || !array_is_list($response['items'])) {
             throw new BulkResponseInvalidException();
@@ -179,7 +194,7 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
                 throw new BulkResponseInvalidException();
             }
 
-            if (isset($result['error'])) {
+            if (array_key_exists('error', $result)) {
                 throw new BulkIndexFailedException();
             }
 

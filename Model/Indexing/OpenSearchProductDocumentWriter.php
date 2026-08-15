@@ -18,6 +18,7 @@ use Aavirbhava\AiShoppingAssistant\Api\Indexing\RebuildRunContextInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Store\StoreScopeInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Config\Exception\ConfigurationException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Document\IndexedDocumentPayloadBuilder;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\AliasActivationFailedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexCompatibilityMismatchException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexRunStateInvalidException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IndexScopeMismatchException;
@@ -130,6 +131,10 @@ final class OpenSearchProductDocumentWriter implements ProductDocumentWriterInte
         $this->assertRunOpen();
         $this->assertActive();
 
+        if ($this->currentStoreId !== null) {
+            throw new IndexRunStateInvalidException();
+        }
+
         if (!isset($this->stores[$scope->storeId()])) {
             throw new IndexScopeMismatchException();
         }
@@ -207,16 +212,32 @@ final class OpenSearchProductDocumentWriter implements ProductDocumentWriterInte
                 throw new ProductIndexCreateFailedException();
             }
 
-            $this->client->refresh($store['indexName']);
+            if (!$this->newIndexMetaProvesActivationSafe($store)) {
+                throw new AliasActivationFailedException();
+            }
 
             $alias = $this->namingService->readAlias($store['prefix'], $store['scope']);
 
             foreach ($this->client->aliasTargets($alias) as $target) {
-                if ($this->namingService->isAssistantOwnedIndex($store['prefix'], $target)) {
-                    $actions[] = ['remove' => ['alias' => $alias, 'index' => $target]];
+                $parsed = $this->namingService->parseAssistantIndex($store['prefix'], $target);
+                if ($parsed === null || $parsed['store_id'] !== $store['scope']->storeId()) {
+                    throw new AliasActivationFailedException();
                 }
+
+                try {
+                    $targetMeta = $this->client->indexMeta($target);
+                } catch (\Throwable $throwable) {
+                    throw new AliasActivationFailedException();
+                }
+
+                if (!$this->metaProvesOwnership($target, $store, $targetMeta)) {
+                    throw new AliasActivationFailedException();
+                }
+
+                $actions[] = ['remove' => ['alias' => $alias, 'index' => $target]];
             }
 
+            $this->client->refresh($store['indexName']);
             $actions[] = ['add' => ['alias' => $alias, 'index' => $store['indexName']]];
         }
 
@@ -383,10 +404,39 @@ final class OpenSearchProductDocumentWriter implements ProductDocumentWriterInte
     private function metaProvesOwnership(string $indexName, array $store, array $meta): bool
     {
         return ($meta['assistant_index'] ?? null) === true
-            && (int)($meta['store_id'] ?? 0) === $store['scope']->storeId()
+            && ($meta['store_id'] ?? null) === $store['scope']->storeId()
+            && ($meta['website_id'] ?? null) === $store['scope']->websiteId()
             && ($meta['physical_index'] ?? null) === $indexName
-            && (int)($meta['schema_version'] ?? 0) === $this->context->schemaVersion()
-            && (int)($meta['mapping_version'] ?? 0) === ProductIndexMappingInterface::MAPPING_VERSION;
+            && ($meta['schema_version'] ?? null) === $this->context->schemaVersion()
+            && ($meta['mapping_version'] ?? null) === ProductIndexMappingInterface::MAPPING_VERSION;
+    }
+
+    /**
+     * @param array{
+     *   scope: StoreScopeInterface,
+     *   prefix: string,
+     *   indexName: string,
+     *   embedding: FrozenEmbeddingConfigInterface,
+     *   finished: bool
+     * } $store
+     */
+    private function newIndexMetaProvesActivationSafe(array $store): bool
+    {
+        try {
+            $meta = $this->client->indexMeta($store['indexName']);
+        } catch (\Throwable $throwable) {
+            return false;
+        }
+
+        $parsed = $this->namingService->parseAssistantIndex($store['prefix'], $store['indexName']);
+        if ($parsed === null || $parsed['store_id'] !== $store['scope']->storeId()) {
+            return false;
+        }
+
+        return $this->metaProvesOwnership($store['indexName'], $store, $meta)
+            && ($meta['run_id'] ?? null) === $this->context->runId()
+            && ($meta['embedding_dimensions'] ?? null) === $store['embedding']->dimensions()
+            && ($meta['embedding_fingerprint'] ?? null) === $store['embedding']->fingerprint();
     }
 
     private function assertRunOpen(): void

@@ -6,7 +6,6 @@ namespace Aavirbhava\AiShoppingAssistant\Model\Indexing\Client;
 
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchConfigurationInvalidException;
 use OpenSearch\Client;
-use OpenSearch\ClientBuilder;
 
 /**
  * Validated OpenSearch\Client factory.
@@ -28,9 +27,14 @@ use OpenSearch\ClientBuilder;
  */
 final class OpenSearchClientFactory implements OpenSearchClientFactoryInterface
 {
+    public function __construct(
+        private readonly OpenSearchClientBuilderInterface $clientBuilder
+    ) {
+    }
+
     public function create(array $options): Client
     {
-        return ClientBuilder::fromConfig($this->buildConfig($options), true);
+        return $this->clientBuilder->fromConfig($this->buildConfig($options));
     }
 
     /**
@@ -38,7 +42,7 @@ final class OpenSearchClientFactory implements OpenSearchClientFactoryInterface
      *
      * @return array<string, mixed>
      */
-    private function buildConfig(array $options): array
+    public function buildConfig(array $options): array
     {
         $hostname = is_string($options['hostname'] ?? '') ? trim($options['hostname']) : '';
         $hostname = rtrim($hostname, '/');
@@ -60,20 +64,23 @@ final class OpenSearchClientFactory implements OpenSearchClientFactoryInterface
             $hostname = substr($hostname, strlen($matches[0]));
         }
 
-        if (str_contains($hostname, '#') || str_contains($hostname, '/')) {
+        if (str_contains($hostname, '#') || str_contains($hostname, '/') || str_contains($hostname, '?')) {
             throw new OpenSearchConfigurationInvalidException();
         }
 
         $host = $hostname;
+        $normalizedHost = $host;
         if (str_starts_with($host, '[')) {
             if (preg_match('/^\[[0-9a-fA-F:.]+\]$/', $host) !== 1) {
                 throw new OpenSearchConfigurationInvalidException();
             }
-            $host = substr($host, 1, -1);
+            $normalizedHost = $host;
         } elseif (str_contains($host, ':')) {
             // An unbracketed colon is an embedded port or malformed host; both
             // are ambiguous next to the dedicated port option, so fail closed.
             throw new OpenSearchConfigurationInvalidException();
+        } else {
+            $normalizedHost = $host;
         }
 
         $port = isset($options['port']) ? (int)$options['port'] : 9200;
@@ -82,12 +89,17 @@ final class OpenSearchClientFactory implements OpenSearchClientFactoryInterface
         }
 
         $config = [
-            'hosts' => [sprintf('%s://%s:%d', $scheme, $host, $port)],
+            'hosts' => [sprintf('%s://%s:%d', $scheme, $normalizedHost, $port)],
             'retries' => 0,
         ];
 
         if ($this->authEnabled($options)) {
-            $config['basicAuthentication'] = [$options['username'], $options['password']];
+            $username = is_string($options['username'] ?? null) ? trim($options['username']) : '';
+            $password = is_string($options['password'] ?? null) ? (string)$options['password'] : '';
+            if ($username === '' || trim($password) === '') {
+                throw new OpenSearchConfigurationInvalidException();
+            }
+            $config['basicAuthentication'] = [$username, $password];
         }
 
         return $config;
@@ -102,8 +114,6 @@ final class OpenSearchClientFactory implements OpenSearchClientFactoryInterface
             return false;
         }
 
-        return isset($options['username'], $options['password'])
-            && is_string($options['username'])
-            && is_string($options['password']);
+        return true;
     }
 }

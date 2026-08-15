@@ -6,6 +6,8 @@ namespace Aavirbhava\AiShoppingAssistant\Test\Unit\Model\Indexing\Client;
 
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\StoragePayloadInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Client\OpenSearchAssistantClient;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Client\OpenSearchClientBuilderInterface;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Client\OpenSearchClientFactory;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Client\OpenSearchClientFactoryInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Document\StoragePayload;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\AliasActivationFailedException;
@@ -148,6 +150,26 @@ final class OpenSearchAssistantClientTest extends TestCase
         $this->client->writeDocuments(self::INDEX, [$this->payload('2_42'), $this->payload('2_42')]);
     }
 
+    public function testBulkRejectsEmptySubmittedIdBeforeTransport(): void
+    {
+        $payload = new class implements StoragePayloadInterface {
+            public function id(): string
+            {
+                return '';
+            }
+
+            public function source(): array
+            {
+                return ['document_id' => ''];
+            }
+        };
+
+        $this->opensearch->expects(self::never())->method('bulk');
+
+        $this->expectException(BulkResponseInvalidException::class);
+        $this->client->writeDocuments(self::INDEX, [$payload]);
+    }
+
     public function testBulkRejectsNonStoragePayloadInput(): void
     {
         $this->opensearch->expects(self::never())->method('bulk');
@@ -185,6 +207,14 @@ final class OpenSearchAssistantClientTest extends TestCase
         $this->opensearch->method('bulk')->willReturn($this->bulkResponse(['2_42'], ['errors' => 1]));
 
         $this->expectException(BulkResponseInvalidException::class);
+        $this->client->writeDocuments(self::INDEX, [$this->payload()]);
+    }
+
+    public function testBulkFailsWhenTopLevelErrorsTrue(): void
+    {
+        $this->opensearch->method('bulk')->willReturn($this->bulkResponse(['2_42'], ['errors' => true]));
+
+        $this->expectException(BulkIndexFailedException::class);
         $this->client->writeDocuments(self::INDEX, [$this->payload()]);
     }
 
@@ -250,6 +280,17 @@ final class OpenSearchAssistantClientTest extends TestCase
         $this->client->writeDocuments(self::INDEX, [$this->payload()]);
     }
 
+    public function testBulkRejectsItemWhenErrorKeyExistsWithNullValue(): void
+    {
+        $response = $this->bulkResponse(['2_42']);
+        $response['items'][0]['index']['error'] = null;
+
+        $this->opensearch->method('bulk')->willReturn($response);
+
+        $this->expectException(BulkIndexFailedException::class);
+        $this->client->writeDocuments(self::INDEX, [$this->payload()]);
+    }
+
     public function testBulkRejectsNon2xxStatus(): void
     {
         $response = $this->bulkResponse(['2_42']);
@@ -305,6 +346,19 @@ final class OpenSearchAssistantClientTest extends TestCase
         }
     }
 
+    public function testBulkPreservesSanitizedClientExceptionInstance(): void
+    {
+        $expected = new BulkResponseInvalidException();
+        $this->opensearch->method('bulk')->willThrowException($expected);
+
+        try {
+            $this->client->writeDocuments(self::INDEX, [$this->payload()]);
+            self::fail('Expected BulkResponseInvalidException');
+        } catch (BulkResponseInvalidException $exception) {
+            self::assertSame($expected, $exception);
+        }
+    }
+
     public function testIndexMetaReturnsMetaWhenPresent(): void
     {
         $meta = ['assistant_index' => true, 'store_id' => 2, 'physical_index' => self::INDEX];
@@ -355,9 +409,35 @@ final class OpenSearchAssistantClientTest extends TestCase
         }
     }
 
+    public function testDistributionRejectsNonArrayInfoResponse(): void
+    {
+        $this->opensearch->method('info')->willReturn('invalid');
+
+        $this->expectException(OpenSearchCapabilityUnsupportedException::class);
+        $this->client->distribution();
+    }
+
+    public function testDistributionRejectsMissingVersionObject(): void
+    {
+        $this->opensearch->method('info')->willReturn([]);
+
+        $this->expectException(OpenSearchCapabilityUnsupportedException::class);
+        $this->client->distribution();
+    }
+
     public function testDistributionWithoutDistributionFieldIsUnsupported(): void
     {
-        $this->opensearch->method('info')->willReturn(['version' => []]);
+        $this->opensearch->method('info')->willReturn(['version' => ['number' => '2.12.0']]);
+
+        $this->expectException(OpenSearchCapabilityUnsupportedException::class);
+        $this->client->distribution();
+    }
+
+    public function testDistributionRejectsNonScalarVersionNumber(): void
+    {
+        $this->opensearch->method('info')->willReturn([
+            'version' => ['distribution' => 'opensearch', 'number' => []],
+        ]);
 
         $this->expectException(OpenSearchCapabilityUnsupportedException::class);
         $this->client->distribution();
@@ -437,6 +517,29 @@ final class OpenSearchAssistantClientTest extends TestCase
 
         try {
             $this->client->distribution();
+            self::fail('Expected OpenSearchConfigurationInvalidException');
+        } catch (OpenSearchConfigurationInvalidException $exception) {
+            self::assertSanitized($exception);
+        }
+    }
+
+    public function testMalformedClientFactoryConfigurationFailsClosed(): void
+    {
+        $config = $this->createMock(Config::class);
+        $config->method('prepareClientOptions')->willReturn([
+            'hostname' => self::SECRET_HOST . '?debug=1',
+            'port' => 9200,
+            'enableAuth' => 0,
+            'timeout' => 15,
+        ]);
+
+        $builder = $this->createMock(OpenSearchClientBuilderInterface::class);
+        $builder->expects(self::never())->method('fromConfig');
+
+        $client = new OpenSearchAssistantClient($config, new OpenSearchClientFactory($builder));
+
+        try {
+            $client->distribution();
             self::fail('Expected OpenSearchConfigurationInvalidException');
         } catch (OpenSearchConfigurationInvalidException $exception) {
             self::assertSanitized($exception);
