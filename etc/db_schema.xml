@@ -8,7 +8,9 @@
         <column xsi:type="int" name="product_id" unsigned="true" nullable="false" identity="false"
                 comment="Product Entity ID"/>
         <column xsi:type="int" name="generation" unsigned="true" nullable="false" identity="false"
-                default="1" comment="Work Generation"/>
+                default="1" comment="Latest Requested Work Generation"/>
+        <column xsi:type="int" name="claimed_generation" unsigned="true" nullable="true" identity="false"
+                comment="Processing Lease Generation"/>
         <column xsi:type="varchar" name="state" nullable="false" length="20" default="pending"
                 comment="Work State"/>
         <column xsi:type="smallint" name="attempts" unsigned="true" nullable="false" identity="false"

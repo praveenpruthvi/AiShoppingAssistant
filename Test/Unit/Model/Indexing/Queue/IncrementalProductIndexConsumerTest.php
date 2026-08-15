@@ -46,6 +46,7 @@ final class IncrementalProductIndexConsumerTest extends TestCase
         $this->ledger = $this->createMock(IncrementalWorkLedgerInterface::class);
         $this->policy = $this->createMock(IncrementalFailureDispositionPolicyInterface::class);
         $this->claim = $this->createMock(IncrementalWorkClaimInterface::class);
+        $this->claim->method('attempts')->willReturn(2);
     }
 
     private function consumer(): IncrementalProductIndexConsumer
@@ -119,7 +120,7 @@ final class IncrementalProductIndexConsumerTest extends TestCase
             ->willThrowException($failure);
         $this->policy->expects(self::once())
             ->method('classify')
-            ->with($failure, 0)
+            ->with($failure, 2)
             ->willReturn(new IncrementalFailureDisposition(true, 'opensearch_backend_unavailable', 60));
         $this->ledger->expects(self::once())
             ->method('recordRetry')
@@ -135,7 +136,7 @@ final class IncrementalProductIndexConsumerTest extends TestCase
         $this->ledger->method('claimDueWork')->willReturn($this->claim);
         $this->indexer->method('process')->willThrowException($failure);
         $this->policy->method('classify')
-            ->with($failure, 0)
+            ->with($failure, 2)
             ->willReturn(new IncrementalFailureDisposition(false, 'unknown', 0));
         $this->ledger->expects(self::once())
             ->method('recordTerminal')
@@ -152,6 +153,32 @@ final class IncrementalProductIndexConsumerTest extends TestCase
         $this->policy->method('classify')
             ->willReturn(new IncrementalFailureDisposition(false, 'unknown', 0));
         $this->ledger->method('recordTerminal')->willReturn(false);
+
+        $this->expectException(IncrementalLedgerPersistenceException::class);
+        $this->consumer()->process('42');
+    }
+
+    public function testCompletionPersistenceFailurePropagatesSanitizedException(): void
+    {
+        $this->ledger->method('claimDueWork')->willReturn($this->claim);
+        $this->indexer->expects(self::once())->method('process')->with(42);
+        $this->ledger->method('complete')->with($this->claim)->willReturn(false);
+        $this->policy->expects(self::never())->method('classify');
+        $this->ledger->expects(self::never())->method('recordTerminal');
+        $this->ledger->expects(self::never())->method('recordRetry');
+
+        $this->expectException(IncrementalLedgerPersistenceException::class);
+        $this->consumer()->process('42');
+    }
+
+    public function testLedgerCompletionExceptionIsNotClassifiedAsIndexingFailure(): void
+    {
+        $this->ledger->method('claimDueWork')->willReturn($this->claim);
+        $this->indexer->method('process')->with(42);
+        $this->ledger->method('complete')->willThrowException(new IncrementalLedgerPersistenceException());
+        $this->policy->expects(self::never())->method('classify');
+        $this->ledger->expects(self::never())->method('recordTerminal');
+        $this->ledger->expects(self::never())->method('recordRetry');
 
         $this->expectException(IncrementalLedgerPersistenceException::class);
         $this->consumer()->process('42');

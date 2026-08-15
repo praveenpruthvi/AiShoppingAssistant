@@ -133,6 +133,7 @@ final class IncrementalQueueConfigTest extends TestCase
                 'work_id',
                 'product_id',
                 'generation',
+                'claimed_generation',
                 'state',
                 'attempts',
                 'next_attempt_at',

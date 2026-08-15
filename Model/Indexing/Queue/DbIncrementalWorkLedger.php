@@ -8,6 +8,7 @@ use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalWorkClaimInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalWorkLedgerInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Clock\ClockInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IncrementalLedgerPersistenceException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\InvalidProductIndexEntityIdsException;
 use Magento\Framework\App\ResourceConnection;
 use Magento\Framework\DB\Adapter\AdapterInterface;
 use Zend_Db_Expr;
@@ -15,7 +16,9 @@ use Zend_Db_Expr;
 final class DbIncrementalWorkLedger implements IncrementalWorkLedgerInterface
 {
     private const TABLE = 'aavirbhava_ai_incremental_product_work';
-    private const MAX_ATTEMPTS = 5;
+    private const MAX_ATTEMPTS = IncrementalFailureDispositionPolicy::MAX_ATTEMPTS;
+    private const BASE_DELAY_SECONDS = IncrementalFailureDispositionPolicy::BASE_DELAY_SECONDS;
+    private const MAX_DELAY_SECONDS = IncrementalFailureDispositionPolicy::MAX_DELAY_SECONDS;
     private const LEASE_SECONDS = 300;
     private const EXPIRED_LEASE_ERROR = 'lease_expired';
 
@@ -38,6 +41,7 @@ final class DbIncrementalWorkLedger implements IncrementalWorkLedgerInterface
                         [
                             'product_id' => $productId,
                             'generation' => 1,
+                            'claimed_generation' => null,
                             'state' => IncrementalWorkState::PENDING,
                             'attempts' => 0,
                             'next_attempt_at' => $now,
@@ -49,11 +53,30 @@ final class DbIncrementalWorkLedger implements IncrementalWorkLedgerInterface
                         ],
                         [
                             'generation' => new Zend_Db_Expr('generation + 1'),
-                            'state' => new Zend_Db_Expr($connection->quote(IncrementalWorkState::PENDING)),
-                            'attempts' => new Zend_Db_Expr('0'),
-                            'next_attempt_at' => new Zend_Db_Expr($connection->quote($now)),
-                            'lease_token' => new Zend_Db_Expr('NULL'),
-                            'lease_expires_at' => new Zend_Db_Expr('NULL'),
+                            'claimed_generation' => new Zend_Db_Expr(
+                                'IF(state = ' . $connection->quote(IncrementalWorkState::PROCESSING)
+                                . ', claimed_generation, NULL)'
+                            ),
+                            'state' => new Zend_Db_Expr(
+                                'IF(state = ' . $connection->quote(IncrementalWorkState::PROCESSING)
+                                . ', state, ' . $connection->quote(IncrementalWorkState::PENDING) . ')'
+                            ),
+                            'attempts' => new Zend_Db_Expr(
+                                'IF(state = ' . $connection->quote(IncrementalWorkState::PROCESSING)
+                                . ', attempts, 0)'
+                            ),
+                            'next_attempt_at' => new Zend_Db_Expr(
+                                'IF(state = ' . $connection->quote(IncrementalWorkState::PROCESSING)
+                                . ', next_attempt_at, ' . $connection->quote($now) . ')'
+                            ),
+                            'lease_token' => new Zend_Db_Expr(
+                                'IF(state = ' . $connection->quote(IncrementalWorkState::PROCESSING)
+                                . ', lease_token, NULL)'
+                            ),
+                            'lease_expires_at' => new Zend_Db_Expr(
+                                'IF(state = ' . $connection->quote(IncrementalWorkState::PROCESSING)
+                                . ', lease_expires_at, NULL)'
+                            ),
                             'last_error_code' => new Zend_Db_Expr('NULL'),
                             'updated_at' => new Zend_Db_Expr($connection->quote($now)),
                         ]
@@ -96,11 +119,14 @@ final class DbIncrementalWorkLedger implements IncrementalWorkLedgerInterface
             }
 
             $token = $this->tokenGenerator->generate();
+            $this->assertLeaseToken($token);
             $generation = (int)$row['generation'];
+            $attempts = (int)$row['attempts'];
             $updated = $connection->update(
                 $this->table(),
                 [
                     'state' => IncrementalWorkState::PROCESSING,
+                    'claimed_generation' => $generation,
                     'lease_token' => $token,
                     'lease_expires_at' => $this->future(self::LEASE_SECONDS),
                     'updated_at' => $this->now(),
@@ -116,53 +142,77 @@ final class DbIncrementalWorkLedger implements IncrementalWorkLedgerInterface
                 return null;
             }
 
-            return new IncrementalWorkClaim($productId, $generation, $token);
+            return new IncrementalWorkClaim($productId, $generation, $attempts, $token);
         });
     }
 
     public function complete(IncrementalWorkClaimInterface $claim): bool
     {
-        return $this->exactClaimUpdate($claim, [
-            'state' => IncrementalWorkState::COMPLETE,
-            'next_attempt_at' => $this->now(),
-            'lease_token' => null,
-            'lease_expires_at' => null,
-            'last_error_code' => null,
-            'updated_at' => $this->now(),
-        ]);
+        return $this->finalizeClaim(
+            $claim,
+            fn(array $row): array => (int)$row['generation'] === $claim->generation()
+                ? [
+                    'state' => IncrementalWorkState::COMPLETE,
+                    'claimed_generation' => null,
+                    'attempts' => 0,
+                    'next_attempt_at' => $this->now(),
+                    'lease_token' => null,
+                    'lease_expires_at' => null,
+                    'last_error_code' => null,
+                    'updated_at' => $this->now(),
+                ]
+                : $this->newerGenerationPendingData()
+        );
     }
 
     public function recordRetry(IncrementalWorkClaimInterface $claim, string $errorCode, int $delaySeconds): bool
     {
-        $row = $this->rowForClaim($claim);
-        if ($row === null) {
-            return false;
-        }
+        $this->assertRetryDelay($delaySeconds);
 
-        $attempts = (int)$row['attempts'] + 1;
-        $state = $attempts >= self::MAX_ATTEMPTS ? IncrementalWorkState::BLOCKED : IncrementalWorkState::RETRY_WAIT;
+        return $this->finalizeClaim(
+            $claim,
+            function (array $row) use ($claim, $errorCode, $delaySeconds): array {
+                if ((int)$row['generation'] > $claim->generation()) {
+                    return $this->newerGenerationPendingData();
+                }
 
-        return $this->exactClaimUpdate($claim, [
-            'state' => $state,
-            'attempts' => $attempts,
-            'next_attempt_at' => $state === IncrementalWorkState::BLOCKED ? $this->now() : $this->future($delaySeconds),
-            'lease_token' => null,
-            'lease_expires_at' => null,
-            'last_error_code' => $this->sanitizeCode($errorCode),
-            'updated_at' => $this->now(),
-        ]);
+                $attempts = (int)$row['attempts'] + 1;
+                $state = $attempts >= self::MAX_ATTEMPTS
+                    ? IncrementalWorkState::BLOCKED
+                    : IncrementalWorkState::RETRY_WAIT;
+
+                return [
+                    'state' => $state,
+                    'claimed_generation' => null,
+                    'attempts' => $attempts,
+                    'next_attempt_at' => $state === IncrementalWorkState::BLOCKED
+                        ? $this->now()
+                        : $this->future($delaySeconds),
+                    'lease_token' => null,
+                    'lease_expires_at' => null,
+                    'last_error_code' => $this->sanitizeCode($errorCode),
+                    'updated_at' => $this->now(),
+                ];
+            }
+        );
     }
 
     public function recordTerminal(IncrementalWorkClaimInterface $claim, string $errorCode): bool
     {
-        return $this->exactClaimUpdate($claim, [
-            'state' => IncrementalWorkState::BLOCKED,
-            'next_attempt_at' => $this->now(),
-            'lease_token' => null,
-            'lease_expires_at' => null,
-            'last_error_code' => $this->sanitizeCode($errorCode),
-            'updated_at' => $this->now(),
-        ]);
+        return $this->finalizeClaim(
+            $claim,
+            fn(array $row): array => (int)$row['generation'] > $claim->generation()
+                ? $this->newerGenerationPendingData()
+                : [
+                    'state' => IncrementalWorkState::BLOCKED,
+                    'claimed_generation' => null,
+                    'next_attempt_at' => $this->now(),
+                    'lease_token' => null,
+                    'lease_expires_at' => null,
+                    'last_error_code' => $this->sanitizeCode($errorCode),
+                    'updated_at' => $this->now(),
+                ]
+        );
     }
 
     public function recoverExpiredLeases(int $limit): int
@@ -172,22 +222,36 @@ final class DbIncrementalWorkLedger implements IncrementalWorkLedgerInterface
 
         foreach ($ids as $productId) {
             $count += $this->wrap(
-                fn(AdapterInterface $connection): int => (int)$connection->update(
-                    $this->table(),
-                    [
-                        'state' => IncrementalWorkState::RETRY_WAIT,
-                        'next_attempt_at' => $this->now(),
-                        'lease_token' => null,
-                        'lease_expires_at' => null,
-                        'last_error_code' => self::EXPIRED_LEASE_ERROR,
-                        'updated_at' => $this->now(),
-                    ],
-                    [
-                        'product_id = ?' => $productId,
-                        'state = ?' => IncrementalWorkState::PROCESSING,
-                        'lease_expires_at <= ?' => $this->now(),
-                    ]
-                )
+                function (AdapterInterface $connection) use ($productId): int {
+                    $row = $connection->fetchRow(
+                        $connection->select()
+                            ->from($this->table())
+                            ->where('product_id = ?', $productId)
+                            ->where('state = ?', IncrementalWorkState::PROCESSING)
+                            ->where('lease_expires_at <= ?', $this->now())
+                            ->limit(1)
+                    );
+
+                    if (!is_array($row)) {
+                        return 0;
+                    }
+
+                    $data = (int)$row['generation'] > (int)$row['claimed_generation']
+                        ? $this->newerGenerationPendingData()
+                        : $this->expiredLeaseData((int)$row['attempts']);
+
+                    return (int)$connection->update(
+                        $this->table(),
+                        $data,
+                        [
+                            'product_id = ?' => $productId,
+                            'state = ?' => IncrementalWorkState::PROCESSING,
+                            'claimed_generation = ?' => (int)$row['claimed_generation'],
+                            'lease_token = ?' => (string)$row['lease_token'],
+                            'lease_expires_at <= ?' => $this->now(),
+                        ]
+                    );
+                }
             );
         }
 
@@ -241,10 +305,12 @@ final class DbIncrementalWorkLedger implements IncrementalWorkLedgerInterface
 
             $generation = (int)$row['generation'];
             $token = $this->tokenGenerator->generate();
+            $this->assertLeaseToken($token);
             $updated = $connection->update(
                 $this->table(),
                 [
                     'state' => IncrementalWorkState::QUEUED,
+                    'claimed_generation' => null,
                     'next_attempt_at' => $this->future($visibilityTimeoutSeconds),
                     'lease_token' => $token,
                     'lease_expires_at' => null,
@@ -262,7 +328,7 @@ final class DbIncrementalWorkLedger implements IncrementalWorkLedgerInterface
                 return null;
             }
 
-            return new IncrementalWorkClaim($productId, $generation, $token);
+            return new IncrementalWorkClaim($productId, $generation, (int)$row['attempts'], $token);
         });
     }
 
@@ -273,6 +339,7 @@ final class DbIncrementalWorkLedger implements IncrementalWorkLedgerInterface
                 $this->table(),
                 [
                     'state' => IncrementalWorkState::PENDING,
+                    'claimed_generation' => null,
                     'next_attempt_at' => $this->now(),
                     'lease_token' => null,
                     'updated_at' => $this->now(),
@@ -301,7 +368,7 @@ final class DbIncrementalWorkLedger implements IncrementalWorkLedgerInterface
         $ids = [];
         foreach ($productIds as $productId) {
             if (!is_int($productId) || $productId < 1) {
-                throw new \InvalidArgumentException('Invalid product id.');
+                throw new InvalidProductIndexEntityIdsException();
             }
             $ids[] = $productId;
         }
@@ -313,41 +380,37 @@ final class DbIncrementalWorkLedger implements IncrementalWorkLedgerInterface
     }
 
     /**
-     * @param array<string, mixed> $data
+     * @param callable(array<string, mixed>): array<string, mixed> $dataFactory
      */
-    private function exactClaimUpdate(IncrementalWorkClaimInterface $claim, array $data): bool
+    private function finalizeClaim(IncrementalWorkClaimInterface $claim, callable $dataFactory): bool
     {
-        return $this->wrap(
-            fn(AdapterInterface $connection): bool => (int)$connection->update(
-                $this->table(),
-                $data,
-                [
-                    'product_id = ?' => $claim->productId(),
-                    'generation = ?' => $claim->generation(),
-                    'lease_token = ?' => $claim->leaseToken(),
-                    'state = ?' => IncrementalWorkState::PROCESSING,
-                ]
-            ) === 1
-        );
-    }
+        $this->assertLeaseToken($claim->leaseToken());
 
-    /**
-     * @return array<string, mixed>|null
-     */
-    private function rowForClaim(IncrementalWorkClaimInterface $claim): ?array
-    {
-        return $this->wrap(function (AdapterInterface $connection) use ($claim): ?array {
+        return $this->wrap(function (AdapterInterface $connection) use ($claim, $dataFactory): bool {
             $row = $connection->fetchRow(
                 $connection->select()
                     ->from($this->table())
                     ->where('product_id = ?', $claim->productId())
-                    ->where('generation = ?', $claim->generation())
+                    ->where('claimed_generation = ?', $claim->generation())
                     ->where('lease_token = ?', $claim->leaseToken())
                     ->where('state = ?', IncrementalWorkState::PROCESSING)
                     ->limit(1)
             );
 
-            return is_array($row) ? $row : null;
+            if (!is_array($row)) {
+                return false;
+            }
+
+            return (int)$connection->update(
+                $this->table(),
+                $dataFactory($row),
+                [
+                    'product_id = ?' => $claim->productId(),
+                    'claimed_generation = ?' => $claim->generation(),
+                    'lease_token = ?' => $claim->leaseToken(),
+                    'state = ?' => IncrementalWorkState::PROCESSING,
+                ]
+            ) === 1;
         });
     }
 
@@ -377,6 +440,66 @@ final class DbIncrementalWorkLedger implements IncrementalWorkLedgerInterface
     private function sanitizeCode(string $errorCode): string
     {
         return preg_match('/^[a-z][a-z0-9_]{0,63}$/', $errorCode) ? $errorCode : 'unknown';
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function newerGenerationPendingData(): array
+    {
+        return [
+            'state' => IncrementalWorkState::PENDING,
+            'claimed_generation' => null,
+            'attempts' => 0,
+            'next_attempt_at' => $this->now(),
+            'lease_token' => null,
+            'lease_expires_at' => null,
+            'last_error_code' => null,
+            'updated_at' => $this->now(),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function expiredLeaseData(int $attempts): array
+    {
+        $nextAttempts = $attempts + 1;
+        $state = $nextAttempts >= self::MAX_ATTEMPTS ? IncrementalWorkState::BLOCKED : IncrementalWorkState::RETRY_WAIT;
+
+        return [
+            'state' => $state,
+            'claimed_generation' => null,
+            'attempts' => $nextAttempts,
+            'next_attempt_at' => $state === IncrementalWorkState::BLOCKED
+                ? $this->now()
+                : $this->future($this->retryDelay($nextAttempts)),
+            'lease_token' => null,
+            'lease_expires_at' => null,
+            'last_error_code' => self::EXPIRED_LEASE_ERROR,
+            'updated_at' => $this->now(),
+        ];
+    }
+
+    private function retryDelay(int $attempt): int
+    {
+        $delay = self::BASE_DELAY_SECONDS * (2 ** max(0, $attempt - 1));
+
+        return min(self::MAX_DELAY_SECONDS, $delay);
+    }
+
+    private function assertRetryDelay(int $delaySeconds): void
+    {
+        if ($delaySeconds < 1 || $delaySeconds > self::MAX_DELAY_SECONDS) {
+            throw new IncrementalLedgerPersistenceException();
+        }
+    }
+
+    private function assertLeaseToken(string $token): void
+    {
+        if (!preg_match('/^[A-Za-z0-9_-]{32,64}$/', $token)) {
+            throw new IncrementalLedgerPersistenceException();
+        }
     }
 
     private function table(): string

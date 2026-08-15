@@ -10,5 +10,7 @@ interface IncrementalWorkClaimInterface
 
     public function generation(): int;
 
+    public function attempts(): int;
+
     public function leaseToken(): string;
 }

@@ -6,6 +6,7 @@ namespace Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue;
 
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalWorkLedgerInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalWorkRecoveryInterface;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IncrementalLedgerPersistenceException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IncrementalQueuePublishFailedException;
 use Magento\Framework\Lock\LockManagerInterface;
 
@@ -42,7 +43,9 @@ final class IncrementalWorkRecovery implements IncrementalWorkRecoveryInterface
                     $this->queuePublisher->schedule($productId);
                     ++$published;
                 } catch (IncrementalQueuePublishFailedException $exception) {
-                    $this->ledger->releaseQueuedWakeup($claim);
+                    if (!$this->ledger->releaseQueuedWakeup($claim)) {
+                        throw new IncrementalLedgerPersistenceException();
+                    }
                     throw $exception;
                 }
             }

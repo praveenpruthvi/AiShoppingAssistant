@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue;
 
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalWorkLedgerInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalWorkClaimInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\ProductIncrementalIndexerInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IncrementalLedgerPersistenceException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\InvalidProductIndexEntityIdsException;
@@ -35,16 +36,25 @@ final class IncrementalProductIndexConsumer
 
         try {
             $this->indexer->process($id);
-            $this->ledger->complete($claim);
         } catch (\Throwable $throwable) {
-            $disposition = $this->failurePolicy->classify($throwable, 0);
-            $recorded = $disposition->retryable()
-                ? $this->ledger->recordRetry($claim, $disposition->errorCode(), $disposition->delaySeconds())
-                : $this->ledger->recordTerminal($claim, $disposition->errorCode());
+            $this->recordIndexingFailure($claim, $throwable);
+            return;
+        }
 
-            if (!$recorded) {
-                throw new IncrementalLedgerPersistenceException();
-            }
+        if (!$this->ledger->complete($claim)) {
+            throw new IncrementalLedgerPersistenceException();
+        }
+    }
+
+    private function recordIndexingFailure(IncrementalWorkClaimInterface $claim, \Throwable $throwable): void
+    {
+        $disposition = $this->failurePolicy->classify($throwable, $claim->attempts());
+        $recorded = $disposition->retryable()
+            ? $this->ledger->recordRetry($claim, $disposition->errorCode(), $disposition->delaySeconds())
+            : $this->ledger->recordTerminal($claim, $disposition->errorCode());
+
+        if (!$recorded) {
+            throw new IncrementalLedgerPersistenceException();
         }
     }
 
