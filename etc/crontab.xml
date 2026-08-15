@@ -7,5 +7,10 @@
              method="execute">
             <schedule>*/5 * * * *</schedule>
         </job>
+        <job name="aavirbhava_ai_incremental_product_reconciliation"
+             instance="Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation\IncrementalProductReconciliationCron"
+             method="execute">
+            <schedule>*/10 * * * *</schedule>
+        </job>
     </group>
 </config>

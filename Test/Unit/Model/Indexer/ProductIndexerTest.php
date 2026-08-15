@@ -7,6 +7,7 @@ namespace Aavirbhava\AiShoppingAssistant\Test\Unit\Model\Indexer;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\FullProductReindexerInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalProductIndexSchedulerInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\RebuildResultInterface;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\InvalidProductIndexEntityIdsException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexer\ProductIndexer;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\MockObject\MockObject;
@@ -58,6 +59,14 @@ final class ProductIndexerTest extends TestCase
         $this->buildIndexer()->executeRow('42');
     }
 
+    public function testExecuteRowRejectsMalformedStringId(): void
+    {
+        $this->scheduler->expects(self::never())->method('schedule');
+
+        $this->expectException(InvalidProductIndexEntityIdsException::class);
+        $this->buildIndexer()->executeRow('42abc');
+    }
+
     public function testExecuteListSchedulesMany(): void
     {
         $this->scheduler->expects(self::once())->method('scheduleMany')->with([1, 2, 3]);
@@ -70,6 +79,13 @@ final class ProductIndexerTest extends TestCase
         $this->scheduler->expects(self::once())->method('scheduleMany')->with([1, 2]);
 
         $this->buildIndexer()->execute([1, 2]);
+    }
+
+    public function testMviewExecuteWithStringArrayValidatesToIntegers(): void
+    {
+        $this->scheduler->expects(self::once())->method('scheduleMany')->with([1, 2]);
+
+        $this->buildIndexer()->execute(['1', '2']);
     }
 
     public function testMviewExecuteWithIntSchedulesSingleId(): void

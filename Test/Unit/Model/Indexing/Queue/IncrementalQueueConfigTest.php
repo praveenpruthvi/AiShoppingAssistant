@@ -5,8 +5,17 @@ declare(strict_types=1);
 namespace Aavirbhava\AiShoppingAssistant\Test\Unit\Model\Indexing\Queue;
 
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalProductIndexSchedulerInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalProductReconciliationInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalWorkLedgerInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalWorkRecoveryInterface;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture\CategoryChangeCommitObserver;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture\CategoryLinkManagementPlugin;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture\IndirectCatalogueChangeObserver;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture\ProductActionChangePlugin;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture\ProductChangeCommitObserver;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation\DbIncrementalReconciliationCheckpoint;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation\IncrementalProductReconciliation;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation\IncrementalProductReconciliationCron;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\DbIncrementalWorkLedger;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\DurableIncrementalProductIndexScheduler;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\IncrementalProductIndexConsumer;
@@ -55,14 +64,14 @@ final class IncrementalQueueConfigTest extends TestCase
         self::assertSame(IncrementalProductIndexConsumer::class . '::process', (string)$consumer['handler']);
     }
 
-    public function testProductionSchedulerPreferenceRemainsFailClosedUntilDurableRecovery(): void
+    public function testProductionSchedulerPreferenceUsesDurableSchedulerAfterCaptureActivation(): void
     {
         $preference = $this->loadXml('etc/di.xml')->xpath(
             '/config/preference[@for="' . IncrementalProductIndexSchedulerInterface::class . '"]'
         )[0] ?? null;
 
         self::assertNotNull($preference);
-        self::assertSame(UnavailableIncrementalProductIndexScheduler::class, (string)$preference['type']);
+        self::assertSame(DurableIncrementalProductIndexScheduler::class, (string)$preference['type']);
     }
 
     public function testStagedMagentoQueueSchedulerRemainsDirectlyAvailable(): void
@@ -101,7 +110,7 @@ final class IncrementalQueueConfigTest extends TestCase
         self::assertArrayHasKey('magento/module-cron', $composer['require'] ?? []);
     }
 
-    public function testLedgerAndRecoveryPreferencesAreRegisteredWithoutActivatingScheduler(): void
+    public function testLedgerRecoveryAndReconciliationPreferencesAreRegistered(): void
     {
         $di = $this->loadXml('etc/di.xml');
 
@@ -112,6 +121,82 @@ final class IncrementalQueueConfigTest extends TestCase
         $recovery = $di->xpath('/config/preference[@for="' . IncrementalWorkRecoveryInterface::class . '"]')[0] ?? null;
         self::assertNotNull($recovery);
         self::assertSame(IncrementalWorkRecovery::class, (string)$recovery['type']);
+
+        $reconciliation = $di->xpath(
+            '/config/preference[@for="' . IncrementalProductReconciliationInterface::class . '"]'
+        )[0] ?? null;
+        self::assertNotNull($reconciliation);
+        self::assertSame(IncrementalProductReconciliation::class, (string)$reconciliation['type']);
+    }
+
+    public function testMviewSubscriptionsUseOnlyProductIdEntityColumns(): void
+    {
+        $view = $this->loadXml('etc/mview.xml')->xpath('/config/view[@id="ai_product_rag"]')[0] ?? null;
+        self::assertNotNull($view);
+
+        $subscriptions = [];
+        foreach ($view->subscriptions->table as $table) {
+            $subscriptions[(string)$table['name']] = (string)$table['entity_column'];
+        }
+
+        self::assertSame(
+            [
+                'catalog_product_entity' => 'entity_id',
+                'catalog_product_entity_datetime' => 'entity_id',
+                'catalog_product_entity_decimal' => 'entity_id',
+                'catalog_product_entity_int' => 'entity_id',
+                'catalog_product_entity_text' => 'entity_id',
+                'catalog_product_entity_varchar' => 'entity_id',
+                'catalog_product_website' => 'product_id',
+                'catalog_category_product' => 'product_id',
+            ],
+            $subscriptions
+        );
+        self::assertArrayNotHasKey('catalog_category_entity', $subscriptions);
+        self::assertArrayNotHasKey('eav_attribute_option_value', $subscriptions);
+    }
+
+    public function testCaptureObserversAndPluginsAreRegistered(): void
+    {
+        $events = $this->loadXml('etc/events.xml');
+
+        self::assertSame(
+            ProductChangeCommitObserver::class,
+            (string)($events->xpath(
+                '/config/event[@name="catalog_product_save_commit_after"]/observer'
+                . '[@name="aavirbhava_ai_incremental_product_save_capture"]'
+            )[0]['instance'] ?? '')
+        );
+        self::assertSame(
+            CategoryChangeCommitObserver::class,
+            (string)($events->xpath(
+                '/config/event[@name="catalog_category_save_commit_after"]/observer'
+                . '[@name="aavirbhava_ai_incremental_category_save_capture"]'
+            )[0]['instance'] ?? '')
+        );
+        self::assertSame(
+            IndirectCatalogueChangeObserver::class,
+            (string)($events->xpath(
+                '/config/event[@name="catalog_entity_attribute_save_commit_after"]/observer'
+                . '[@name="aavirbhava_ai_incremental_catalog_attribute_capture"]'
+            )[0]['instance'] ?? '')
+        );
+
+        $di = $this->loadXml('etc/di.xml');
+        self::assertSame(
+            ProductActionChangePlugin::class,
+            (string)($di->xpath(
+                '/config/type[@name="Magento\Catalog\Model\Product\Action"]/plugin'
+                . '[@name="aavirbhava_ai_incremental_product_action_capture"]'
+            )[0]['type'] ?? '')
+        );
+        self::assertSame(
+            CategoryLinkManagementPlugin::class,
+            (string)($di->xpath(
+                '/config/type[@name="Magento\Catalog\Model\CategoryLinkManagement"]/plugin'
+                . '[@name="aavirbhava_ai_incremental_category_link_capture"]'
+            )[0]['type'] ?? '')
+        );
     }
 
     public function testDeclarativeSchemaContainsDurableLedgerOnlyWithSafeColumns(): void
@@ -158,6 +243,37 @@ final class IncrementalQueueConfigTest extends TestCase
         self::assertNotNull($job);
         self::assertSame('execute', (string)$job['method']);
         self::assertSame('*/5 * * * *', trim((string)$job->schedule));
+    }
+
+    public function testReconciliationCronIsRegistered(): void
+    {
+        $job = $this->loadXml('etc/crontab.xml')
+            ->xpath('/config/group/job[@name="aavirbhava_ai_incremental_product_reconciliation"]')[0] ?? null;
+
+        self::assertNotNull($job);
+        self::assertSame(IncrementalProductReconciliationCron::class, (string)$job['instance']);
+        self::assertSame('execute', (string)$job['method']);
+        self::assertSame('*/10 * * * *', trim((string)$job->schedule));
+    }
+
+    public function testReconciliationSchemaContainsOnlyCursorMetadata(): void
+    {
+        $table = $this->loadXml('etc/db_schema.xml')
+            ->xpath('/schema/table[@name="' . DbIncrementalReconciliationCheckpoint::TABLE . '"]')[0] ?? null;
+
+        self::assertNotNull($table);
+        $columns = [];
+        foreach ($table->column as $column) {
+            $columns[] = (string)$column['name'];
+        }
+
+        self::assertSame(
+            ['cursor_id', 'last_product_id', 'pass_started_at', 'completed_at', 'created_at', 'updated_at'],
+            $columns
+        );
+        self::assertFalse(in_array('payload', $columns, true));
+        self::assertFalse(in_array('document', $columns, true));
+        self::assertFalse(in_array('error', $columns, true));
     }
 
     private function loadXml(string $relativePath): \SimpleXMLElement

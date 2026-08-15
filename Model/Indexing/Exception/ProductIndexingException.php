@@ -61,6 +61,12 @@ class ProductIndexingException extends LocalizedException
     /** A full-rebuild incremental work fence could not be managed safely. */
     public const ERROR_REBUILD_FENCE_FAILED = 'rebuild_fence_failed';
 
+    /** Capturing a Magento catalogue change for incremental indexing failed. */
+    public const ERROR_INCREMENTAL_CHANGE_CAPTURE_FAILED = 'incremental_change_capture_failed';
+
+    /** Bounded incremental reconciliation could not be recorded or scheduled safely. */
+    public const ERROR_INCREMENTAL_RECONCILIATION_FAILED = 'incremental_reconciliation_failed';
+
     /** The live alias for incremental indexing is missing or incompatible. */
     public const ERROR_INCREMENTAL_TARGET_INVALID = 'incremental_target_invalid';
 

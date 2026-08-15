@@ -65,4 +65,22 @@
             <column name="lease_expires_at"/>
         </index>
     </table>
+    <table name="aavirbhava_ai_incremental_reconciliation" resource="default" engine="innodb"
+           comment="AI Shopping Assistant Incremental Reconciliation Cursor">
+        <column xsi:type="smallint" name="cursor_id" unsigned="true" nullable="false" identity="false"
+                comment="Singleton Cursor ID"/>
+        <column xsi:type="int" name="last_product_id" unsigned="true" nullable="false" identity="false"
+                default="0" comment="Last Scheduled Product Entity ID"/>
+        <column xsi:type="datetime" name="pass_started_at" on_update="false" nullable="true"
+                comment="Pass Started At"/>
+        <column xsi:type="datetime" name="completed_at" on_update="false" nullable="true"
+                comment="Completed At"/>
+        <column xsi:type="timestamp" name="created_at" on_update="false" nullable="false"
+                default="CURRENT_TIMESTAMP" comment="Created At"/>
+        <column xsi:type="timestamp" name="updated_at" on_update="true" nullable="false"
+                default="CURRENT_TIMESTAMP" comment="Updated At"/>
+        <constraint xsi:type="primary" referenceId="PRIMARY">
+            <column name="cursor_id"/>
+        </constraint>
+    </table>
 </schema>

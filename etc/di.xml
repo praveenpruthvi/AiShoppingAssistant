@@ -42,11 +42,13 @@
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\ProductDocumentWriterInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\OpenSearchProductDocumentWriter"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalProductIndexSchedulerInterface"
-                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\UnavailableIncrementalProductIndexScheduler"/>
+                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\DurableIncrementalProductIndexScheduler"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalWorkLedgerInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\DbIncrementalWorkLedger"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalWorkRecoveryInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\IncrementalWorkRecovery"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalProductReconciliationInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation\IncrementalProductReconciliation"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\RebuildFenceInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\RebuildFence\DbRebuildFence"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Model\Indexing\Clock\ClockInterface"
@@ -57,6 +59,10 @@
                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\RandomLeaseTokenGenerator"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\IncrementalFailureDispositionPolicyInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\IncrementalFailureDispositionPolicy"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation\IncrementalReconciliationCheckpointInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation\DbIncrementalReconciliationCheckpoint"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation\ProductIdCursorBatchProviderInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation\DbProductIdCursorBatchProvider"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\ProductIncrementalIndexerInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\IncrementalProductIndexer"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\RebuildRunContextFactoryInterface"
@@ -75,6 +81,15 @@
                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Client\OpenSearchClientFactory"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Model\Indexing\Client\OpenSearchClientBuilderInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Client\OpenSearchClientBuilder"/>
+
+    <type name="Magento\Catalog\Model\Product\Action">
+        <plugin name="aavirbhava_ai_incremental_product_action_capture"
+                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture\ProductActionChangePlugin"/>
+    </type>
+    <type name="Magento\Catalog\Model\CategoryLinkManagement">
+        <plugin name="aavirbhava_ai_incremental_category_link_capture"
+                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture\CategoryLinkManagementPlugin"/>
+    </type>
 
     <type name="Aavirbhava\AiShoppingAssistant\Model\Provider\LlmProviderRegistry">
         <arguments>
