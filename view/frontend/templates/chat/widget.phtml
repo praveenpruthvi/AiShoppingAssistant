@@ -95,7 +95,11 @@
         color: #1d1d1d;
     }
     .aavirbhava-chat-product-image {
-        flex: 0 0 auto; width: 56px; height: 56px; object-fit: contain; border-radius: .4rem; background: #f5f5f5; border: 1px solid #eee;
+        /* object-fit: cover (not contain) so every card's image area is
+           filled consistently regardless of the source photo's own aspect
+           ratio — a letterboxed/contained image previously left uneven
+           padding depending on each product's real photo dimensions. */
+        flex: 0 0 auto; width: 56px; height: 56px; object-fit: cover; border-radius: .4rem; background: #f5f5f5; border: 1px solid #eee;
     }
     .aavirbhava-chat-product-body { flex: 1; min-width: 0; }
     .aavirbhava-chat-product-title a { color: var(--aavirbhava-primary-color, #1979c3); text-decoration: none; font-weight: 600; }

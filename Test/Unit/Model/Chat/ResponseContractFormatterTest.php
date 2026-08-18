@@ -33,4 +33,24 @@ final class ResponseContractFormatterTest extends TestCase
         self::assertStringContainsString('not only for recommendations', $message->content);
         self::assertStringContainsString('informational answer', $message->content);
     }
+
+    public function testWarnsAgainstCallingProductSkusAsAToolName(): void
+    {
+        $formatter = new ResponseContractFormatter();
+
+        $message = $formatter->format();
+
+        self::assertStringContainsString('is a FIELD inside this JSON object', $message->content);
+        self::assertStringContainsString('Do not call a tool named "product_skus"', $message->content);
+    }
+
+    public function testInstructsReasonToBeAGenuineDescriptionNotABarePriceComparison(): void
+    {
+        $formatter = new ResponseContractFormatter();
+
+        $message = $formatter->format();
+
+        self::assertStringContainsString('genuine, customer-useful', $message->content);
+        self::assertStringContainsString('never a bare restatement of a number comparison', $message->content);
+    }
 }

@@ -16,6 +16,7 @@ use Aavirbhava\AiShoppingAssistant\Model\Chat\Response\LlmResponseSchema;
 use Aavirbhava\AiShoppingAssistant\Model\Dto\ChatMessage;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexingException;
 use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderException;
+use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderInvalidResponseException;
 use Aavirbhava\AiShoppingAssistant\Model\Retrieval\SearchCandidate;
 use Aavirbhava\AiShoppingAssistant\Model\Revalidation\RevalidatedProduct;
 use Psr\Log\LoggerInterface;
@@ -90,6 +91,19 @@ final class ChatEntryPipeline implements ChatEntryPipelineInterface
      * comply after being shown its own mistake and corrected once is
      * treated the same as any other genuinely malformed response, and the
      * existing safe-fallback path still applies.
+     *
+     * As of Task 23, this same 2-attempt budget covers three distinct
+     * compliance problems, not just malformed JSON: a provider-level
+     * ProviderInvalidResponseException (the model returned nothing at all,
+     * or something the provider adapter couldn't parse as a completion —
+     * live-reproduced happening after the model wastes its tool-call
+     * budget on a hallucinated call to a tool named "product_skus", which
+     * isn't a real tool, and is then forced to answer with no tools
+     * offered), and a valid-but-incomplete response (a real product named
+     * in the message text that never made it into product_skus — see
+     * ProductMentionCompletenessChecker). Whichever of the two attempts a
+     * genuinely valid response first appears on, it's kept even if the
+     * *other* attempt was worse — see $bestValidValidation below.
      */
     private const MAX_STRUCTURED_OUTPUT_ATTEMPTS = 2;
 
@@ -99,6 +113,22 @@ only, no markdown, no prose, matching exactly: "message" (string),
 "product_skus" (array of {"sku": string, "reason": string}), "follow_up_questions"
 (array of strings), "actions" (array of {"type": string, "skus": array of
 strings}). Respond again, correctly this time.
+TEXT;
+
+    /**
+     * The specific corrective nudge for a ProviderInvalidResponseException
+     * (empty or unparseable completion) — distinct from
+     * STRUCTURED_OUTPUT_CORRECTION_MESSAGE because live testing traced the
+     * root cause to a specific, nameable mistake (calling a nonexistent
+     * "product_skus" tool) worth calling out directly, not just repeating
+     * the shape requirements the model never even attempted to follow.
+     */
+    private const EMPTY_RESPONSE_CORRECTION_MESSAGE = <<<'TEXT'
+Your previous turn ended without a response. Remember: "product_skus" is a
+FIELD inside your final JSON answer, never a tool you can call — do not
+call a tool named "product_skus" or anything similar. If you already have
+enough information from the tools you called, respond now with the
+required JSON object described earlier.
 TEXT;
 
     public function __construct(
@@ -114,6 +144,7 @@ TEXT;
         private readonly OutputValidatorInterface $outputValidator,
         private readonly ConversationHistoryStoreInterface $conversationHistoryStore,
         private readonly ChatResponseSerializer $responseSerializer,
+        private readonly ProductMentionCompletenessChecker $completenessChecker,
         private readonly LoggerInterface $logger
     ) {
     }
@@ -169,7 +200,19 @@ TEXT;
             ? [$responseContractMessage, $contextMessage, ...$priorMessages, $userMessage]
             : [$responseContractMessage, ...$priorMessages, $userMessage];
 
+        // The best valid response seen across attempts, kept separately
+        // from $validation/$toolResult (which always reflect the *last*
+        // attempt) — a completeness retry (see below) can only ever make
+        // things better or the same by design, but if the model's retry
+        // attempt regresses into something genuinely invalid, the earlier
+        // valid-but-incomplete response is still strictly better than the
+        // generic fallback, so it's what gets used.
+        $bestValidValidation = null;
+        $bestValidToolResult = null;
+
         for ($attempt = 1; $attempt <= self::MAX_STRUCTURED_OUTPUT_ATTEMPTS; $attempt++) {
+            $attemptsRemain = $attempt < self::MAX_STRUCTURED_OUTPUT_ATTEMPTS;
+
             try {
                 $toolResult = $this->toolCallingChatService->converse(
                     $storeId,
@@ -178,10 +221,27 @@ TEXT;
                     $messages,
                     LlmResponseSchema::schema()
                 );
-            } catch (ProviderException) {
-                return ChatPipelineResult::shortCircuit(
-                    new SafeResponse($guardrails->outOfScopeMessage(), self::REASON_ASSISTANT_UNAVAILABLE)
-                );
+            } catch (ProviderInvalidResponseException $exception) {
+                // Distinct from the broader ProviderException catch below:
+                // an invalid/empty completion is a compliance problem (the
+                // provider answered, just not usefully — live-traced to the
+                // model exhausting its tool-call budget after hallucinating
+                // a call to a nonexistent "product_skus" tool, then being
+                // forced to answer with no tools offered), not a genuine
+                // availability failure. It gets the same one-retry-with-a-
+                // nudge treatment as a malformed response, instead of
+                // failing the turn outright on the first occurrence.
+                $this->logProviderFailure($storeId, $exception, $attempt);
+
+                if (!$attemptsRemain) {
+                    break;
+                }
+
+                $messages = [...$messages, new ChatMessage('user', self::EMPTY_RESPONSE_CORRECTION_MESSAGE)];
+                continue;
+            } catch (ProviderException $exception) {
+                $this->logProviderFailure($storeId, $exception, $attempt);
+                break;
             }
 
             $validation = $this->outputValidator->validate(
@@ -189,11 +249,39 @@ TEXT;
                 $this->mergeVerifiedProducts($verifiedProducts, $toolResult->verifiedProducts)
             );
 
-            $isRetryableMalformedResponse = !$validation->isValid()
-                && $validation->reasonCode() === OutputValidator::REASON_MALFORMED_RESPONSE
-                && $attempt < self::MAX_STRUCTURED_OUTPUT_ATTEMPTS;
+            if ($validation->isValid()) {
+                $bestValidValidation = $validation;
+                $bestValidToolResult = $toolResult;
 
-            if (!$isRetryableMalformedResponse) {
+                $missingProducts = $this->completenessChecker->findMissingProducts(
+                    $validation->response()->message,
+                    array_map(static fn ($product) => $product->product->sku, $validation->response()->products),
+                    $this->mergeVerifiedProducts($verifiedProducts, $toolResult->verifiedProducts)
+                );
+
+                if ($missingProducts === [] || !$attemptsRemain) {
+                    break;
+                }
+
+                $this->logger->notice(
+                    'AI shopping assistant: retrying to include products the response text named but omitted from product_skus.',
+                    [
+                        'store_id' => $storeId,
+                        'attempt' => $attempt,
+                        'missing_skus' => array_map(static fn ($product) => $product->sku, $missingProducts),
+                    ]
+                );
+
+                $messages = [
+                    ...$messages,
+                    ...$toolResult->toolRoundTripMessages,
+                    new ChatMessage('assistant', $toolResult->response->text),
+                    new ChatMessage('user', $this->missingProductsCorrectionMessage($missingProducts)),
+                ];
+                continue;
+            }
+
+            if ($validation->reasonCode() !== OutputValidator::REASON_MALFORMED_RESPONSE || !$attemptsRemain) {
                 break;
             }
 
@@ -210,9 +298,16 @@ TEXT;
             ];
         }
 
-        if (!$validation->isValid()) {
+        if ($bestValidValidation !== null) {
+            $validation = $bestValidValidation;
+            $toolResult = $bestValidToolResult;
+        } elseif (isset($validation) && !$validation->isValid()) {
             return ChatPipelineResult::shortCircuit(
                 new SafeResponse($guardrails->outOfScopeMessage(), (string) $validation->reasonCode())
+            );
+        } else {
+            return ChatPipelineResult::shortCircuit(
+                new SafeResponse($guardrails->outOfScopeMessage(), self::REASON_ASSISTANT_UNAVAILABLE)
             );
         }
 
@@ -256,6 +351,42 @@ TEXT;
             'error_code' => $exception->errorCode(),
             'exception' => $exception->getMessage(),
         ]);
+    }
+
+    /**
+     * The chat-provider equivalent of logRetrievalFailure() — added in
+     * Task 23 after finding this catch block previously discarded the
+     * real exception entirely (`catch (ProviderException)`, no variable
+     * bound, nothing logged), leaving every real "assistant_unavailable"
+     * occurrence with zero diagnostic trail. Same sanitized-context
+     * logging convention: error code and exception class, never raw
+     * customer message text.
+     */
+    private function logProviderFailure(int $storeId, ProviderException $exception, int $attempt): void
+    {
+        $this->logger->error('AI shopping assistant: chat provider call failed.', [
+            'store_id' => $storeId,
+            'attempt' => $attempt,
+            'exception_class' => $exception::class,
+            'error_code' => $exception->errorCode(),
+            'exception' => $exception->getMessage(),
+        ]);
+    }
+
+    /**
+     * @param list<RevalidatedProduct> $missingProducts
+     */
+    private function missingProductsCorrectionMessage(array $missingProducts): string
+    {
+        $lines = array_map(
+            static fn (RevalidatedProduct $product): string => '- ' . $product->name . ' (SKU: ' . $product->sku . ')',
+            $missingProducts
+        );
+
+        return "Your previous response named the following product(s) in its message text but left "
+            . "them out of product_skus:\n" . implode("\n", $lines)
+            . "\n\nRespond again with the same information, but include every one of these SKUs in "
+            . "product_skus this time, each with its own reason.";
     }
 
     /**

@@ -23,6 +23,7 @@ use Aavirbhava\AiShoppingAssistant\Model\Chat\OutputValidator;
 use Aavirbhava\AiShoppingAssistant\Model\Chat\ProductContextFormatter;
 use Aavirbhava\AiShoppingAssistant\Model\Chat\ChatResponseSerializer;
 use Aavirbhava\AiShoppingAssistant\Model\Chat\ProductContextResolver;
+use Aavirbhava\AiShoppingAssistant\Model\Chat\ProductMentionCompletenessChecker;
 use Aavirbhava\AiShoppingAssistant\Model\Chat\ResponseContractFormatter;
 use Aavirbhava\AiShoppingAssistant\Model\Chat\Response\LlmResponseParser;
 use Aavirbhava\AiShoppingAssistant\Model\Chat\ScopeClassification;
@@ -33,6 +34,7 @@ use Aavirbhava\AiShoppingAssistant\Model\Dto\TokenUsage;
 use Aavirbhava\AiShoppingAssistant\Model\Dto\ToolCall;
 use Aavirbhava\AiShoppingAssistant\Model\Embedding\Exception\EmbeddingConfigurationException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\SearchQueryFailedException;
+use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderInvalidResponseException;
 use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderUnavailableException;
 use Aavirbhava\AiShoppingAssistant\Model\Ranking\SearchContext;
 use Aavirbhava\AiShoppingAssistant\Model\Retrieval\SearchCandidate;
@@ -269,6 +271,258 @@ final class ChatEntryPipelineTest extends TestCase
 
         self::assertTrue($result->wasShortCircuited());
         self::assertSame('malformed_response', $result->safeResponse()->reasonCode);
+    }
+
+    public function testInvalidProviderResponseIsRetriedOnceAndSucceedsOnTheSecondAttempt(): void
+    {
+        // Task 23: live-reproduced that the model sometimes exhausts its
+        // tool-call budget and is then force-answered with no tools
+        // offered, at which point it occasionally returns a genuinely
+        // empty/unparseable completion — a ProviderInvalidResponseException
+        // thrown from inside converse(), not something OutputValidator
+        // ever sees. Previously this failed the whole turn outright on
+        // the very first occurrence; it now gets the same one-retry
+        // treatment as a malformed response.
+        $classifier = $this->createMock(CommerceScopeClassifierInterface::class);
+        $classifier->method('classify')->willReturn(ScopeClassification::inScope());
+
+        $callCount = 0;
+        $capturedSecondCallMessages = null;
+        $toolCallingChatService = $this->createMock(ToolCallingChatServiceInterface::class);
+        $toolCallingChatService->method('converse')->willReturnCallback(
+            function (
+                int $storeId,
+                ?int $customerGroupId,
+                ?string $cartId,
+                array $messages
+            ) use (&$callCount, &$capturedSecondCallMessages): ToolCallingResult {
+                $callCount++;
+
+                if ($callCount === 1) {
+                    throw new ProviderInvalidResponseException(new Phrase('The chat provider returned an empty response.'));
+                }
+
+                $capturedSecondCallMessages = $messages;
+
+                return $this->toolCallingResult('Here are some options.', []);
+            }
+        );
+
+        $pipeline = $this->pipeline(classifier: $classifier, toolCallingChatService: $toolCallingChatService);
+
+        $result = $pipeline->handle(self::STORE_ID, 'Show me waterproof phones.');
+
+        self::assertSame(2, $callCount);
+        self::assertFalse($result->wasShortCircuited());
+        self::assertSame('Here are some options.', $result->response()->message);
+        self::assertNotNull($capturedSecondCallMessages);
+        $lastMessage = $capturedSecondCallMessages[array_key_last($capturedSecondCallMessages)];
+        self::assertSame('user', $lastMessage->role);
+        self::assertStringContainsString('product_skus', $lastMessage->content);
+    }
+
+    public function testInvalidProviderResponseOnEveryAttemptExhaustsRetriesAndShortCircuits(): void
+    {
+        $classifier = $this->createMock(CommerceScopeClassifierInterface::class);
+        $classifier->method('classify')->willReturn(ScopeClassification::inScope());
+
+        $toolCallingChatService = $this->createMock(ToolCallingChatServiceInterface::class);
+        $toolCallingChatService->expects(self::exactly(2))
+            ->method('converse')
+            ->willThrowException(new ProviderInvalidResponseException(new Phrase('The chat provider returned an empty response.')));
+
+        $pipeline = $this->pipeline(classifier: $classifier, toolCallingChatService: $toolCallingChatService);
+
+        $result = $pipeline->handle(self::STORE_ID, 'Show me waterproof phones.');
+
+        self::assertTrue($result->wasShortCircuited());
+        self::assertSame(ChatEntryPipeline::REASON_ASSISTANT_UNAVAILABLE, $result->safeResponse()->reasonCode);
+    }
+
+    public function testGenuineProviderUnavailabilityIsNeverRetriedUnlikeAnInvalidResponse(): void
+    {
+        // A real availability failure (already retried/circuit-broken
+        // inside FallbackChatGenerationService before it ever reaches
+        // here) must still short-circuit on the very first occurrence —
+        // only the narrower ProviderInvalidResponseException gets the
+        // compliance-repair retry added in Task 23.
+        $classifier = $this->createMock(CommerceScopeClassifierInterface::class);
+        $classifier->method('classify')->willReturn(ScopeClassification::inScope());
+
+        $toolCallingChatService = $this->createMock(ToolCallingChatServiceInterface::class);
+        $toolCallingChatService->expects(self::once())
+            ->method('converse')
+            ->willThrowException(new ProviderUnavailableException(new Phrase('The chat provider is temporarily unavailable.')));
+
+        $pipeline = $this->pipeline(classifier: $classifier, toolCallingChatService: $toolCallingChatService);
+
+        $result = $pipeline->handle(self::STORE_ID, 'Show me waterproof phones.');
+
+        self::assertTrue($result->wasShortCircuited());
+        self::assertSame(ChatEntryPipeline::REASON_ASSISTANT_UNAVAILABLE, $result->safeResponse()->reasonCode);
+    }
+
+    public function testIncompleteProductsAreRetriedOnceAndTheRetryAddsTheMissingSku(): void
+    {
+        // Task 23: live-reproduced "here are 2 jackets" rendering only 1
+        // card — the model named a second, real, verified product in its
+        // own message text but never selected its SKU into product_skus.
+        // ChatEntryPipeline now gives it one more chance, naming exactly
+        // which SKU(s) were missing.
+        $classifier = $this->createMock(CommerceScopeClassifierInterface::class);
+        $classifier->method('classify')->willReturn(ScopeClassification::inScope());
+
+        $product1 = new RevalidatedProduct(1, 'SKU-1', 'Jade Yoga Jacket', 32.0, null, 'https://store.test/sku-1', '2026-08-16T00:00:00+00:00');
+        $product2 = new RevalidatedProduct(2, 'SKU-2', 'Montana Wind Jacket', 45.0, null, 'https://store.test/sku-2', '2026-08-16T00:00:00+00:00');
+
+        $revalidationService = $this->createMock(LiveRevalidationServiceInterface::class);
+        $revalidationService->method('revalidate')->willReturn([$product1, $product2]);
+
+        $callCount = 0;
+        $capturedSecondCallMessages = null;
+        $toolCallingChatService = $this->createMock(ToolCallingChatServiceInterface::class);
+        $toolCallingChatService->method('converse')->willReturnCallback(
+            function (
+                int $storeId,
+                ?int $customerGroupId,
+                ?string $cartId,
+                array $messages
+            ) use (&$callCount, &$capturedSecondCallMessages, $product1, $product2): ToolCallingResult {
+                $callCount++;
+
+                if ($callCount === 1) {
+                    return new ToolCallingResult(
+                        $this->structuredChatResponse(
+                            'Here are two jackets: the Jade Yoga Jacket and the Montana Wind Jacket.',
+                            [['sku' => 'SKU-1', 'reason' => 'Great for yoga.']]
+                        ),
+                        [$product1, $product2]
+                    );
+                }
+
+                $capturedSecondCallMessages = $messages;
+
+                return new ToolCallingResult(
+                    $this->structuredChatResponse(
+                        'Here are two jackets: the Jade Yoga Jacket and the Montana Wind Jacket.',
+                        [
+                            ['sku' => 'SKU-1', 'reason' => 'Great for yoga.'],
+                            ['sku' => 'SKU-2', 'reason' => 'Great for wind.'],
+                        ]
+                    ),
+                    [$product1, $product2]
+                );
+            }
+        );
+
+        $pipeline = $this->pipeline(
+            classifier: $classifier,
+            toolCallingChatService: $toolCallingChatService,
+            revalidationService: $revalidationService
+        );
+
+        $result = $pipeline->handle(self::STORE_ID, 'Show me jackets.');
+
+        self::assertSame(2, $callCount);
+        self::assertFalse($result->wasShortCircuited());
+        self::assertCount(2, $result->response()->products);
+        self::assertNotNull($capturedSecondCallMessages);
+        $lastMessage = $capturedSecondCallMessages[array_key_last($capturedSecondCallMessages)];
+        self::assertSame('user', $lastMessage->role);
+        self::assertStringContainsString('SKU-2', $lastMessage->content);
+        self::assertStringContainsString('Montana Wind Jacket', $lastMessage->content);
+    }
+
+    public function testStillIncompleteAfterRetryStillUsesTheValidResponseRatherThanFallingBack(): void
+    {
+        // A response with 1 real card is strictly better than the generic
+        // fallback message with none — incompleteness is a quality gap,
+        // not a safety problem, so it's never treated as fail-closed the
+        // way a fabricated SKU is.
+        $classifier = $this->createMock(CommerceScopeClassifierInterface::class);
+        $classifier->method('classify')->willReturn(ScopeClassification::inScope());
+
+        $product1 = new RevalidatedProduct(1, 'SKU-1', 'Jade Yoga Jacket', 32.0, null, 'https://store.test/sku-1', '2026-08-16T00:00:00+00:00');
+        $product2 = new RevalidatedProduct(2, 'SKU-2', 'Montana Wind Jacket', 45.0, null, 'https://store.test/sku-2', '2026-08-16T00:00:00+00:00');
+
+        $revalidationService = $this->createMock(LiveRevalidationServiceInterface::class);
+        $revalidationService->method('revalidate')->willReturn([$product1, $product2]);
+
+        $toolCallingChatService = $this->createMock(ToolCallingChatServiceInterface::class);
+        $toolCallingChatService->expects(self::exactly(2))->method('converse')->willReturn(
+            new ToolCallingResult(
+                $this->structuredChatResponse(
+                    'Here are two jackets: the Jade Yoga Jacket and the Montana Wind Jacket.',
+                    [['sku' => 'SKU-1', 'reason' => 'Great for yoga.']]
+                ),
+                [$product1, $product2]
+            )
+        );
+
+        $pipeline = $this->pipeline(
+            classifier: $classifier,
+            toolCallingChatService: $toolCallingChatService,
+            revalidationService: $revalidationService
+        );
+
+        $result = $pipeline->handle(self::STORE_ID, 'Show me jackets.');
+
+        self::assertFalse($result->wasShortCircuited());
+        self::assertCount(1, $result->response()->products);
+        self::assertSame('SKU-1', $result->response()->products[0]->product->sku);
+    }
+
+    public function testARegressedSecondAttemptFallsBackToTheFirstAttemptsValidResponse(): void
+    {
+        // A completeness retry can only ever try to make things better —
+        // if the model's corrected attempt instead comes back malformed
+        // or otherwise invalid, the first attempt's valid-if-incomplete
+        // response is still strictly better than the generic fallback and
+        // is what the customer sees.
+        $classifier = $this->createMock(CommerceScopeClassifierInterface::class);
+        $classifier->method('classify')->willReturn(ScopeClassification::inScope());
+
+        $product1 = new RevalidatedProduct(1, 'SKU-1', 'Jade Yoga Jacket', 32.0, null, 'https://store.test/sku-1', '2026-08-16T00:00:00+00:00');
+        $product2 = new RevalidatedProduct(2, 'SKU-2', 'Montana Wind Jacket', 45.0, null, 'https://store.test/sku-2', '2026-08-16T00:00:00+00:00');
+
+        $revalidationService = $this->createMock(LiveRevalidationServiceInterface::class);
+        $revalidationService->method('revalidate')->willReturn([$product1, $product2]);
+
+        $callCount = 0;
+        $toolCallingChatService = $this->createMock(ToolCallingChatServiceInterface::class);
+        $toolCallingChatService->method('converse')->willReturnCallback(
+            function () use (&$callCount, $product1, $product2): ToolCallingResult {
+                $callCount++;
+
+                if ($callCount === 1) {
+                    return new ToolCallingResult(
+                        $this->structuredChatResponse(
+                            'Here are two jackets: the Jade Yoga Jacket and the Montana Wind Jacket.',
+                            [['sku' => 'SKU-1', 'reason' => 'Great for yoga.']]
+                        ),
+                        [$product1, $product2]
+                    );
+                }
+
+                return new ToolCallingResult(
+                    new ChatResponse('not valid json at all', [], new TokenUsage(1, 1), 'openai_compatible', 'local-model', 5),
+                    [$product1, $product2]
+                );
+            }
+        );
+
+        $pipeline = $this->pipeline(
+            classifier: $classifier,
+            toolCallingChatService: $toolCallingChatService,
+            revalidationService: $revalidationService
+        );
+
+        $result = $pipeline->handle(self::STORE_ID, 'Show me jackets.');
+
+        self::assertSame(2, $callCount);
+        self::assertFalse($result->wasShortCircuited());
+        self::assertCount(1, $result->response()->products);
+        self::assertSame('SKU-1', $result->response()->products[0]->product->sku);
     }
 
     public function testFabricatedSkuIsNeverRetried(): void
@@ -906,6 +1160,7 @@ final class ChatEntryPipelineTest extends TestCase
             new OutputValidator(new LlmResponseParser()),
             $historyStore,
             new ChatResponseSerializer(),
+            new ProductMentionCompletenessChecker(),
             $logger
         );
     }

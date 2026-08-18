@@ -134,8 +134,11 @@
                                      instead of one guaranteed to read against
                                      this always-white card. -->
                                 <div class="flex gap-2 rounded-lg border border-gray-200 bg-white p-2 text-gray-900">
+                                    <!-- object-cover (not object-contain) so every card's image
+                                         area fills consistently regardless of the source photo's
+                                         own aspect ratio, matching the Luma template's fix. -->
                                     <img :src="product.imageUrl" x-show="product.imageUrl" alt=""
-                                         class="h-14 w-14 flex-none rounded border border-gray-100 bg-gray-50 object-contain">
+                                         class="h-14 w-14 flex-none rounded border border-gray-100 bg-gray-50 object-cover">
                                     <div class="min-w-0 flex-1">
                                         <div class="font-semibold">
                                             <a :href="product.url" x-show="product.url" target="_blank" rel="noopener noreferrer" class="aavirbhava-hyva-accent no-underline hover:underline" x-text="product.name"></a>

@@ -68,6 +68,27 @@ final class ConfigurationReader implements ConfigurationReaderInterface
 
     public const MIN_MAX_TOOL_CALLS = 1;
     public const MAX_MAX_TOOL_CALLS = 10;
+
+    /**
+     * Tried raising this from 4 to 6 during Task 23, reasoning that a
+     * wasted round (e.g. a hallucinated call to a nonexistent tool) left
+     * too little slack before the model gets force-answered with no
+     * tools offered. Reverted after the broad live-query test that same
+     * task ran: each `converse()` attempt already costs up to
+     * maxToolCalls+1 real provider calls, and ChatEntryPipeline's own
+     * retry budget (MAX_STRUCTURED_OUTPUT_ATTEMPTS) can invoke
+     * `converse()` twice — six rounds pushed the theoretical worst case
+     * to 14 real calls (~280s at the 20s default LLM timeout), and this
+     * environment's nginx has a default ~60s fastcgi_read_timeout with no
+     * override found — a real, hittable ceiling, not a theoretical one.
+     * The test data itself didn't show extra rounds converting genuinely
+     * ambiguous queries into successes, just making them take longer
+     * before still needing to give up. Kept at 4 (the original, already-
+     * proven default) — the prompt fix warning against the hallucinated
+     * "product_skus" tool call and the retry-on-invalid-response recovery
+     * (both also Task 23) address the same underlying failure without
+     * raising the worst-case latency ceiling at all.
+     */
     public const DEFAULT_MAX_TOOL_CALLS = 4;
 
     public const MIN_MAX_CONVERSATION_MESSAGES = 2;

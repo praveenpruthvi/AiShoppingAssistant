@@ -142,6 +142,55 @@ final class OutputValidatorTest extends TestCase
         self::assertSame(OutputValidator::REASON_FABRICATED_URL, $result->reasonCode());
     }
 
+    public function testARealVerifiedProductUrlInMessageIsValid(): void
+    {
+        // Task 23: a real, live-reproduced bug — the original check
+        // rejected ANY URL mention at all, even one the model correctly
+        // retrieved (e.g. via get_product_details) and repeated back
+        // verbatim in a "compare these two products" answer. A URL that
+        // matches a real, revalidated product's own url is never a
+        // fabrication.
+        $response = $this->response([
+            'message' => 'You can view it here: https://store.test/blue-shoe',
+            'product_skus' => [['sku' => 'SKU-1', 'reason' => 'Waterproof.']],
+            'follow_up_questions' => [],
+            'actions' => [],
+        ]);
+
+        $result = $this->validator()->validate($response, [$this->verified()]);
+
+        self::assertTrue($result->isValid());
+    }
+
+    public function testAUrlNotMatchingAnyRealProductIsStillInvalidEvenWithVerifiedProductsPresent(): void
+    {
+        $response = $this->response([
+            'message' => 'You can view it here: https://store.test/some-other-product',
+            'product_skus' => [['sku' => 'SKU-1', 'reason' => 'Waterproof.']],
+            'follow_up_questions' => [],
+            'actions' => [],
+        ]);
+
+        $result = $this->validator()->validate($response, [$this->verified()]);
+
+        self::assertFalse($result->isValid());
+        self::assertSame(OutputValidator::REASON_FABRICATED_URL, $result->reasonCode());
+    }
+
+    public function testTrailingSentencePunctuationIsStrippedBeforeComparingTheUrl(): void
+    {
+        $response = $this->response([
+            'message' => 'You can view it here: https://store.test/blue-shoe, which is a great fit.',
+            'product_skus' => [['sku' => 'SKU-1', 'reason' => 'Waterproof.']],
+            'follow_up_questions' => [],
+            'actions' => [],
+        ]);
+
+        $result = $this->validator()->validate($response, [$this->verified()]);
+
+        self::assertTrue($result->isValid());
+    }
+
     public function testUsesTheEmbeddedRevalidatedProductNotAnythingFromTheLlmForProductFacts(): void
     {
         $response = $this->response([
@@ -391,5 +440,92 @@ final class OutputValidatorTest extends TestCase
 
         self::assertFalse($result->isValid());
         self::assertSame(OutputValidator::REASON_FABRICATED_PRICE, $result->reasonCode());
+    }
+
+    public function testExceedIsRecognizedAsAThresholdWord(): void
+    {
+        // Task 23: a real, live-reproduced gap — "exceed $40" was rejected
+        // outright even though "under $40" (the exact same sentence's own
+        // inverse phrasing) was already recognized, because "exceed" was
+        // simply missing from the threshold-word list.
+        $product = new RevalidatedProduct(1, 'MJ07', 'Orion Jacket', 72.00, null, 'https://store.test/orion', '2026-08-16T00:00:00+00:00');
+        $response = $this->response([
+            'message' => 'Only the Jade Yoga Jacket is under $40; all other jackets in the results exceed $40, '
+                . 'for example the Orion Jacket at $72.',
+            'product_skus' => [['sku' => 'MJ07', 'reason' => 'Over budget but a great jacket.']],
+            'follow_up_questions' => [],
+            'actions' => [],
+        ]);
+
+        $result = $this->validator()->validate($response, [$product]);
+
+        self::assertTrue($result->isValid());
+    }
+
+    public function testTrailingOrLessPhrasingIsRecognizedAsAThreshold(): void
+    {
+        // Task 23: the original implementation only ever looked BACKWARD
+        // from a mentioned price, so "or less"/"or under"/"or below" being
+        // listed as threshold phrases was dead code — none of them can
+        // ever appear before the number they qualify. Now checked forward
+        // too.
+        $response = $this->response([
+            'message' => 'Everything here is $40 or less.',
+            'product_skus' => [],
+            'follow_up_questions' => [],
+            'actions' => [],
+        ]);
+
+        $result = $this->validator()->validate($response, [$this->verified()]);
+
+        self::assertTrue($result->isValid());
+    }
+
+    public function testAThresholdWordDoesNotBleedAcrossIntoAnAdjacentGenuinePriceClaim(): void
+    {
+        // Task 23: a real, live-reproduced bug — a fixed-size backward
+        // window could pick up an earlier number's threshold word even
+        // though it doesn't qualify the CURRENT number. Here "under"
+        // qualifies "$40", not the immediately-following "$32", which is
+        // a real, distinct product-price claim that must still be
+        // checked against the real price — a wrong value here must still
+        // be caught, which it can only be if it isn't incorrectly
+        // exempted as a threshold mention.
+        $response = $this->response([
+            'message' => 'This jacket is under $40, with a price of $99.',
+            'product_skus' => [['sku' => 'SKU-1', 'reason' => 'Waterproof.']],
+            'follow_up_questions' => [],
+            'actions' => [],
+        ]);
+
+        $result = $this->validator()->validate($response, [$this->verified()]);
+
+        self::assertFalse($result->isValid());
+        self::assertSame(OutputValidator::REASON_FABRICATED_PRICE, $result->reasonCode());
+    }
+
+    public function testMultiProductPriceComparisonWithAllAccuratePricesIsValid(): void
+    {
+        // The exact real-world response shape this fix addresses,
+        // reproduced live: the model restates several real, tool-verified
+        // prices while explaining why only one product qualifies. Every
+        // stated price is genuinely accurate here, so nothing should be
+        // rejected — including the "exceed $40" phrasing this test also
+        // exercises.
+        $cheap = new RevalidatedProduct(1, 'WJ09', 'Jade Yoga Jacket', 32.00, null, 'https://store.test/wj09', '2026-08-16T00:00:00+00:00');
+        $pricey1 = new RevalidatedProduct(2, 'MJ07', 'Orion Jacket', 72.00, null, 'https://store.test/mj07', '2026-08-16T00:00:00+00:00');
+        $pricey2 = new RevalidatedProduct(3, 'MJ01', 'Beaumont Jacket', 42.00, null, 'https://store.test/mj01', '2026-08-16T00:00:00+00:00');
+
+        $response = $this->response([
+            'message' => "Only the Jade Yoga Jacket (WJ09) is under \$40, with a price of \$32. All other jackets "
+                . "in the results exceed \$40:\n- Orion Jacket (MJ07): \$72\n- Beaumont Jacket (MJ01): \$42",
+            'product_skus' => [['sku' => 'WJ09', 'reason' => 'The only jacket under $40, made for yoga.']],
+            'follow_up_questions' => [],
+            'actions' => [],
+        ]);
+
+        $result = $this->validator()->validate($response, [$cheap, $pricey1, $pricey2]);
+
+        self::assertTrue($result->isValid());
     }
 }
