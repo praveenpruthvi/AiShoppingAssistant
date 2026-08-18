@@ -93,6 +93,18 @@ final class FakeAssistantSearchClient implements AssistantSearchClientInterface
      */
     private array $failures = [];
 
+    /**
+     * Queued search results keyed by index name, consumed in order.
+     *
+     * @var array<string, list<list<array{_id: string, _score: float, _source: array<string, mixed>}>>>
+     */
+    public array $searchResults = [];
+
+    /**
+     * @var list<array{index: string, body: array<string, mixed>}>
+     */
+    public array $searchCalls = [];
+
     public function ping(): bool
     {
         return $this->available;
@@ -236,6 +248,14 @@ final class FakeAssistantSearchClient implements AssistantSearchClientInterface
         unset($this->indexes[$indexName]);
         unset($this->documentsByIndex[$indexName]);
         unset($this->documentSources[$indexName]);
+    }
+
+    public function search(string $indexName, array $queryBody): array
+    {
+        $this->assertNoFailure('search');
+        $this->searchCalls[] = ['index' => $indexName, 'body' => $queryBody];
+
+        return array_shift($this->searchResults[$indexName]) ?? [];
     }
 
     /**

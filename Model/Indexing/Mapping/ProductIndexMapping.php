@@ -96,7 +96,6 @@ final class ProductIndexMapping implements ProductIndexMappingInterface
                     self::FIELD_EMBEDDING => [
                         'type' => 'knn_vector',
                         'dimension' => $embeddingDimensions,
-                        'space_type' => self::KNN_SPACE_TYPE,
                         'method' => [
                             'name' => 'hnsw',
                             'space_type' => self::KNN_SPACE_TYPE,

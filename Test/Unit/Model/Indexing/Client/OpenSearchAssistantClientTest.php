@@ -18,6 +18,8 @@ use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchBackendUna
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchCapabilityUnsupportedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchConfigurationInvalidException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexCreateFailedException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\SearchQueryFailedException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\SearchResponseInvalidException;
 use Magento\Elasticsearch\Model\Config;
 use OpenSearch\Client;
 use OpenSearch\Common\Exceptions\Missing404Exception;
@@ -778,6 +780,111 @@ final class OpenSearchAssistantClientTest extends TestCase
             $client->distribution();
             self::fail('Expected OpenSearchConfigurationInvalidException');
         } catch (OpenSearchConfigurationInvalidException $exception) {
+            self::assertSanitized($exception);
+        }
+    }
+
+    public function testSearchReturnsVerifiedHits(): void
+    {
+        $this->opensearch->method('search')->willReturn([
+            'hits' => [
+                'hits' => [
+                    ['_id' => '2_42', '_score' => 1.5, '_source' => ['name' => 'Test']],
+                    ['_id' => '2_43', '_score' => 0.9, '_source' => ['name' => 'Other']],
+                ],
+            ],
+        ]);
+
+        $hits = $this->client->search(self::INDEX, ['query' => ['match_all' => []]]);
+
+        self::assertSame(
+            [
+                ['_id' => '2_42', '_score' => 1.5, '_source' => ['name' => 'Test']],
+                ['_id' => '2_43', '_score' => 0.9, '_source' => ['name' => 'Other']],
+            ],
+            $hits
+        );
+    }
+
+    public function testSearchPassesIndexAndBody(): void
+    {
+        $captured = [];
+        $this->opensearch->method('search')->willReturnCallback(
+            function (array $params) use (&$captured): array {
+                $captured[] = $params;
+                return ['hits' => ['hits' => []]];
+            }
+        );
+
+        $this->client->search(self::INDEX, ['query' => ['match_all' => []]]);
+
+        self::assertSame(self::INDEX, $captured[0]['index']);
+        self::assertSame(['query' => ['match_all' => []]], $captured[0]['body']);
+    }
+
+    public function testSearchReturnsEmptyListWhenNoHits(): void
+    {
+        $this->opensearch->method('search')->willReturn(['hits' => ['hits' => []]]);
+
+        self::assertSame([], $this->client->search(self::INDEX, []));
+    }
+
+    public function testSearchRejectsMissingHitsKey(): void
+    {
+        $this->opensearch->method('search')->willReturn(['took' => 1]);
+
+        $this->expectException(SearchResponseInvalidException::class);
+        $this->client->search(self::INDEX, []);
+    }
+
+    public function testSearchRejectsNonListHits(): void
+    {
+        $this->opensearch->method('search')->willReturn(['hits' => ['hits' => 'not-a-list']]);
+
+        $this->expectException(SearchResponseInvalidException::class);
+        $this->client->search(self::INDEX, []);
+    }
+
+    public function testSearchRejectsHitMissingId(): void
+    {
+        $this->opensearch->method('search')->willReturn([
+            'hits' => ['hits' => [['_score' => 1.0, '_source' => []]]],
+        ]);
+
+        $this->expectException(SearchResponseInvalidException::class);
+        $this->client->search(self::INDEX, []);
+    }
+
+    public function testSearchRejectsHitWithNonNumericScore(): void
+    {
+        $this->opensearch->method('search')->willReturn([
+            'hits' => ['hits' => [['_id' => '2_42', '_score' => 'high', '_source' => []]]],
+        ]);
+
+        $this->expectException(SearchResponseInvalidException::class);
+        $this->client->search(self::INDEX, []);
+    }
+
+    public function testSearchRejectsHitWithNonArraySource(): void
+    {
+        $this->opensearch->method('search')->willReturn([
+            'hits' => ['hits' => [['_id' => '2_42', '_score' => 1.0, '_source' => 'not-an-array']]],
+        ]);
+
+        $this->expectException(SearchResponseInvalidException::class);
+        $this->client->search(self::INDEX, []);
+    }
+
+    public function testSearchTransportFailureIsSanitized(): void
+    {
+        $this->opensearch->method('search')->willThrowException(
+            new \RuntimeException(self::SECRET_HOST . ' ' . self::SECRET_USER . ' ' . self::SECRET_PASS)
+        );
+
+        try {
+            $this->client->search(self::INDEX, []);
+            self::fail('Expected SearchQueryFailedException');
+        } catch (SearchQueryFailedException $exception) {
             self::assertSanitized($exception);
         }
     }

@@ -13,6 +13,7 @@ final readonly class GuardrailConfig implements GuardrailConfigInterface
         private int $maxInputCharacters,
         private int $maxToolCalls,
         private bool $cartMutationsEnabled,
+        private bool $requireCartConfirmation,
         private bool $blockExternalUrls,
         private bool $blockCodeGeneration,
         private string $outOfScopeMessage
@@ -39,6 +40,11 @@ final readonly class GuardrailConfig implements GuardrailConfigInterface
     public function areCartMutationsEnabled(): bool
     {
         return $this->cartMutationsEnabled;
+    }
+
+    public function requiresCartConfirmation(): bool
+    {
+        return $this->requireCartConfirmation;
     }
 
     public function blocksExternalUrls(): bool

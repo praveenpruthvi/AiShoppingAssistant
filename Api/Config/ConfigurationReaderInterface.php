@@ -8,6 +8,8 @@ interface ConfigurationReaderInterface
 {
     public function readGeneral(int $storeId): GeneralConfigInterface;
 
+    public function readAppearance(int $storeId): AppearanceConfigInterface;
+
     public function readLlm(int $storeId): LlmConfigInterface;
 
     public function readFallback(int $storeId): FallbackConfigInterface;
@@ -19,4 +21,6 @@ interface ConfigurationReaderInterface
     public function readGuardrails(int $storeId): GuardrailConfigInterface;
 
     public function readIndexing(int $storeId): IndexingConfigInterface;
+
+    public function readCapabilities(int $storeId): CapabilitiesConfigInterface;
 }

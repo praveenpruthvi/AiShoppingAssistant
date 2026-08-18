@@ -13,6 +13,11 @@
                         </resource>
                     </resource>
                 </resource>
+                <resource id="Magento_Backend::marketing">
+                    <resource id="Aavirbhava_AiShoppingAssistant::playground"
+                              title="AI Shopping Assistant Playground"
+                              sortOrder="910"/>
+                </resource>
             </resource>
         </resources>
     </acl>

@@ -6,6 +6,7 @@
             <general>
                 <enabled>0</enabled>
                 <strict_store_only>1</strict_store_only>
+                <max_conversation_messages>40</max_conversation_messages>
             </general>
             <llm>
                 <provider></provider>
@@ -40,10 +41,19 @@
                 <max_input_characters>1000</max_input_characters>
                 <max_tool_calls>4</max_tool_calls>
                 <cart_mutations_enabled>0</cart_mutations_enabled>
+                <require_cart_confirmation>1</require_cart_confirmation>
                 <block_external_urls>1</block_external_urls>
                 <block_code_generation>1</block_code_generation>
                 <out_of_scope_message>I can help you search, compare, and learn about products and services available on this store. What are you looking for?</out_of_scope_message>
             </guardrails>
+            <capabilities>
+                <product_discovery_enabled>1</product_discovery_enabled>
+                <product_details_enabled>1</product_details_enabled>
+                <comparison_enabled>1</comparison_enabled>
+                <price_checking_enabled>1</price_checking_enabled>
+                <stock_checking_enabled>1</stock_checking_enabled>
+                <policy_search_enabled>1</policy_search_enabled>
+            </capabilities>
             <indexing>
                 <batch_size>100</batch_size>
                 <searchable_attribute_codes>manufacturer,color,size,material</searchable_attribute_codes>

@@ -17,6 +17,8 @@ use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchCapability
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchConfigurationInvalidException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexCreateFailedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexingException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\SearchQueryFailedException;
+use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\SearchResponseInvalidException;
 use Magento\Elasticsearch\Model\Config;
 use OpenSearch\Client;
 use OpenSearch\Common\Exceptions\Missing404Exception;
@@ -442,6 +444,57 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
         } catch (\Throwable $throwable) {
             throw new OpenSearchBackendUnavailableException();
         }
+    }
+
+    public function search(string $indexName, array $queryBody): array
+    {
+        try {
+            $response = $this->client()->search(
+                [
+                    'index' => $indexName,
+                    'body' => $queryBody,
+                    'client' => ['timeout' => $this->timeout()],
+                ]
+            );
+        } catch (ProductIndexingException $exception) {
+            throw $exception;
+        } catch (\Throwable $throwable) {
+            throw new SearchQueryFailedException();
+        }
+
+        if (!is_array($response) || !isset($response['hits']) || !is_array($response['hits'])) {
+            throw new SearchResponseInvalidException();
+        }
+
+        $rawHits = $response['hits']['hits'] ?? null;
+        if (!is_array($rawHits) || !array_is_list($rawHits)) {
+            throw new SearchResponseInvalidException();
+        }
+
+        $hits = [];
+        foreach ($rawHits as $rawHit) {
+            if (!is_array($rawHit)) {
+                throw new SearchResponseInvalidException();
+            }
+
+            $id = $rawHit['_id'] ?? null;
+            $score = $rawHit['_score'] ?? null;
+            $source = $rawHit['_source'] ?? null;
+
+            if (!is_string($id) || $id === '') {
+                throw new SearchResponseInvalidException();
+            }
+            if (!is_int($score) && !is_float($score)) {
+                throw new SearchResponseInvalidException();
+            }
+            if (!is_array($source)) {
+                throw new SearchResponseInvalidException();
+            }
+
+            $hits[] = ['_id' => $id, '_score' => (float)$score, '_source' => $source];
+        }
+
+        return $hits;
     }
 
     private function client(): Client

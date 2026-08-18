@@ -26,6 +26,35 @@
                     <comment>Reject requests unrelated to this store's products, services, and approved content.</comment>
                     <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
                 </field>
+                <field id="max_conversation_messages" translate="label comment" type="text" sortOrder="30"
+                       showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Maximum Conversation History Messages</label>
+                    <comment>How many prior messages of a conversation (not customer-visible turns — a single turn can span several messages via tool calls) are kept and re-sent as context on each new message.</comment>
+                    <validate>validate-digits validate-greater-than-zero</validate>
+                </field>
+            </group>
+
+            <group id="appearance" translate="label" type="text" sortOrder="15"
+                   showInDefault="1" showInWebsite="1" showInStore="1">
+                <label>Appearance</label>
+                <field id="primary_color" translate="label comment" type="text" sortOrder="10"
+                       showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Window/Header Color</label>
+                    <comment>Color for the widget's header bar and floating toggle button. Leave blank to use the default blue; the header text color is always chosen automatically to stay readable against whatever color is set here.</comment>
+                    <frontend_model>Aavirbhava\AiShoppingAssistant\Block\Adminhtml\System\Config\ColorPickerField</frontend_model>
+                </field>
+                <field id="message_bubble_color" translate="label comment" type="text" sortOrder="20"
+                       showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Message Bubble Background Color</label>
+                    <comment>Color for the assistant's chat bubbles. Leave both this and Message Bubble Text Color blank to use the default; set only one and the other is chosen automatically to stay readable against it; set both to use your own pairing exactly as entered.</comment>
+                    <frontend_model>Aavirbhava\AiShoppingAssistant\Block\Adminhtml\System\Config\ColorPickerField</frontend_model>
+                </field>
+                <field id="message_text_color" translate="label comment" type="text" sortOrder="30"
+                       showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Message Bubble Text Color</label>
+                    <comment>Text color inside the assistant's chat bubbles. See Message Bubble Background Color above for how this pairs automatically when only one of the two is set.</comment>
+                    <frontend_model>Aavirbhava\AiShoppingAssistant\Block\Adminhtml\System\Config\ColorPickerField</frontend_model>
+                </field>
             </group>
 
             <group id="llm" translate="label" type="text" sortOrder="20"
@@ -42,14 +71,16 @@
                     <comment>Stored using Magento encrypted configuration.</comment>
                     <backend_model>Magento\Config\Model\Config\Backend\Encrypted</backend_model>
                 </field>
-                <field id="model" translate="label" type="text" sortOrder="30"
+                <field id="model" translate="label comment" type="text" sortOrder="30"
                        showInDefault="1" showInWebsite="1" showInStore="1">
                     <label>Model</label>
+                    <comment>For Local / Ollama, set Base URL below first, then use the "Fetch Ollama Models" button to pick from the models actually pulled on that server.</comment>
+                    <frontend_model>Aavirbhava\AiShoppingAssistant\Block\Adminhtml\System\Config\OllamaModelField</frontend_model>
                 </field>
                 <field id="base_url" translate="label comment" type="text" sortOrder="40"
                        showInDefault="1" showInWebsite="1" showInStore="1">
                     <label>Base URL</label>
-                    <comment>Leave empty for the selected provider's default API endpoint.</comment>
+                    <comment>Leave empty for the selected provider's default API endpoint. For Local / Ollama, e.g. http://localhost:11434/v1.</comment>
                 </field>
                 <field id="timeout_seconds" translate="label" type="text" sortOrder="50"
                        showInDefault="1" showInWebsite="1" showInStore="1">
@@ -81,13 +112,16 @@
                     <label>API Key</label>
                     <backend_model>Magento\Config\Model\Config\Backend\Encrypted</backend_model>
                 </field>
-                <field id="model" translate="label" type="text" sortOrder="40"
+                <field id="model" translate="label comment" type="text" sortOrder="40"
                        showInDefault="1" showInWebsite="1" showInStore="1">
                     <label>Model</label>
+                    <comment>For Local / Ollama, set Base URL below first, then use the "Fetch Ollama Models" button to pick from the models actually pulled on that server.</comment>
+                    <frontend_model>Aavirbhava\AiShoppingAssistant\Block\Adminhtml\System\Config\OllamaModelField</frontend_model>
                 </field>
-                <field id="base_url" translate="label" type="text" sortOrder="50"
+                <field id="base_url" translate="label comment" type="text" sortOrder="50"
                        showInDefault="1" showInWebsite="1" showInStore="1">
                     <label>Base URL</label>
+                    <comment>For Local / Ollama, e.g. http://localhost:11434/v1.</comment>
                 </field>
                 <field id="timeout_seconds" translate="label" type="text" sortOrder="60"
                        showInDefault="1" showInWebsite="1" showInStore="1">
@@ -182,6 +216,13 @@
                 <field id="cart_mutations_enabled" translate="label" type="select" sortOrder="30"
                        showInDefault="1" showInWebsite="1" showInStore="1">
                     <label>Enable Cart Mutations</label>
+                    <comment>Gates get_cart, add_to_cart, and remove_from_cart entirely — disabled, none of the three are offered to the assistant.</comment>
+                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                </field>
+                <field id="require_cart_confirmation" translate="label comment" type="select" sortOrder="35"
+                       showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Require Confirmation Before Cart Changes</label>
+                    <comment>When enabled, add_to_cart/remove_from_cart never execute on their first call for a proposed change — the assistant must relay the proposal to the customer and call again with proof of confirmation.</comment>
                     <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
                 </field>
                 <field id="block_external_urls" translate="label" type="select" sortOrder="40"
@@ -197,6 +238,47 @@
                 <field id="out_of_scope_message" translate="label" type="textarea" sortOrder="60"
                        showInDefault="1" showInWebsite="1" showInStore="1">
                     <label>Out-of-Scope Response</label>
+                </field>
+            </group>
+
+            <group id="capabilities" translate="label" type="text" sortOrder="65"
+                   showInDefault="1" showInWebsite="1" showInStore="1">
+                <label>Assistant Capabilities</label>
+                <field id="product_discovery_enabled" translate="label comment" type="select" sortOrder="10"
+                       showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Product Discovery (search_products)</label>
+                    <comment>Lets the assistant search the catalogue on the customer's behalf.</comment>
+                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                </field>
+                <field id="product_details_enabled" translate="label comment" type="select" sortOrder="20"
+                       showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Product Questions (get_product_details)</label>
+                    <comment>Lets the assistant look up details for one specific SKU.</comment>
+                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                </field>
+                <field id="comparison_enabled" translate="label comment" type="select" sortOrder="30"
+                       showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Comparison (compare_products)</label>
+                    <comment>Lets the assistant compare several SKUs side by side.</comment>
+                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                </field>
+                <field id="price_checking_enabled" translate="label comment" type="select" sortOrder="40"
+                       showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Price Checking (check_price)</label>
+                    <comment>Lets the assistant state live, customer-group-aware prices.</comment>
+                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                </field>
+                <field id="stock_checking_enabled" translate="label comment" type="select" sortOrder="50"
+                       showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Stock Checking (check_inventory)</label>
+                    <comment>Lets the assistant state live stock/salability status.</comment>
+                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                </field>
+                <field id="policy_search_enabled" translate="label comment" type="select" sortOrder="60"
+                       showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Store Content Search (search_store_content)</label>
+                    <comment>Lets the assistant search CMS pages, blog posts (if available), and products by keyword — e.g. "do you have a returns policy page."</comment>
+                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
                 </field>
             </group>
 

@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Aavirbhava\AiShoppingAssistant\Model\Config;
 
 use Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductAttributePolicyInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Config\AppearanceConfigInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Config\CapabilitiesConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\ConfigurationReaderInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\EmbeddingConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\FallbackConfigInterface;
@@ -68,6 +70,10 @@ final class ConfigurationReader implements ConfigurationReaderInterface
     public const MAX_MAX_TOOL_CALLS = 10;
     public const DEFAULT_MAX_TOOL_CALLS = 4;
 
+    public const MIN_MAX_CONVERSATION_MESSAGES = 2;
+    public const MAX_MAX_CONVERSATION_MESSAGES = 200;
+    public const DEFAULT_MAX_CONVERSATION_MESSAGES = 40;
+
     public const DEFAULT_OUT_OF_SCOPE_MESSAGE = 'I can help you search, compare, and learn about products and services available on this store. What are you looking for?';
 
     public const MIN_BATCH_SIZE = 10;
@@ -87,9 +93,14 @@ final class ConfigurationReader implements ConfigurationReaderInterface
      */
     public const DEFAULT_SEARCHABLE_ATTRIBUTE_CODES = ['manufacturer', 'color', 'size', 'material'];
 
+    public const DEFAULT_PRIMARY_COLOR = '#1979c3';
+    public const DEFAULT_MESSAGE_BUBBLE_COLOR = '#f2f2f2';
+    public const DEFAULT_MESSAGE_TEXT_COLOR = '#222222';
+
     public function __construct(
         private readonly ScopeConfigInterface $scopeConfig,
-        private readonly ProductAttributePolicyInterface $attributePolicy
+        private readonly ProductAttributePolicyInterface $attributePolicy,
+        private readonly ColorContrast $colorContrast
     ) {
     }
 
@@ -97,7 +108,57 @@ final class ConfigurationReader implements ConfigurationReaderInterface
     {
         return new GeneralConfig(
             $this->readBool(Path::GENERAL_ENABLED, $storeId, false),
-            $this->readBool(Path::GENERAL_STRICT_STORE_ONLY, $storeId, true)
+            $this->readBool(Path::GENERAL_STRICT_STORE_ONLY, $storeId, true),
+            $this->readInt(
+                Path::GENERAL_MAX_CONVERSATION_MESSAGES,
+                $storeId,
+                self::MIN_MAX_CONVERSATION_MESSAGES,
+                self::MAX_MAX_CONVERSATION_MESSAGES,
+                self::DEFAULT_MAX_CONVERSATION_MESSAGES
+            )
+        );
+    }
+
+    /**
+     * The primary color always resolves independently (it has no paired
+     * field to auto-contrast against) — but its TEXT color is always
+     * computed against whatever primaryColor resolves to, default or
+     * explicit, so a light custom primaryColor never silently pairs with
+     * unreadable white header text.
+     *
+     * The bubble background/text pair is resolved together: if only one
+     * of the two is explicitly set, the other is auto-computed to stay
+     * readable against it (see ColorContrast) rather than falling back to
+     * a fixed default that might clash with the one that was set. If
+     * neither is set, both fall back to this module's original defaults.
+     * If both are set, both are used exactly as configured — manual
+     * values always win, even if the merchant's own pair would read
+     * poorly together; that is their explicit choice to make, not this
+     * reader's to override.
+     */
+    public function readAppearance(int $storeId): AppearanceConfigInterface
+    {
+        $primaryColor = $this->readColor(Path::APPEARANCE_PRIMARY_COLOR, $storeId) ?? self::DEFAULT_PRIMARY_COLOR;
+
+        $bubbleColorSet = $this->readColor(Path::APPEARANCE_MESSAGE_BUBBLE_COLOR, $storeId);
+        $textColorSet = $this->readColor(Path::APPEARANCE_MESSAGE_TEXT_COLOR, $storeId);
+
+        if ($bubbleColorSet !== null) {
+            $bubbleColor = $bubbleColorSet;
+            $textColor = $textColorSet ?? $this->colorContrast->readableTextFor($bubbleColorSet);
+        } elseif ($textColorSet !== null) {
+            $textColor = $textColorSet;
+            $bubbleColor = $this->colorContrast->readableBackgroundFor($textColorSet);
+        } else {
+            $bubbleColor = self::DEFAULT_MESSAGE_BUBBLE_COLOR;
+            $textColor = self::DEFAULT_MESSAGE_TEXT_COLOR;
+        }
+
+        return new AppearanceConfig(
+            $primaryColor,
+            $this->colorContrast->readableTextFor($primaryColor),
+            $bubbleColor,
+            $textColor
         );
     }
 
@@ -230,9 +291,22 @@ final class ConfigurationReader implements ConfigurationReaderInterface
                 self::DEFAULT_MAX_TOOL_CALLS
             ),
             $this->readBool(Path::GUARDRAILS_CART_MUTATIONS_ENABLED, $storeId, false),
+            $this->readBool(Path::GUARDRAILS_REQUIRE_CART_CONFIRMATION, $storeId, true),
             $this->readBool(Path::GUARDRAILS_BLOCK_EXTERNAL_URLS, $storeId, true),
             $this->readBool(Path::GUARDRAILS_BLOCK_CODE_GENERATION, $storeId, true),
             $this->readString(Path::GUARDRAILS_OUT_OF_SCOPE_MESSAGE, $storeId, self::DEFAULT_OUT_OF_SCOPE_MESSAGE)
+        );
+    }
+
+    public function readCapabilities(int $storeId): CapabilitiesConfigInterface
+    {
+        return new CapabilitiesConfig(
+            $this->readBool(Path::CAPABILITIES_PRODUCT_DISCOVERY_ENABLED, $storeId, true),
+            $this->readBool(Path::CAPABILITIES_PRODUCT_DETAILS_ENABLED, $storeId, true),
+            $this->readBool(Path::CAPABILITIES_COMPARISON_ENABLED, $storeId, true),
+            $this->readBool(Path::CAPABILITIES_PRICE_CHECKING_ENABLED, $storeId, true),
+            $this->readBool(Path::CAPABILITIES_STOCK_CHECKING_ENABLED, $storeId, true),
+            $this->readBool(Path::CAPABILITIES_POLICY_SEARCH_ENABLED, $storeId, true)
         );
     }
 
@@ -326,6 +400,27 @@ final class ConfigurationReader implements ConfigurationReaderInterface
         sort($allowed);
 
         return array_slice($allowed, 0, self::MAX_SEARCHABLE_ATTRIBUTE_CODES);
+    }
+
+    /**
+     * A merchant-entered color is never trusted as trailing CSS to be
+     * emitted verbatim — only a strict `#rgb`/`#rrggbb` hex literal is
+     * accepted; anything else (blank, malformed, or an attempted CSS
+     * injection like `red; } body { display: none` typed into the admin
+     * field) is dropped and the widget falls back to its hard-coded
+     * default color, the same fail-safe behavior as an unset field.
+     */
+    private function readColor(string $path, int $storeId): ?string
+    {
+        $value = $this->readRaw($path, $storeId);
+
+        if ($value === null) {
+            return null;
+        }
+
+        $trimmed = trim((string) $value);
+
+        return preg_match('/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/', $trimmed) === 1 ? $trimmed : null;
     }
 
     private function readBool(string $path, int $storeId, bool $failClosed): bool

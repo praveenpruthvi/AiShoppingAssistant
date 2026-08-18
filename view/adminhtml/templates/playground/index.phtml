@@ -1,0 +1,248 @@
+<?php
+/**
+ * @var \Aavirbhava\AiShoppingAssistant\Block\Adminhtml\Playground\Index $block
+ */
+$result = $block->getResult();
+$error = $block->getError();
+?>
+<div class="admin__fieldset-wrapper aavirbhava-playground">
+    <div class="admin__fieldset-wrapper-title">
+        <strong><?= $block->escapeHtml(__('Run a Query')) ?></strong>
+    </div>
+    <form method="post" action="<?= $block->escapeUrl($block->getUrl('aavirbhava_aishoppingassistant/playground/index')) ?>">
+        <input name="form_key" type="hidden" value="<?= $block->escapeHtmlAttr($block->getFormKey()) ?>"/>
+        <fieldset class="admin__fieldset">
+            <div class="admin__field">
+                <label class="admin__field-label" for="aavirbhava-playground-query">
+                    <span><?= $block->escapeHtml(__('Customer message')) ?></span>
+                </label>
+                <div class="admin__field-control">
+                    <textarea id="aavirbhava-playground-query" name="query" rows="3"
+                              class="admin__control-textarea" style="width:100%;"
+                    ><?= $block->escapeHtml($block->getSubmittedQuery()) ?></textarea>
+                </div>
+            </div>
+            <div class="admin__field">
+                <div class="admin__field-control">
+                    <input type="checkbox" id="aavirbhava-playground-call-llm" name="call_llm" value="1"
+                           class="admin__control-checkbox"
+                        <?= $block->wasLlmRequested() ? 'checked="checked"' : '' ?>/>
+                    <label for="aavirbhava-playground-call-llm">
+                        <?= $block->escapeHtml(__(
+                            'Also call the LLM (uses a real provider call — tokens/cost apply; '
+                            . 'cart-mutation tools are always excluded from Playground runs)'
+                        )) ?>
+                    </label>
+                </div>
+            </div>
+            <div class="admin__field">
+                <button type="submit" class="action-primary">
+                    <span><?= $block->escapeHtml(__('Run Query')) ?></span>
+                </button>
+                <button type="button" id="aavirbhava-playground-test-connection" class="action-secondary">
+                    <span><?= $block->escapeHtml(__('Test LLM Connection')) ?></span>
+                </button>
+                <span id="aavirbhava-playground-test-connection-result"></span>
+            </div>
+        </fieldset>
+    </form>
+</div>
+
+<?php if ($error !== null): ?>
+    <div class="message message-error error">
+        <?= $block->escapeHtml($error) ?>
+    </div>
+<?php endif; ?>
+
+<?php if ($result !== null): ?>
+    <div class="aavirbhava-playground-panel">
+        <h3><?= $block->escapeHtml(__('1. Query / Parsed Intent')) ?></h3>
+        <p>
+            <em><?= $block->escapeHtml(__(
+                'No query-parsing or intent-extraction step exists anywhere in this pipeline '
+                . '(confirmed as of Task 3 and unchanged since). This is the raw query text exactly '
+                . 'as sent to retrieval — not a fabricated parse.'
+            )) ?></em>
+        </p>
+        <p><code><?= $block->escapeHtml($result->queryText) ?></code></p>
+        <p>
+            <?= $block->escapeHtml(__('Commerce Scope Classifier:')) ?>
+            <strong><?= $result->inScope ? $block->escapeHtml(__('In scope')) : $block->escapeHtml(__('Out of scope')) ?></strong>
+            <?php if ($result->scopeReasonCode !== null): ?>
+                (<?= $block->escapeHtml($result->scopeReasonCode) ?>)
+            <?php endif; ?>
+            <?php if (!$result->inScope): ?>
+                — <em><?= $block->escapeHtml(__(
+                    'a real customer request would have short-circuited here with a fixed response; '
+                    . 'downstream panels below still show what retrieval/ranking would have found, '
+                    . 'for diagnostic purposes.'
+                )) ?></em>
+            <?php endif; ?>
+        </p>
+
+        <h3><?= $block->escapeHtml(__('2. BM25 (Keyword) Results')) ?></h3>
+        <?= $block->getCandidateTableHtml($block->getSortedByBm25($result->retrievedCandidates), 'bm25Score') ?>
+
+        <h3><?= $block->escapeHtml(__('3. Vector (Semantic) Results')) ?></h3>
+        <?= $block->getCandidateTableHtml($block->getSortedByVector($result->retrievedCandidates), 'vectorScore') ?>
+
+        <h3><?= $block->escapeHtml(__('4. Combined Ranking')) ?></h3>
+        <?php foreach ($result->rankingStages as $stage): ?>
+            <h4><?= $block->escapeHtml(__('After signal: %1', $stage['signal'])) ?></h4>
+            <?= $block->getCandidateTableHtml($stage['candidates'], 'score') ?>
+        <?php endforeach; ?>
+        <h4><?= $block->escapeHtml(__('Final ranked list (sent downstream)')) ?></h4>
+        <?= $block->getCandidateTableHtml($result->rankedCandidates, 'score') ?>
+
+        <h3><?= $block->escapeHtml(__('5. Reranker Status')) ?></h3>
+        <p>
+            <?php if ($result->rerankerConfigured): ?>
+                <?= $block->escapeHtml(__(
+                    'reranker_enabled is ON for this store, but no reranker is implemented anywhere '
+                    . 'in this module (confirmed as of Task 3 and unchanged since) — the flag is read '
+                    . 'and threaded through SearchContext for a future task to consume, but nothing '
+                    . 'calls a reranker. The ranking above is the real, final ranking; there are no '
+                    . 'reranker scores to show.'
+                )) ?>
+            <?php else: ?>
+                <?= $block->escapeHtml(__('reranker_enabled is OFF for this store. No reranker is implemented regardless.')) ?>
+            <?php endif; ?>
+        </p>
+
+        <h3><?= $block->escapeHtml(__('6. Live-Data Validation')) ?></h3>
+        <table class="data-grid">
+            <thead>
+                <tr><th><?= $block->escapeHtml(__('SKU')) ?></th><th><?= $block->escapeHtml(__('Found')) ?></th><th><?= $block->escapeHtml(__('In stock')) ?></th><th><?= $block->escapeHtml(__('Name')) ?></th></tr>
+            </thead>
+            <tbody>
+            <?php foreach ($result->revalidationOutcomes as $outcome): ?>
+                <tr>
+                    <td><?= $block->escapeHtml($outcome->sku) ?></td>
+                    <td><?= $outcome->found ? $block->escapeHtml(__('Yes')) : $block->escapeHtml(__('No')) ?></td>
+                    <td><?= $outcome->inStock ? $block->escapeHtml(__('Yes')) : $block->escapeHtml(__('No')) ?></td>
+                    <td><?= $block->escapeHtml((string) $outcome->name) ?></td>
+                </tr>
+            <?php endforeach; ?>
+            <?php if ($result->revalidationOutcomes === []): ?>
+                <tr><td colspan="4"><?= $block->escapeHtml(__('No ranked candidates to validate.')) ?></td></tr>
+            <?php endif; ?>
+            </tbody>
+        </table>
+        <p>
+            <em><?= $block->escapeHtml(__(
+                'Found/in-stock is the most granular live-validation reason this module\'s services '
+                . 'expose today — status/visibility/website/salability are all checked internally by '
+                . 'LiveRevalidationService, but a failure is only ever reported as "not available," not '
+                . 'broken down by which specific check failed (by design, since Task 4).'
+            )) ?></em>
+        </p>
+
+        <h3><?= $block->escapeHtml(__('7. Product Context Sent to the LLM')) ?></h3>
+        <?php if ($result->productContextText !== null): ?>
+            <pre class="aavirbhava-playground-pre"><?= $block->escapeHtml($result->productContextText) ?></pre>
+        <?php else: ?>
+            <p><?= $block->escapeHtml(__('No candidates — no product context message would be sent.')) ?></p>
+        <?php endif; ?>
+
+        <h3><?= $block->escapeHtml(__('8. Tool Calls')) ?></h3>
+        <?php if (!$result->llmWasCalled): ?>
+            <p><?= $block->escapeHtml(__('The LLM was not called for this run ("Also call the LLM" was unchecked).')) ?></p>
+        <?php elseif ($result->toolExecutions === []): ?>
+            <p><?= $block->escapeHtml(__('The model made no tool calls.')) ?></p>
+        <?php else: ?>
+            <?php foreach ($result->toolExecutions as $execution): ?>
+                <h4><?= $block->escapeHtml($execution['call']->name) ?></h4>
+                <p><strong><?= $block->escapeHtml(__('Arguments:')) ?></strong></p>
+                <pre class="aavirbhava-playground-pre"><?= $block->escapeHtml($block->jsonPretty($execution['call']->arguments)) ?></pre>
+                <p><strong><?= $block->escapeHtml(__('Result:')) ?></strong></p>
+                <pre class="aavirbhava-playground-pre"><?= $block->escapeHtml($block->jsonPretty($execution['result']->data)) ?></pre>
+            <?php endforeach; ?>
+        <?php endif; ?>
+
+        <h3><?= $block->escapeHtml(__('9. Final Response')) ?></h3>
+        <?php if (!$result->llmWasCalled): ?>
+            <p><?= $block->escapeHtml(__('The LLM was not called for this run.')) ?></p>
+        <?php elseif ($result->llmError !== null): ?>
+            <p class="message message-error error"><?= $block->escapeHtml(__('Provider error: %1', $result->llmError)) ?></p>
+        <?php elseif ($result->finalResponse !== null): ?>
+            <p><strong><?= $block->escapeHtml(__('Message:')) ?></strong> <?= $block->escapeHtml($result->finalResponse->message) ?></p>
+            <?php if ($result->finalResponse->products !== []): ?>
+                <p><strong><?= $block->escapeHtml(__('Products:')) ?></strong></p>
+                <table class="data-grid">
+                    <thead><tr><th><?= $block->escapeHtml(__('SKU')) ?></th><th><?= $block->escapeHtml(__('Price')) ?></th><th><?= $block->escapeHtml(__('Reason')) ?></th></tr></thead>
+                    <tbody>
+                    <?php foreach ($result->finalResponse->products as $product): ?>
+                        <tr>
+                            <td><?= $block->escapeHtml($product->product->sku) ?></td>
+                            <td><?= $block->escapeHtml((string) $product->product->price) ?></td>
+                            <td><?= $block->escapeHtml($product->reason) ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            <?php endif; ?>
+        <?php elseif ($result->safeResponse !== null): ?>
+            <p class="message message-warning warning">
+                <?= $block->escapeHtml(__(
+                    'Safe fallback (reason: %1): %2',
+                    $result->safeResponse->reasonCode,
+                    $result->safeResponse->message
+                )) ?>
+            </p>
+        <?php endif; ?>
+
+        <h3><?= $block->escapeHtml(__('10. Tokens / Cost / Latency')) ?></h3>
+        <?php if (!$result->llmWasCalled): ?>
+            <p><?= $block->escapeHtml(__('The LLM was not called for this run.')) ?></p>
+        <?php else: ?>
+            <table class="data-grid">
+                <tbody>
+                <tr><th><?= $block->escapeHtml(__('Provider')) ?></th><td><?= $block->escapeHtml((string) $result->llmProvider) ?></td></tr>
+                <tr><th><?= $block->escapeHtml(__('Model')) ?></th><td><?= $block->escapeHtml((string) $result->llmModel) ?></td></tr>
+                <tr><th><?= $block->escapeHtml(__('LLM rounds this turn')) ?></th><td><?= (int) count($result->llmRounds) ?></td></tr>
+                <tr><th><?= $block->escapeHtml(__('Input tokens (summed across rounds)')) ?></th><td><?= $result->totalInputTokens === null ? $block->escapeHtml(__('unavailable')) : (int) $result->totalInputTokens ?></td></tr>
+                <tr><th><?= $block->escapeHtml(__('Output tokens (summed across rounds)')) ?></th><td><?= $result->totalOutputTokens === null ? $block->escapeHtml(__('unavailable')) : (int) $result->totalOutputTokens ?></td></tr>
+                <tr><th><?= $block->escapeHtml(__('Cached input tokens (summed across rounds)')) ?></th><td><?= $result->totalCachedTokens === null ? $block->escapeHtml(__('unavailable')) : (int) $result->totalCachedTokens ?></td></tr>
+                <tr><th><?= $block->escapeHtml(__('Latency (summed across rounds, ms)')) ?></th><td><?= $result->totalLatencyMilliseconds === null ? $block->escapeHtml(__('unavailable')) : (int) $result->totalLatencyMilliseconds ?></td></tr>
+                <tr><th><?= $block->escapeHtml(__('Cost')) ?></th><td><em><?= $block->escapeHtml(__('not calculated — no per-model pricing table exists in this module')) ?></em></td></tr>
+                </tbody>
+            </table>
+        <?php endif; ?>
+    </div>
+<?php endif; ?>
+
+<style>
+.aavirbhava-playground-panel h3 { margin-top: 2em; border-bottom: 1px solid #ccc; padding-bottom: .3em; }
+.aavirbhava-playground-panel h4 { margin-top: 1em; color: #555; }
+.aavirbhava-playground-pre { background: #f5f5f5; padding: 1em; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
+.aavirbhava-playground .admin__field { margin-bottom: 1em; }
+</style>
+
+<script>
+require(['jquery'], function ($) {
+    'use strict';
+    $('#aavirbhava-playground-test-connection').on('click', function () {
+        var $button = $(this);
+        var $resultEl = $('#aavirbhava-playground-test-connection-result');
+        $button.prop('disabled', true);
+        $resultEl.text('<?= /* @noEscape */ $block->escapeJs(__('Testing...')) ?>');
+
+        $.ajax({
+            url: '<?= /* @noEscape */ $block->escapeUrl($block->getTestConnectionUrl()) ?>',
+            type: 'POST',
+            dataType: 'json',
+            data: {form_key: '<?= /* @noEscape */ $block->escapeJs($block->getFormKey()) ?>'}
+        }).done(function (response) {
+            if (response.successful) {
+                $resultEl.text('✓ ' + response.message);
+            } else {
+                $resultEl.text('✗ ' + response.message);
+            }
+        }).fail(function () {
+            $resultEl.text('<?= /* @noEscape */ $block->escapeJs(__('Request failed.')) ?>');
+        }).always(function () {
+            $button.prop('disabled', false);
+        });
+    });
+});
+</script>

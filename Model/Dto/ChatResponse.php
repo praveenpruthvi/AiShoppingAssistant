@@ -17,7 +17,8 @@ final readonly class ChatResponse
         public TokenUsage $usage,
         public string $provider,
         public string $model,
-        public int $latencyMilliseconds
+        public int $latencyMilliseconds,
+        public bool $usedFallback = false
     ) {
         foreach ($toolCalls as $toolCall) {
             if (!$toolCall instanceof ToolCall) {
@@ -36,5 +37,10 @@ final readonly class ChatResponse
         if ($latencyMilliseconds < 0) {
             throw new InvalidArgumentException('Latency must not be negative.');
         }
+    }
+
+    public function withFallbackUsed(bool $usedFallback): self
+    {
+        return new self($this->text, $this->toolCalls, $this->usage, $this->provider, $this->model, $this->latencyMilliseconds, $usedFallback);
     }
 }

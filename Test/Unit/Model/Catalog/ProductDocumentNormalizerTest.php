@@ -244,4 +244,26 @@ final class ProductDocumentNormalizerTest extends TestCase
             new ProductEligibilityContext(1, 1)
         );
     }
+
+    public function testConvertsMysqlDatetimeUpdatedAtToIso8601(): void
+    {
+        $result = $this->normalizer->normalize(
+            $this->factory->create(['updatedAt' => '2026-04-07 07:39:17']),
+            new ProductEligibilityContext(1, 1)
+        );
+
+        self::assertTrue($result->eligible());
+        self::assertSame('2026-04-07T07:39:17+00:00', $result->document()->updatedAt());
+    }
+
+    public function testReturnsNullUpdatedAtWhenSnapshotUpdatedAtIsNull(): void
+    {
+        $result = $this->normalizer->normalize(
+            $this->factory->create(['updatedAt' => null]),
+            new ProductEligibilityContext(1, 1)
+        );
+
+        self::assertTrue($result->eligible());
+        self::assertNull($result->document()->updatedAt());
+    }
 }

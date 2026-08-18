@@ -1,0 +1,1957 @@
+diff --git a/Api/Indexing/IncrementalProductIndexSchedulerInterface.php b/Api/Indexing/IncrementalProductIndexSchedulerInterface.php
+index 356b0fb..c3ae33c 100644
+--- a/Api/Indexing/IncrementalProductIndexSchedulerInterface.php
++++ b/Api/Indexing/IncrementalProductIndexSchedulerInterface.php
+@@ -9,9 +9,8 @@ namespace Aavirbhava\AiShoppingAssistant\Api\Indexing;
+  *
+  * Implementations must never index, embed, or generate anything synchronously
+  * inside the calling request. They publish identifiers for asynchronous
+- * processing only. The queue publisher transport exists, but production DI
+- * remains on the unavailable fail-closed scheduler until durable recovery and
+- * reconciliation are implemented.
++ * processing only. The production implementation records durable ledger work
++ * before publishing product-id wake-up messages.
+  */
+ interface IncrementalProductIndexSchedulerInterface
+ {
+diff --git a/Api/Indexing/IncrementalProductReconciliationInterface.php b/Api/Indexing/IncrementalProductReconciliationInterface.php
+new file mode 100644
+index 0000000..c853324
+--- /dev/null
++++ b/Api/Indexing/IncrementalProductReconciliationInterface.php
+@@ -0,0 +1,24 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Aavirbhava\AiShoppingAssistant\Api\Indexing;
++
++interface IncrementalProductReconciliationInterface
++{
++    /**
++     * Schedule one bounded pass of product ids for idempotent incremental reconciliation.
++     *
++     * @return int number of product ids scheduled
++     *
++     * @throws \Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexingException
++     */
++    public function reconcile(int $limit = 50): int;
++
++    /**
++     * Request a fresh bounded pass from the start of the catalogue.
++     *
++     * @throws \Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexingException
++     */
++    public function requestFullPass(): void;
++}
+diff --git a/Model/Indexer/ProductIndexer.php b/Model/Indexer/ProductIndexer.php
+index ce21ee5..6dbe098 100644
+--- a/Model/Indexer/ProductIndexer.php
++++ b/Model/Indexer/ProductIndexer.php
+@@ -6,6 +6,7 @@ namespace Aavirbhava\AiShoppingAssistant\Model\Indexer;
+ 
+ use Aavirbhava\AiShoppingAssistant\Api\Indexing\FullProductReindexerInterface;
+ use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalProductIndexSchedulerInterface;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\InvalidProductIndexEntityIdsException;
+ use Magento\Framework\Indexer\ActionInterface as IndexerActionInterface;
+ use Magento\Framework\Mview\ActionInterface as MviewActionInterface;
+ 
+@@ -13,8 +14,7 @@ use Magento\Framework\Mview\ActionInterface as MviewActionInterface;
+  * Magento indexer action for the assistant product index.
+  *
+  * A full reindex runs the complete store-scoped rebuild orchestration. Row/list
+- * updates are forwarded to the incremental scheduler, which currently refuses
+- * explicitly because the queue transport is staged pending durable recovery;
++ * updates are validated and forwarded to the durable incremental scheduler;
+  * nothing is ever indexed or embedded synchronously inside this request.
+  *
+  * Not final: Magento generates an interceptor for every class implementing
+@@ -39,7 +39,7 @@ class ProductIndexer implements IndexerActionInterface, MviewActionInterface
+      */
+     public function executeList(array $ids)
+     {
+-        $this->scheduler->scheduleMany($ids);
++        $this->scheduler->scheduleMany($this->positiveProductIds($ids));
+     }
+ 
+     /**
+@@ -47,22 +47,63 @@ class ProductIndexer implements IndexerActionInterface, MviewActionInterface
+      */
+     public function executeRow($id)
+     {
+-        $this->scheduler->schedule((int) $id);
++        $this->scheduler->schedule($this->positiveProductId($id));
+     }
+ 
+     /**
+-     * Mview action entry point. Never called because the view has no
+-     * subscriptions, but kept consistent with the incremental scheduler.
++     * Mview action entry point.
+      *
+      * @param int|int[] $ids
+      */
+     public function execute($ids)
+     {
+         if (is_array($ids)) {
+-            $this->scheduler->scheduleMany($ids);
++            $this->scheduler->scheduleMany($this->positiveProductIds($ids));
+             return;
+         }
+ 
+-        $this->scheduler->schedule((int) $ids);
++        $this->scheduler->schedule($this->positiveProductId($ids));
++    }
++
++    /**
++     * @param array<mixed> $ids
++     *
++     * @return list<int>
++     */
++    private function positiveProductIds(array $ids): array
++    {
++        if ($ids === []) {
++            throw new InvalidProductIndexEntityIdsException();
++        }
++
++        $normalized = [];
++        foreach ($ids as $id) {
++            $normalized[] = $this->positiveProductId($id);
++        }
++
++        return $normalized;
++    }
++
++    private function positiveProductId(mixed $id): int
++    {
++        if (is_int($id) && $id > 0) {
++            return $id;
++        }
++
++        if (!is_string($id) || !preg_match('/^[1-9][0-9]*$/', $id)) {
++            throw new InvalidProductIndexEntityIdsException();
++        }
++
++        $value = filter_var(
++            $id,
++            FILTER_VALIDATE_INT,
++            ['options' => ['min_range' => 1, 'max_range' => PHP_INT_MAX]]
++        );
++
++        if (is_int($value)) {
++            return $value;
++        }
++
++        throw new InvalidProductIndexEntityIdsException();
+     }
+ }
+diff --git a/Model/Indexing/Capture/CategoryChangeCommitObserver.php b/Model/Indexing/Capture/CategoryChangeCommitObserver.php
+new file mode 100644
+index 0000000..83b1ce2
+--- /dev/null
++++ b/Model/Indexing/Capture/CategoryChangeCommitObserver.php
+@@ -0,0 +1,32 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture;
++
++use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalProductReconciliationInterface;
++use Magento\Catalog\Model\Category;
++use Magento\Framework\Event\Observer;
++use Magento\Framework\Event\ObserverInterface;
++
++final class CategoryChangeCommitObserver implements ObserverInterface
++{
++    public function __construct(
++        private readonly ProductChangeScheduler $changeScheduler,
++        private readonly IncrementalProductReconciliationInterface $reconciliation
++    ) {
++    }
++
++    public function execute(Observer $observer): void
++    {
++        $category = $observer->getEvent()->getData('category');
++        if ($category instanceof Category) {
++            $ids = $category->getAffectedProductIds();
++            if (is_array($ids) && $ids !== []) {
++                $this->changeScheduler->scheduleProductsIfUpdateOnSave($ids);
++            }
++        }
++
++        $this->reconciliation->requestFullPass();
++    }
++}
+diff --git a/Model/Indexing/Capture/CategoryLinkManagementPlugin.php b/Model/Indexing/Capture/CategoryLinkManagementPlugin.php
+new file mode 100644
+index 0000000..9b75ae0
+--- /dev/null
++++ b/Model/Indexing/Capture/CategoryLinkManagementPlugin.php
+@@ -0,0 +1,31 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture;
++
++use Magento\Catalog\Model\CategoryLinkManagement;
++use Magento\Catalog\Model\ResourceModel\Product as ProductResource;
++
++final class CategoryLinkManagementPlugin
++{
++    public function __construct(
++        private readonly ProductChangeScheduler $changeScheduler,
++        private readonly ProductResource $productResource
++    ) {
++    }
++
++    /**
++     * @param list<int|string> $categoryIds
++     */
++    public function afterAssignProductToCategories(
++        CategoryLinkManagement $subject,
++        bool $result,
++        string $productSku,
++        array $categoryIds
++    ): bool {
++        $this->changeScheduler->scheduleProductIfUpdateOnSave($this->productResource->getIdBySku($productSku));
++
++        return $result;
++    }
++}
+diff --git a/Model/Indexing/Capture/IndirectCatalogueChangeObserver.php b/Model/Indexing/Capture/IndirectCatalogueChangeObserver.php
+new file mode 100644
+index 0000000..0027f8d
+--- /dev/null
++++ b/Model/Indexing/Capture/IndirectCatalogueChangeObserver.php
+@@ -0,0 +1,22 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture;
++
++use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalProductReconciliationInterface;
++use Magento\Framework\Event\Observer;
++use Magento\Framework\Event\ObserverInterface;
++
++final class IndirectCatalogueChangeObserver implements ObserverInterface
++{
++    public function __construct(
++        private readonly IncrementalProductReconciliationInterface $reconciliation
++    ) {
++    }
++
++    public function execute(Observer $observer): void
++    {
++        $this->reconciliation->requestFullPass();
++    }
++}
+diff --git a/Model/Indexing/Capture/ProductActionChangePlugin.php b/Model/Indexing/Capture/ProductActionChangePlugin.php
+new file mode 100644
+index 0000000..de3c0d7
+--- /dev/null
++++ b/Model/Indexing/Capture/ProductActionChangePlugin.php
+@@ -0,0 +1,47 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture;
++
++use Magento\Catalog\Model\Product\Action;
++
++final class ProductActionChangePlugin
++{
++    public function __construct(
++        private readonly ProductChangeScheduler $changeScheduler
++    ) {
++    }
++
++    /**
++     * @param array<mixed> $productIds
++     * @param array<mixed> $attrData
++     */
++    public function afterUpdateAttributes(
++        Action $subject,
++        Action $result,
++        array $productIds,
++        array $attrData,
++        mixed $storeId
++    ): Action {
++        $this->changeScheduler->scheduleProductsIfUpdateOnSave($productIds);
++
++        return $result;
++    }
++
++    /**
++     * @param array<mixed> $productIds
++     * @param array<mixed> $websiteIds
++     */
++    public function afterUpdateWebsites(
++        Action $subject,
++        mixed $result,
++        array $productIds,
++        array $websiteIds,
++        string $type
++    ): mixed {
++        $this->changeScheduler->scheduleProductsIfUpdateOnSave($productIds);
++
++        return $result;
++    }
++}
+diff --git a/Model/Indexing/Capture/ProductChangeCommitObserver.php b/Model/Indexing/Capture/ProductChangeCommitObserver.php
+new file mode 100644
+index 0000000..d2b4a4f
+--- /dev/null
++++ b/Model/Indexing/Capture/ProductChangeCommitObserver.php
+@@ -0,0 +1,28 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture;
++
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\InvalidProductIndexEntityIdsException;
++use Magento\Catalog\Model\Product;
++use Magento\Framework\Event\Observer;
++use Magento\Framework\Event\ObserverInterface;
++
++final class ProductChangeCommitObserver implements ObserverInterface
++{
++    public function __construct(
++        private readonly ProductChangeScheduler $changeScheduler
++    ) {
++    }
++
++    public function execute(Observer $observer): void
++    {
++        $product = $observer->getEvent()->getData('product');
++        if (!$product instanceof Product) {
++            throw new InvalidProductIndexEntityIdsException();
++        }
++
++        $this->changeScheduler->scheduleProductIfUpdateOnSave($product->getId());
++    }
++}
+diff --git a/Model/Indexing/Capture/ProductChangeScheduler.php b/Model/Indexing/Capture/ProductChangeScheduler.php
+new file mode 100644
+index 0000000..b61208a
+--- /dev/null
++++ b/Model/Indexing/Capture/ProductChangeScheduler.php
+@@ -0,0 +1,97 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture;
++
++use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalProductIndexSchedulerInterface;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IncrementalChangeCaptureException;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\InvalidProductIndexEntityIdsException;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexingException;
++use Magento\Framework\Indexer\IndexerRegistry;
++
++class ProductChangeScheduler
++{
++    public const INDEXER_ID = 'ai_product_rag';
++
++    public function __construct(
++        private readonly IndexerRegistry $indexerRegistry,
++        private readonly IncrementalProductIndexSchedulerInterface $scheduler
++    ) {
++    }
++
++    public function scheduleProductIfUpdateOnSave(mixed $productId): void
++    {
++        $this->scheduleProductsIfUpdateOnSave([$productId]);
++    }
++
++    /**
++     * @param array<mixed> $productIds
++     */
++    public function scheduleProductsIfUpdateOnSave(array $productIds): void
++    {
++        $ids = $this->positiveProductIds($productIds);
++
++        if ($ids === [] || $this->isScheduledMode()) {
++            return;
++        }
++
++        try {
++            $this->scheduler->scheduleMany($ids);
++        } catch (ProductIndexingException $exception) {
++            throw $exception;
++        } catch (\Throwable) {
++            throw new IncrementalChangeCaptureException();
++        }
++    }
++
++    private function isScheduledMode(): bool
++    {
++        try {
++            return (bool)$this->indexerRegistry->get(self::INDEXER_ID)->isScheduled();
++        } catch (\Throwable) {
++            throw new IncrementalChangeCaptureException();
++        }
++    }
++
++    /**
++     * @param array<mixed> $productIds
++     *
++     * @return list<int>
++     */
++    private function positiveProductIds(array $productIds): array
++    {
++        $ids = [];
++        foreach ($productIds as $productId) {
++            $ids[] = $this->positiveProductId($productId);
++        }
++
++        $ids = array_values(array_unique($ids));
++        sort($ids);
++
++        return $ids;
++    }
++
++    private function positiveProductId(mixed $productId): int
++    {
++        if (is_int($productId) && $productId > 0) {
++            return $productId;
++        }
++
++        if (!is_string($productId) || !preg_match('/^[1-9][0-9]*$/', $productId)) {
++            throw new InvalidProductIndexEntityIdsException();
++        }
++
++        $value = filter_var(
++            $productId,
++            FILTER_VALIDATE_INT,
++            ['options' => ['min_range' => 1, 'max_range' => PHP_INT_MAX]]
++        );
++
++        if (is_int($value)) {
++            return $value;
++        }
++
++        throw new InvalidProductIndexEntityIdsException();
++    }
++}
+diff --git a/Model/Indexing/Exception/IncrementalChangeCaptureException.php b/Model/Indexing/Exception/IncrementalChangeCaptureException.php
+new file mode 100644
+index 0000000..35a019d
+--- /dev/null
++++ b/Model/Indexing/Exception/IncrementalChangeCaptureException.php
+@@ -0,0 +1,21 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception;
++
++use Magento\Framework\Phrase;
++
++/**
++ * A Magento catalogue change could not be captured safely for incremental indexing.
++ */
++final class IncrementalChangeCaptureException extends ProductIndexingException
++{
++    public function __construct()
++    {
++        parent::__construct(
++            self::ERROR_INCREMENTAL_CHANGE_CAPTURE_FAILED,
++            new Phrase('The incremental product index change could not be captured.')
++        );
++    }
++}
+diff --git a/Model/Indexing/Exception/IncrementalReconciliationException.php b/Model/Indexing/Exception/IncrementalReconciliationException.php
+new file mode 100644
+index 0000000..c6cfe4c
+--- /dev/null
++++ b/Model/Indexing/Exception/IncrementalReconciliationException.php
+@@ -0,0 +1,21 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception;
++
++use Magento\Framework\Phrase;
++
++/**
++ * Bounded incremental reconciliation could not be recorded or scheduled safely.
++ */
++final class IncrementalReconciliationException extends ProductIndexingException
++{
++    public function __construct()
++    {
++        parent::__construct(
++            self::ERROR_INCREMENTAL_RECONCILIATION_FAILED,
++            new Phrase('The incremental product index reconciliation could not be completed.')
++        );
++    }
++}
+diff --git a/Model/Indexing/Exception/ProductIndexingException.php b/Model/Indexing/Exception/ProductIndexingException.php
+index c1c1496..39dfe2d 100644
+--- a/Model/Indexing/Exception/ProductIndexingException.php
++++ b/Model/Indexing/Exception/ProductIndexingException.php
+@@ -61,6 +61,12 @@ class ProductIndexingException extends LocalizedException
+     /** A full-rebuild incremental work fence could not be managed safely. */
+     public const ERROR_REBUILD_FENCE_FAILED = 'rebuild_fence_failed';
+ 
++    /** Capturing a Magento catalogue change for incremental indexing failed. */
++    public const ERROR_INCREMENTAL_CHANGE_CAPTURE_FAILED = 'incremental_change_capture_failed';
++
++    /** Bounded incremental reconciliation could not be recorded or scheduled safely. */
++    public const ERROR_INCREMENTAL_RECONCILIATION_FAILED = 'incremental_reconciliation_failed';
++
+     /** The live alias for incremental indexing is missing or incompatible. */
+     public const ERROR_INCREMENTAL_TARGET_INVALID = 'incremental_target_invalid';
+ 
+diff --git a/Model/Indexing/Reconciliation/DbIncrementalReconciliationCheckpoint.php b/Model/Indexing/Reconciliation/DbIncrementalReconciliationCheckpoint.php
+new file mode 100644
+index 0000000..101bda3
+--- /dev/null
++++ b/Model/Indexing/Reconciliation/DbIncrementalReconciliationCheckpoint.php
+@@ -0,0 +1,134 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation;
++
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Clock\ClockInterface;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IncrementalReconciliationException;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\DB\Adapter\AdapterInterface;
++use Zend_Db_Expr;
++
++final class DbIncrementalReconciliationCheckpoint implements IncrementalReconciliationCheckpointInterface
++{
++    public const TABLE = 'aavirbhava_ai_incremental_reconciliation';
++    public const CURSOR_ID = 1;
++
++    public function __construct(
++        private readonly ResourceConnection $resource,
++        private readonly ClockInterface $clock
++    ) {
++    }
++
++    public function current(): IncrementalReconciliationCheckpoint
++    {
++        return $this->wrap(function (AdapterInterface $connection): IncrementalReconciliationCheckpoint {
++            $this->ensureRow($connection);
++            $row = $connection->fetchRow(
++                $connection->select()
++                    ->from($this->table())
++                    ->where('cursor_id = ?', self::CURSOR_ID)
++                    ->limit(1)
++            );
++
++            if (!is_array($row) || !array_key_exists('last_product_id', $row)) {
++                throw new IncrementalReconciliationException();
++            }
++
++            $lastProductId = filter_var(
++                $row['last_product_id'],
++                FILTER_VALIDATE_INT,
++                ['options' => ['min_range' => 0, 'max_range' => PHP_INT_MAX]]
++            );
++            if (!is_int($lastProductId)) {
++                throw new IncrementalReconciliationException();
++            }
++
++            return new IncrementalReconciliationCheckpoint($lastProductId);
++        });
++    }
++
++    public function advance(int $lastProductId): void
++    {
++        if ($lastProductId < 1) {
++            throw new IncrementalReconciliationException();
++        }
++
++        $this->updateCursor($lastProductId, null);
++    }
++
++    public function completePass(): void
++    {
++        $this->updateCursor(0, $this->now());
++    }
++
++    public function requestFullPass(): void
++    {
++        $this->updateCursor(0, null);
++    }
++
++    private function updateCursor(int $lastProductId, ?string $completedAt): void
++    {
++        $this->wrap(function (AdapterInterface $connection) use ($lastProductId, $completedAt): void {
++            $this->ensureRow($connection);
++            $updated = $connection->update(
++                $this->table(),
++                [
++                    'last_product_id' => $lastProductId,
++                    'pass_started_at' => $completedAt === null ? $this->now() : null,
++                    'completed_at' => $completedAt,
++                    'updated_at' => $this->now(),
++                ],
++                ['cursor_id = ?' => self::CURSOR_ID]
++            );
++
++            if ((int)$updated !== 1) {
++                throw new IncrementalReconciliationException();
++            }
++        });
++    }
++
++    private function ensureRow(AdapterInterface $connection): void
++    {
++        $now = $this->now();
++        $connection->insertOnDuplicate(
++            $this->table(),
++            [
++                'cursor_id' => self::CURSOR_ID,
++                'last_product_id' => 0,
++                'pass_started_at' => null,
++                'completed_at' => null,
++                'created_at' => $now,
++                'updated_at' => $now,
++            ],
++            ['cursor_id' => new Zend_Db_Expr('cursor_id')]
++        );
++    }
++
++    private function table(): string
++    {
++        return $this->resource->getTableName(self::TABLE);
++    }
++
++    private function now(): string
++    {
++        return $this->clock->now()->format('Y-m-d H:i:s');
++    }
++
++    /**
++     * @template T
++     * @param callable(AdapterInterface): T $callback
++     * @return T
++     */
++    private function wrap(callable $callback): mixed
++    {
++        try {
++            return $callback($this->resource->getConnection());
++        } catch (IncrementalReconciliationException $exception) {
++            throw $exception;
++        } catch (\Throwable) {
++            throw new IncrementalReconciliationException();
++        }
++    }
++}
+diff --git a/Model/Indexing/Reconciliation/DbProductIdCursorBatchProvider.php b/Model/Indexing/Reconciliation/DbProductIdCursorBatchProvider.php
+new file mode 100644
+index 0000000..02ad714
+--- /dev/null
++++ b/Model/Indexing/Reconciliation/DbProductIdCursorBatchProvider.php
+@@ -0,0 +1,54 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation;
++
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IncrementalReconciliationException;
++use Magento\Framework\App\ResourceConnection;
++
++final class DbProductIdCursorBatchProvider implements ProductIdCursorBatchProviderInterface
++{
++    public function __construct(
++        private readonly ResourceConnection $resource
++    ) {
++    }
++
++    public function idsAfter(int $lastProductId, int $limit): array
++    {
++        if ($lastProductId < 0 || $limit < 1 || $limit > 1000) {
++            throw new IncrementalReconciliationException();
++        }
++
++        try {
++            $connection = $this->resource->getConnection();
++            $rows = $connection->fetchCol(
++                $connection->select()
++                    ->from($this->resource->getTableName('catalog_product_entity'), ['entity_id'])
++                    ->where('entity_id > ?', $lastProductId)
++                    ->order('entity_id ASC')
++                    ->limit($limit)
++            );
++        } catch (\Throwable) {
++            throw new IncrementalReconciliationException();
++        }
++
++        $ids = [];
++        foreach ($rows as $row) {
++            $id = filter_var(
++                $row,
++                FILTER_VALIDATE_INT,
++                ['options' => ['min_range' => 1, 'max_range' => PHP_INT_MAX]]
++            );
++            if (!is_int($id)) {
++                throw new IncrementalReconciliationException();
++            }
++            $ids[] = $id;
++        }
++
++        $ids = array_values(array_unique($ids));
++        sort($ids);
++
++        return $ids;
++    }
++}
+diff --git a/Model/Indexing/Reconciliation/IncrementalProductReconciliation.php b/Model/Indexing/Reconciliation/IncrementalProductReconciliation.php
+new file mode 100644
+index 0000000..9d4907a
+--- /dev/null
++++ b/Model/Indexing/Reconciliation/IncrementalProductReconciliation.php
+@@ -0,0 +1,95 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation;
++
++use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalProductIndexSchedulerInterface;
++use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalProductReconciliationInterface;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IncrementalReconciliationException;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexingException;
++use Magento\Framework\Lock\LockManagerInterface;
++
++final class IncrementalProductReconciliation implements IncrementalProductReconciliationInterface
++{
++    private const LOCK_NAME = 'aavirbhava_ai_incremental_product_reconciliation';
++    private const MIN_LIMIT = 1;
++    private const MAX_LIMIT = 1000;
++
++    public function __construct(
++        private readonly IncrementalReconciliationCheckpointInterface $checkpoint,
++        private readonly ProductIdCursorBatchProviderInterface $productIds,
++        private readonly IncrementalProductIndexSchedulerInterface $scheduler,
++        private readonly LockManagerInterface $lockManager
++    ) {
++    }
++
++    public function reconcile(int $limit = 50): int
++    {
++        if ($limit < self::MIN_LIMIT || $limit > self::MAX_LIMIT) {
++            throw new IncrementalReconciliationException();
++        }
++
++        try {
++            $locked = $this->lockManager->lock(self::LOCK_NAME, 0);
++        } catch (\Throwable) {
++            throw new IncrementalReconciliationException();
++        }
++
++        if (!$locked) {
++            return 0;
++        }
++
++        $primaryFailure = null;
++        $releaseFailed = false;
++        $scheduled = 0;
++
++        try {
++            $scheduled = $this->reconcileLocked($limit);
++        } catch (\Throwable $throwable) {
++            $primaryFailure = $throwable;
++        } finally {
++            try {
++                $releaseFailed = !$this->lockManager->unlock(self::LOCK_NAME);
++            } catch (\Throwable) {
++                $releaseFailed = true;
++            }
++        }
++
++        if ($primaryFailure instanceof ProductIndexingException) {
++            throw $primaryFailure;
++        }
++
++        if ($primaryFailure !== null || $releaseFailed) {
++            throw new IncrementalReconciliationException();
++        }
++
++        return $scheduled;
++    }
++
++    public function requestFullPass(): void
++    {
++        $this->checkpoint->requestFullPass();
++    }
++
++    private function reconcileLocked(int $limit): int
++    {
++        $cursor = $this->checkpoint->current();
++        $ids = $this->productIds->idsAfter($cursor->lastProductId(), $limit);
++
++        if ($ids === []) {
++            $this->checkpoint->completePass();
++            return 0;
++        }
++
++        $this->scheduler->scheduleMany($ids);
++
++        if (count($ids) < $limit) {
++            $this->checkpoint->completePass();
++        } else {
++            $this->checkpoint->advance($ids[count($ids) - 1]);
++        }
++
++        return count($ids);
++    }
++}
+diff --git a/Model/Indexing/Reconciliation/IncrementalProductReconciliationCron.php b/Model/Indexing/Reconciliation/IncrementalProductReconciliationCron.php
+new file mode 100644
+index 0000000..f7b43e2
+--- /dev/null
++++ b/Model/Indexing/Reconciliation/IncrementalProductReconciliationCron.php
+@@ -0,0 +1,20 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation;
++
++use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalProductReconciliationInterface;
++
++final class IncrementalProductReconciliationCron
++{
++    public function __construct(
++        private readonly IncrementalProductReconciliationInterface $reconciliation
++    ) {
++    }
++
++    public function execute(): void
++    {
++        $this->reconciliation->reconcile();
++    }
++}
+diff --git a/Model/Indexing/Reconciliation/IncrementalReconciliationCheckpoint.php b/Model/Indexing/Reconciliation/IncrementalReconciliationCheckpoint.php
+new file mode 100644
+index 0000000..8d1b346
+--- /dev/null
++++ b/Model/Indexing/Reconciliation/IncrementalReconciliationCheckpoint.php
+@@ -0,0 +1,21 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation;
++
++final class IncrementalReconciliationCheckpoint
++{
++    public function __construct(
++        private readonly int $lastProductId
++    ) {
++        if ($lastProductId < 0) {
++            throw new \InvalidArgumentException('Last product id cannot be negative.');
++        }
++    }
++
++    public function lastProductId(): int
++    {
++        return $this->lastProductId;
++    }
++}
+diff --git a/Model/Indexing/Reconciliation/IncrementalReconciliationCheckpointInterface.php b/Model/Indexing/Reconciliation/IncrementalReconciliationCheckpointInterface.php
+new file mode 100644
+index 0000000..4aa1efe
+--- /dev/null
++++ b/Model/Indexing/Reconciliation/IncrementalReconciliationCheckpointInterface.php
+@@ -0,0 +1,16 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation;
++
++interface IncrementalReconciliationCheckpointInterface
++{
++    public function current(): IncrementalReconciliationCheckpoint;
++
++    public function advance(int $lastProductId): void;
++
++    public function completePass(): void;
++
++    public function requestFullPass(): void;
++}
+diff --git a/Model/Indexing/Reconciliation/ProductIdCursorBatchProviderInterface.php b/Model/Indexing/Reconciliation/ProductIdCursorBatchProviderInterface.php
+new file mode 100644
+index 0000000..2609556
+--- /dev/null
++++ b/Model/Indexing/Reconciliation/ProductIdCursorBatchProviderInterface.php
+@@ -0,0 +1,13 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation;
++
++interface ProductIdCursorBatchProviderInterface
++{
++    /**
++     * @return list<int>
++     */
++    public function idsAfter(int $lastProductId, int $limit): array;
++}
+diff --git a/Test/Integration/Model/Indexing/Reconciliation/DbIncrementalReconciliationCheckpointDatabaseTest.php b/Test/Integration/Model/Indexing/Reconciliation/DbIncrementalReconciliationCheckpointDatabaseTest.php
+new file mode 100644
+index 0000000..fa9cdea
+--- /dev/null
++++ b/Test/Integration/Model/Indexing/Reconciliation/DbIncrementalReconciliationCheckpointDatabaseTest.php
+@@ -0,0 +1,108 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Aavirbhava\AiShoppingAssistant\Test\Integration\Model\Indexing\Reconciliation;
++
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IncrementalReconciliationException;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation\DbIncrementalReconciliationCheckpoint;
++use Aavirbhava\AiShoppingAssistant\Test\Integration\Model\Indexing\Queue\Fixture\MutableClock;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\App\State;
++use Magento\Framework\DB\Adapter\AdapterInterface;
++use PHPUnit\Framework\TestCase;
++
++final class DbIncrementalReconciliationCheckpointDatabaseTest extends TestCase
++{
++    private ResourceConnection $resource;
++    private AdapterInterface $connection;
++    private string $table;
++    private MutableClock $clock;
++    private DbIncrementalReconciliationCheckpoint $checkpoint;
++
++    protected function setUp(): void
++    {
++        $root = dirname(__DIR__, 9);
++        require_once $root . '/app/bootstrap.php';
++
++        $bootstrap = \Magento\Framework\App\Bootstrap::create($root, $_SERVER);
++        $objectManager = $bootstrap->getObjectManager();
++
++        try {
++            $objectManager->get(State::class)->setAreaCode('adminhtml');
++        } catch (\Throwable) {
++        }
++
++        $this->resource = $objectManager->get(ResourceConnection::class);
++        $this->connection = $this->resource->getConnection();
++        $this->table = $this->resource->getTableName(DbIncrementalReconciliationCheckpoint::TABLE);
++        $this->clock = new MutableClock(new \DateTimeImmutable('2026-08-16 00:00:00'));
++        $this->checkpoint = new DbIncrementalReconciliationCheckpoint($this->resource, $this->clock);
++        $this->cleanup();
++    }
++
++    protected function tearDown(): void
++    {
++        $this->cleanup();
++    }
++
++    public function testCurrentCreatesHarmlessSingletonCursorWithoutResettingExistingRow(): void
++    {
++        $this->checkpoint->advance(42);
++        self::assertSame(42, $this->checkpoint->current()->lastProductId());
++
++        $this->clock->advance(60);
++        self::assertSame(42, $this->checkpoint->current()->lastProductId());
++        $this->assertRow(['last_product_id' => '42', 'completed_at' => null]);
++    }
++
++    public function testRequestFullPassResetsCursorWithoutProductContent(): void
++    {
++        $this->checkpoint->advance(42);
++        $this->checkpoint->requestFullPass();
++
++        self::assertSame(0, $this->checkpoint->current()->lastProductId());
++        $this->assertRow(['last_product_id' => '0', 'completed_at' => null]);
++    }
++
++    public function testCompletePassResetsCursorWithCompletionTimestamp(): void
++    {
++        $this->checkpoint->advance(99);
++        $this->checkpoint->completePass();
++
++        self::assertSame(0, $this->checkpoint->current()->lastProductId());
++        $this->assertRow(['last_product_id' => '0', 'completed_at' => '2026-08-16 00:00:00']);
++    }
++
++    public function testInvalidAdvanceFailsClosed(): void
++    {
++        $this->expectException(IncrementalReconciliationException::class);
++        $this->checkpoint->advance(0);
++    }
++
++    /**
++     * @param array<string, string|null> $expected
++     */
++    private function assertRow(array $expected): void
++    {
++        $row = $this->connection->fetchRow(
++            $this->connection->select()
++                ->from($this->table)
++                ->where('cursor_id = ?', DbIncrementalReconciliationCheckpoint::CURSOR_ID)
++        );
++        self::assertIsArray($row);
++
++        foreach ($expected as $key => $value) {
++            self::assertSame($value, $row[$key]);
++        }
++
++        self::assertArrayNotHasKey('payload', $row);
++        self::assertArrayNotHasKey('document', $row);
++        self::assertArrayNotHasKey('error', $row);
++    }
++
++    private function cleanup(): void
++    {
++        $this->connection->delete($this->table, ['cursor_id = ?' => DbIncrementalReconciliationCheckpoint::CURSOR_ID]);
++    }
++}
+diff --git a/Test/Unit/Model/Indexer/ProductIndexerTest.php b/Test/Unit/Model/Indexer/ProductIndexerTest.php
+index e2672d3..87e645b 100644
+--- a/Test/Unit/Model/Indexer/ProductIndexerTest.php
++++ b/Test/Unit/Model/Indexer/ProductIndexerTest.php
+@@ -7,6 +7,7 @@ namespace Aavirbhava\AiShoppingAssistant\Test\Unit\Model\Indexer;
+ use Aavirbhava\AiShoppingAssistant\Api\Indexing\FullProductReindexerInterface;
+ use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalProductIndexSchedulerInterface;
+ use Aavirbhava\AiShoppingAssistant\Api\Indexing\RebuildResultInterface;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\InvalidProductIndexEntityIdsException;
+ use Aavirbhava\AiShoppingAssistant\Model\Indexer\ProductIndexer;
+ use PHPUnit\Framework\Attributes\CoversClass;
+ use PHPUnit\Framework\MockObject\MockObject;
+@@ -58,6 +59,14 @@ final class ProductIndexerTest extends TestCase
+         $this->buildIndexer()->executeRow('42');
+     }
+ 
++    public function testExecuteRowRejectsMalformedStringId(): void
++    {
++        $this->scheduler->expects(self::never())->method('schedule');
++
++        $this->expectException(InvalidProductIndexEntityIdsException::class);
++        $this->buildIndexer()->executeRow('42abc');
++    }
++
+     public function testExecuteListSchedulesMany(): void
+     {
+         $this->scheduler->expects(self::once())->method('scheduleMany')->with([1, 2, 3]);
+@@ -72,6 +81,13 @@ final class ProductIndexerTest extends TestCase
+         $this->buildIndexer()->execute([1, 2]);
+     }
+ 
++    public function testMviewExecuteWithStringArrayValidatesToIntegers(): void
++    {
++        $this->scheduler->expects(self::once())->method('scheduleMany')->with([1, 2]);
++
++        $this->buildIndexer()->execute(['1', '2']);
++    }
++
+     public function testMviewExecuteWithIntSchedulesSingleId(): void
+     {
+         $this->scheduler->expects(self::once())->method('schedule')->with(7);
+diff --git a/Test/Unit/Model/Indexing/Capture/CategoryChangeCommitObserverTest.php b/Test/Unit/Model/Indexing/Capture/CategoryChangeCommitObserverTest.php
+new file mode 100644
+index 0000000..da3023c
+--- /dev/null
++++ b/Test/Unit/Model/Indexing/Capture/CategoryChangeCommitObserverTest.php
+@@ -0,0 +1,49 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Aavirbhava\AiShoppingAssistant\Test\Unit\Model\Indexing\Capture;
++
++use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalProductReconciliationInterface;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture\CategoryChangeCommitObserver;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture\ProductChangeScheduler;
++use Magento\Catalog\Model\Category;
++use Magento\Framework\Event;
++use Magento\Framework\Event\Observer;
++use PHPUnit\Framework\Attributes\CoversClass;
++use PHPUnit\Framework\MockObject\MockObject;
++use PHPUnit\Framework\TestCase;
++
++#[CoversClass(CategoryChangeCommitObserver::class)]
++final class CategoryChangeCommitObserverTest extends TestCase
++{
++    /**
++     * @var ProductChangeScheduler&MockObject
++     */
++    private $scheduler;
++
++    /**
++     * @var IncrementalProductReconciliationInterface&MockObject
++     */
++    private $reconciliation;
++
++    protected function setUp(): void
++    {
++        $this->scheduler = $this->createMock(ProductChangeScheduler::class);
++        $this->reconciliation = $this->createMock(IncrementalProductReconciliationInterface::class);
++    }
++
++    public function testSchedulesAffectedProductsAndRequestsBoundedReconciliation(): void
++    {
++        $category = $this->getMockBuilder(Category::class)
++            ->disableOriginalConstructor()
++            ->addMethods(['getAffectedProductIds'])
++            ->getMock();
++        $category->method('getAffectedProductIds')->willReturn(['3', 1]);
++        $this->scheduler->expects(self::once())->method('scheduleProductsIfUpdateOnSave')->with(['3', 1]);
++        $this->reconciliation->expects(self::once())->method('requestFullPass');
++
++        $observer = new CategoryChangeCommitObserver($this->scheduler, $this->reconciliation);
++        $observer->execute(new Observer(['event' => new Event(['category' => $category])]));
++    }
++}
+diff --git a/Test/Unit/Model/Indexing/Capture/IndirectCatalogueChangeObserverTest.php b/Test/Unit/Model/Indexing/Capture/IndirectCatalogueChangeObserverTest.php
+new file mode 100644
+index 0000000..29a3c2f
+--- /dev/null
++++ b/Test/Unit/Model/Indexing/Capture/IndirectCatalogueChangeObserverTest.php
+@@ -0,0 +1,34 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Aavirbhava\AiShoppingAssistant\Test\Unit\Model\Indexing\Capture;
++
++use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalProductReconciliationInterface;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture\IndirectCatalogueChangeObserver;
++use Magento\Framework\Event\Observer;
++use PHPUnit\Framework\Attributes\CoversClass;
++use PHPUnit\Framework\MockObject\MockObject;
++use PHPUnit\Framework\TestCase;
++
++#[CoversClass(IndirectCatalogueChangeObserver::class)]
++final class IndirectCatalogueChangeObserverTest extends TestCase
++{
++    /**
++     * @var IncrementalProductReconciliationInterface&MockObject
++     */
++    private $reconciliation;
++
++    protected function setUp(): void
++    {
++        $this->reconciliation = $this->createMock(IncrementalProductReconciliationInterface::class);
++    }
++
++    public function testRequestsBoundedReconciliationOnly(): void
++    {
++        $this->reconciliation->expects(self::once())->method('requestFullPass');
++
++        $observer = new IndirectCatalogueChangeObserver($this->reconciliation);
++        $observer->execute(new Observer());
++    }
++}
+diff --git a/Test/Unit/Model/Indexing/Capture/ProductActionChangePluginTest.php b/Test/Unit/Model/Indexing/Capture/ProductActionChangePluginTest.php
+new file mode 100644
+index 0000000..cc5c909
+--- /dev/null
++++ b/Test/Unit/Model/Indexing/Capture/ProductActionChangePluginTest.php
+@@ -0,0 +1,48 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Aavirbhava\AiShoppingAssistant\Test\Unit\Model\Indexing\Capture;
++
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture\ProductActionChangePlugin;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture\ProductChangeScheduler;
++use Magento\Catalog\Model\Product\Action;
++use PHPUnit\Framework\Attributes\CoversClass;
++use PHPUnit\Framework\MockObject\MockObject;
++use PHPUnit\Framework\TestCase;
++
++#[CoversClass(ProductActionChangePlugin::class)]
++final class ProductActionChangePluginTest extends TestCase
++{
++    /**
++     * @var ProductChangeScheduler&MockObject
++     */
++    private $scheduler;
++
++    /**
++     * @var Action&MockObject
++     */
++    private $action;
++
++    protected function setUp(): void
++    {
++        $this->scheduler = $this->createMock(ProductChangeScheduler::class);
++        $this->action = $this->createMock(Action::class);
++    }
++
++    public function testMassAttributeUpdateSchedulesIdsAfterAction(): void
++    {
++        $this->scheduler->expects(self::once())->method('scheduleProductsIfUpdateOnSave')->with([3, 1]);
++
++        $plugin = new ProductActionChangePlugin($this->scheduler);
++        self::assertSame($this->action, $plugin->afterUpdateAttributes($this->action, $this->action, [3, 1], [], 1));
++    }
++
++    public function testWebsiteUpdateSchedulesIdsAfterAction(): void
++    {
++        $this->scheduler->expects(self::once())->method('scheduleProductsIfUpdateOnSave')->with([7]);
++
++        $plugin = new ProductActionChangePlugin($this->scheduler);
++        self::assertNull($plugin->afterUpdateWebsites($this->action, null, [7], [1], 'add'));
++    }
++}
+diff --git a/Test/Unit/Model/Indexing/Capture/ProductChangeCommitObserverTest.php b/Test/Unit/Model/Indexing/Capture/ProductChangeCommitObserverTest.php
+new file mode 100644
+index 0000000..e45e4f1
+--- /dev/null
++++ b/Test/Unit/Model/Indexing/Capture/ProductChangeCommitObserverTest.php
+@@ -0,0 +1,38 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Aavirbhava\AiShoppingAssistant\Test\Unit\Model\Indexing\Capture;
++
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture\ProductChangeCommitObserver;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture\ProductChangeScheduler;
++use Magento\Catalog\Model\Product;
++use Magento\Framework\Event;
++use Magento\Framework\Event\Observer;
++use PHPUnit\Framework\Attributes\CoversClass;
++use PHPUnit\Framework\MockObject\MockObject;
++use PHPUnit\Framework\TestCase;
++
++#[CoversClass(ProductChangeCommitObserver::class)]
++final class ProductChangeCommitObserverTest extends TestCase
++{
++    /**
++     * @var ProductChangeScheduler&MockObject
++     */
++    private $scheduler;
++
++    protected function setUp(): void
++    {
++        $this->scheduler = $this->createMock(ProductChangeScheduler::class);
++    }
++
++    public function testSchedulesProductIdFromCommitEvent(): void
++    {
++        $product = $this->createMock(Product::class);
++        $product->method('getId')->willReturn('42');
++        $this->scheduler->expects(self::once())->method('scheduleProductIfUpdateOnSave')->with('42');
++
++        $observer = new ProductChangeCommitObserver($this->scheduler);
++        $observer->execute(new Observer(['event' => new Event(['product' => $product])]));
++    }
++}
+diff --git a/Test/Unit/Model/Indexing/Capture/ProductChangeSchedulerTest.php b/Test/Unit/Model/Indexing/Capture/ProductChangeSchedulerTest.php
+new file mode 100644
+index 0000000..095144a
+--- /dev/null
++++ b/Test/Unit/Model/Indexing/Capture/ProductChangeSchedulerTest.php
+@@ -0,0 +1,80 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Aavirbhava\AiShoppingAssistant\Test\Unit\Model\Indexing\Capture;
++
++use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalProductIndexSchedulerInterface;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture\ProductChangeScheduler;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IncrementalChangeCaptureException;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\InvalidProductIndexEntityIdsException;
++use Magento\Framework\Indexer\IndexerInterface;
++use Magento\Framework\Indexer\IndexerRegistry;
++use PHPUnit\Framework\Attributes\CoversClass;
++use PHPUnit\Framework\MockObject\MockObject;
++use PHPUnit\Framework\TestCase;
++
++#[CoversClass(ProductChangeScheduler::class)]
++final class ProductChangeSchedulerTest extends TestCase
++{
++    /**
++     * @var IndexerRegistry&MockObject
++     */
++    private $registry;
++
++    /**
++     * @var IncrementalProductIndexSchedulerInterface&MockObject
++     */
++    private $scheduler;
++
++    /**
++     * @var IndexerInterface&MockObject
++     */
++    private $indexer;
++
++    protected function setUp(): void
++    {
++        $this->registry = $this->createMock(IndexerRegistry::class);
++        $this->scheduler = $this->createMock(IncrementalProductIndexSchedulerInterface::class);
++        $this->indexer = $this->createMock(IndexerInterface::class);
++        $this->registry->method('get')->with(ProductChangeScheduler::INDEXER_ID)->willReturn($this->indexer);
++    }
++
++    private function service(): ProductChangeScheduler
++    {
++        return new ProductChangeScheduler($this->registry, $this->scheduler);
++    }
++
++    public function testSchedulesDeduplicatedIdsOnlyInUpdateOnSaveMode(): void
++    {
++        $this->indexer->method('isScheduled')->willReturn(false);
++        $this->scheduler->expects(self::once())->method('scheduleMany')->with([1, 2, 3]);
++
++        $this->service()->scheduleProductsIfUpdateOnSave(['3', 2, '1', 2]);
++    }
++
++    public function testScheduledModeSuppressesObserverPublication(): void
++    {
++        $this->indexer->method('isScheduled')->willReturn(true);
++        $this->scheduler->expects(self::never())->method('scheduleMany');
++
++        $this->service()->scheduleProductsIfUpdateOnSave([1, 2]);
++    }
++
++    public function testInvalidIdsFailBeforeScheduler(): void
++    {
++        $this->scheduler->expects(self::never())->method('scheduleMany');
++
++        $this->expectException(InvalidProductIndexEntityIdsException::class);
++        $this->service()->scheduleProductsIfUpdateOnSave([1, 'bad']);
++    }
++
++    public function testIndexerModeFailureIsSanitized(): void
++    {
++        $this->registry->method('get')->willThrowException(new \RuntimeException('secret registry detail'));
++        $this->scheduler->expects(self::never())->method('scheduleMany');
++
++        $this->expectException(IncrementalChangeCaptureException::class);
++        $this->service()->scheduleProductIfUpdateOnSave(1);
++    }
++}
+diff --git a/Test/Unit/Model/Indexing/Queue/IncrementalQueueConfigTest.php b/Test/Unit/Model/Indexing/Queue/IncrementalQueueConfigTest.php
+index f938a6c..3e7e447 100644
+--- a/Test/Unit/Model/Indexing/Queue/IncrementalQueueConfigTest.php
++++ b/Test/Unit/Model/Indexing/Queue/IncrementalQueueConfigTest.php
+@@ -5,8 +5,17 @@ declare(strict_types=1);
+ namespace Aavirbhava\AiShoppingAssistant\Test\Unit\Model\Indexing\Queue;
+ 
+ use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalProductIndexSchedulerInterface;
++use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalProductReconciliationInterface;
+ use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalWorkLedgerInterface;
+ use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalWorkRecoveryInterface;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture\CategoryChangeCommitObserver;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture\CategoryLinkManagementPlugin;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture\IndirectCatalogueChangeObserver;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture\ProductActionChangePlugin;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture\ProductChangeCommitObserver;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation\DbIncrementalReconciliationCheckpoint;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation\IncrementalProductReconciliation;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation\IncrementalProductReconciliationCron;
+ use Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\DbIncrementalWorkLedger;
+ use Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\DurableIncrementalProductIndexScheduler;
+ use Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\IncrementalProductIndexConsumer;
+@@ -55,14 +64,14 @@ final class IncrementalQueueConfigTest extends TestCase
+         self::assertSame(IncrementalProductIndexConsumer::class . '::process', (string)$consumer['handler']);
+     }
+ 
+-    public function testProductionSchedulerPreferenceRemainsFailClosedUntilDurableRecovery(): void
++    public function testProductionSchedulerPreferenceUsesDurableSchedulerAfterCaptureActivation(): void
+     {
+         $preference = $this->loadXml('etc/di.xml')->xpath(
+             '/config/preference[@for="' . IncrementalProductIndexSchedulerInterface::class . '"]'
+         )[0] ?? null;
+ 
+         self::assertNotNull($preference);
+-        self::assertSame(UnavailableIncrementalProductIndexScheduler::class, (string)$preference['type']);
++        self::assertSame(DurableIncrementalProductIndexScheduler::class, (string)$preference['type']);
+     }
+ 
+     public function testStagedMagentoQueueSchedulerRemainsDirectlyAvailable(): void
+@@ -101,7 +110,7 @@ final class IncrementalQueueConfigTest extends TestCase
+         self::assertArrayHasKey('magento/module-cron', $composer['require'] ?? []);
+     }
+ 
+-    public function testLedgerAndRecoveryPreferencesAreRegisteredWithoutActivatingScheduler(): void
++    public function testLedgerRecoveryAndReconciliationPreferencesAreRegistered(): void
+     {
+         $di = $this->loadXml('etc/di.xml');
+ 
+@@ -112,6 +121,82 @@ final class IncrementalQueueConfigTest extends TestCase
+         $recovery = $di->xpath('/config/preference[@for="' . IncrementalWorkRecoveryInterface::class . '"]')[0] ?? null;
+         self::assertNotNull($recovery);
+         self::assertSame(IncrementalWorkRecovery::class, (string)$recovery['type']);
++
++        $reconciliation = $di->xpath(
++            '/config/preference[@for="' . IncrementalProductReconciliationInterface::class . '"]'
++        )[0] ?? null;
++        self::assertNotNull($reconciliation);
++        self::assertSame(IncrementalProductReconciliation::class, (string)$reconciliation['type']);
++    }
++
++    public function testMviewSubscriptionsUseOnlyProductIdEntityColumns(): void
++    {
++        $view = $this->loadXml('etc/mview.xml')->xpath('/config/view[@id="ai_product_rag"]')[0] ?? null;
++        self::assertNotNull($view);
++
++        $subscriptions = [];
++        foreach ($view->subscriptions->table as $table) {
++            $subscriptions[(string)$table['name']] = (string)$table['entity_column'];
++        }
++
++        self::assertSame(
++            [
++                'catalog_product_entity' => 'entity_id',
++                'catalog_product_entity_datetime' => 'entity_id',
++                'catalog_product_entity_decimal' => 'entity_id',
++                'catalog_product_entity_int' => 'entity_id',
++                'catalog_product_entity_text' => 'entity_id',
++                'catalog_product_entity_varchar' => 'entity_id',
++                'catalog_product_website' => 'product_id',
++                'catalog_category_product' => 'product_id',
++            ],
++            $subscriptions
++        );
++        self::assertArrayNotHasKey('catalog_category_entity', $subscriptions);
++        self::assertArrayNotHasKey('eav_attribute_option_value', $subscriptions);
++    }
++
++    public function testCaptureObserversAndPluginsAreRegistered(): void
++    {
++        $events = $this->loadXml('etc/events.xml');
++
++        self::assertSame(
++            ProductChangeCommitObserver::class,
++            (string)($events->xpath(
++                '/config/event[@name="catalog_product_save_commit_after"]/observer'
++                . '[@name="aavirbhava_ai_incremental_product_save_capture"]'
++            )[0]['instance'] ?? '')
++        );
++        self::assertSame(
++            CategoryChangeCommitObserver::class,
++            (string)($events->xpath(
++                '/config/event[@name="catalog_category_save_commit_after"]/observer'
++                . '[@name="aavirbhava_ai_incremental_category_save_capture"]'
++            )[0]['instance'] ?? '')
++        );
++        self::assertSame(
++            IndirectCatalogueChangeObserver::class,
++            (string)($events->xpath(
++                '/config/event[@name="catalog_entity_attribute_save_commit_after"]/observer'
++                . '[@name="aavirbhava_ai_incremental_catalog_attribute_capture"]'
++            )[0]['instance'] ?? '')
++        );
++
++        $di = $this->loadXml('etc/di.xml');
++        self::assertSame(
++            ProductActionChangePlugin::class,
++            (string)($di->xpath(
++                '/config/type[@name="Magento\Catalog\Model\Product\Action"]/plugin'
++                . '[@name="aavirbhava_ai_incremental_product_action_capture"]'
++            )[0]['type'] ?? '')
++        );
++        self::assertSame(
++            CategoryLinkManagementPlugin::class,
++            (string)($di->xpath(
++                '/config/type[@name="Magento\Catalog\Model\CategoryLinkManagement"]/plugin'
++                . '[@name="aavirbhava_ai_incremental_category_link_capture"]'
++            )[0]['type'] ?? '')
++        );
+     }
+ 
+     public function testDeclarativeSchemaContainsDurableLedgerOnlyWithSafeColumns(): void
+@@ -160,6 +245,37 @@ final class IncrementalQueueConfigTest extends TestCase
+         self::assertSame('*/5 * * * *', trim((string)$job->schedule));
+     }
+ 
++    public function testReconciliationCronIsRegistered(): void
++    {
++        $job = $this->loadXml('etc/crontab.xml')
++            ->xpath('/config/group/job[@name="aavirbhava_ai_incremental_product_reconciliation"]')[0] ?? null;
++
++        self::assertNotNull($job);
++        self::assertSame(IncrementalProductReconciliationCron::class, (string)$job['instance']);
++        self::assertSame('execute', (string)$job['method']);
++        self::assertSame('*/10 * * * *', trim((string)$job->schedule));
++    }
++
++    public function testReconciliationSchemaContainsOnlyCursorMetadata(): void
++    {
++        $table = $this->loadXml('etc/db_schema.xml')
++            ->xpath('/schema/table[@name="' . DbIncrementalReconciliationCheckpoint::TABLE . '"]')[0] ?? null;
++
++        self::assertNotNull($table);
++        $columns = [];
++        foreach ($table->column as $column) {
++            $columns[] = (string)$column['name'];
++        }
++
++        self::assertSame(
++            ['cursor_id', 'last_product_id', 'pass_started_at', 'completed_at', 'created_at', 'updated_at'],
++            $columns
++        );
++        self::assertFalse(in_array('payload', $columns, true));
++        self::assertFalse(in_array('document', $columns, true));
++        self::assertFalse(in_array('error', $columns, true));
++    }
++
+     private function loadXml(string $relativePath): \SimpleXMLElement
+     {
+         $path = self::MODULE_DIR . '/' . $relativePath;
+diff --git a/Test/Unit/Model/Indexing/Reconciliation/IncrementalProductReconciliationTest.php b/Test/Unit/Model/Indexing/Reconciliation/IncrementalProductReconciliationTest.php
+new file mode 100644
+index 0000000..ee565c5
+--- /dev/null
++++ b/Test/Unit/Model/Indexing/Reconciliation/IncrementalProductReconciliationTest.php
+@@ -0,0 +1,139 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Aavirbhava\AiShoppingAssistant\Test\Unit\Model\Indexing\Reconciliation;
++
++use Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalProductIndexSchedulerInterface;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IncrementalQueuePublishFailedException;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\IncrementalReconciliationException;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation\IncrementalProductReconciliation;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation\IncrementalReconciliationCheckpoint;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation\IncrementalReconciliationCheckpointInterface;
++use Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation\ProductIdCursorBatchProviderInterface;
++use Magento\Framework\Lock\LockManagerInterface;
++use PHPUnit\Framework\Attributes\CoversClass;
++use PHPUnit\Framework\MockObject\MockObject;
++use PHPUnit\Framework\TestCase;
++
++#[CoversClass(IncrementalProductReconciliation::class)]
++final class IncrementalProductReconciliationTest extends TestCase
++{
++    /**
++     * @var IncrementalReconciliationCheckpointInterface&MockObject
++     */
++    private $checkpoint;
++
++    /**
++     * @var ProductIdCursorBatchProviderInterface&MockObject
++     */
++    private $productIds;
++
++    /**
++     * @var IncrementalProductIndexSchedulerInterface&MockObject
++     */
++    private $scheduler;
++
++    /**
++     * @var LockManagerInterface&MockObject
++     */
++    private $locks;
++
++    protected function setUp(): void
++    {
++        $this->checkpoint = $this->createMock(IncrementalReconciliationCheckpointInterface::class);
++        $this->productIds = $this->createMock(ProductIdCursorBatchProviderInterface::class);
++        $this->scheduler = $this->createMock(IncrementalProductIndexSchedulerInterface::class);
++        $this->locks = $this->createMock(LockManagerInterface::class);
++    }
++
++    private function reconciliation(): IncrementalProductReconciliation
++    {
++        return new IncrementalProductReconciliation(
++            $this->checkpoint,
++            $this->productIds,
++            $this->scheduler,
++            $this->locks
++        );
++    }
++
++    public function testLockUnavailableReturnsWithoutScheduling(): void
++    {
++        $this->locks->expects(self::once())->method('lock')->willReturn(false);
++        $this->checkpoint->expects(self::never())->method('current');
++        $this->scheduler->expects(self::never())->method('scheduleMany');
++
++        self::assertSame(0, $this->reconciliation()->reconcile());
++    }
++
++    public function testSchedulesBoundedBatchAndAdvancesCursor(): void
++    {
++        $this->locks->method('lock')->willReturn(true);
++        $this->locks->expects(self::once())->method('unlock')->willReturn(true);
++        $this->checkpoint->method('current')->willReturn(new IncrementalReconciliationCheckpoint(10));
++        $this->productIds->expects(self::once())->method('idsAfter')->with(10, 2)->willReturn([11, 12]);
++        $this->scheduler->expects(self::once())->method('scheduleMany')->with([11, 12]);
++        $this->checkpoint->expects(self::once())->method('advance')->with(12);
++        $this->checkpoint->expects(self::never())->method('completePass');
++
++        self::assertSame(2, $this->reconciliation()->reconcile(2));
++    }
++
++    public function testShortBatchCompletesPassAndResetsCursor(): void
++    {
++        $this->locks->method('lock')->willReturn(true);
++        $this->locks->method('unlock')->willReturn(true);
++        $this->checkpoint->method('current')->willReturn(new IncrementalReconciliationCheckpoint(10));
++        $this->productIds->method('idsAfter')->with(10, 3)->willReturn([11, 12]);
++        $this->scheduler->expects(self::once())->method('scheduleMany')->with([11, 12]);
++        $this->checkpoint->expects(self::once())->method('completePass');
++        $this->checkpoint->expects(self::never())->method('advance');
++
++        self::assertSame(2, $this->reconciliation()->reconcile(3));
++    }
++
++    public function testEmptyBatchCompletesPassWithoutScheduling(): void
++    {
++        $this->locks->method('lock')->willReturn(true);
++        $this->locks->method('unlock')->willReturn(true);
++        $this->checkpoint->method('current')->willReturn(new IncrementalReconciliationCheckpoint(99));
++        $this->productIds->method('idsAfter')->willReturn([]);
++        $this->scheduler->expects(self::never())->method('scheduleMany');
++        $this->checkpoint->expects(self::once())->method('completePass');
++
++        self::assertSame(0, $this->reconciliation()->reconcile());
++    }
++
++    public function testSchedulerFailureDoesNotAdvanceCursor(): void
++    {
++        $this->locks->method('lock')->willReturn(true);
++        $this->locks->method('unlock')->willReturn(true);
++        $this->checkpoint->method('current')->willReturn(new IncrementalReconciliationCheckpoint(10));
++        $this->productIds->method('idsAfter')->willReturn([11]);
++        $this->scheduler->method('scheduleMany')->willThrowException(new IncrementalQueuePublishFailedException());
++        $this->checkpoint->expects(self::never())->method('advance');
++        $this->checkpoint->expects(self::never())->method('completePass');
++
++        $this->expectException(IncrementalQueuePublishFailedException::class);
++        $this->reconciliation()->reconcile();
++    }
++
++    public function testLockManagementFailureIsSanitized(): void
++    {
++        $this->locks->method('lock')->willThrowException(new \RuntimeException('secret lock detail'));
++
++        $this->expectException(IncrementalReconciliationException::class);
++        $this->reconciliation()->reconcile();
++    }
++
++    public function testUnlockFalseWithoutPrimaryFailureIsSanitized(): void
++    {
++        $this->locks->method('lock')->willReturn(true);
++        $this->locks->method('unlock')->willReturn(false);
++        $this->checkpoint->method('current')->willReturn(new IncrementalReconciliationCheckpoint(10));
++        $this->productIds->method('idsAfter')->willReturn([]);
++
++        $this->expectException(IncrementalReconciliationException::class);
++        $this->reconciliation()->reconcile();
++    }
++}
+diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
+index 2b54ebd..1c989da 100644
+--- a/docs/ARCHITECTURE.md
++++ b/docs/ARCHITECTURE.md
+@@ -269,13 +269,13 @@ The production default is `OpenSearchProductDocumentWriter` (Milestone 2C1). It
+ 
+ After either activation or abort the writer is reusable for a fresh run. The embedding configuration snapshot is re-validated during enrichment so a mid-run provider/model/dimension change fails the run instead of producing an incompatible index.
+ 
+-`UnavailableProductDocumentWriter` remains as the fail-closed fallback: every lifecycle call throws a sanitized `backend_unavailable` exception and `abortRun()` is a safe idempotent no-op. `IncrementalProductIndexSchedulerInterface` receives row/list updates; the production default is still `UnavailableIncrementalProductIndexScheduler`, which validates ids and refuses explicitly until durable queue recovery and reconciliation are implemented. `MagentoIncrementalProductIndexScheduler` is staged as a directly injectable queue publisher transport, but is not the DI preference yet.
++`UnavailableProductDocumentWriter` remains as the fail-closed fallback: every lifecycle call throws a sanitized `backend_unavailable` exception and `abortRun()` is a safe idempotent no-op. `IncrementalProductIndexSchedulerInterface` receives row/list/mview updates; the production default is `DurableIncrementalProductIndexScheduler`, which validates positive product ids, records durable ledger generations, and then publishes product-id wake-up messages. `MagentoIncrementalProductIndexScheduler` remains the direct queue publisher transport used by the durable scheduler and recovery.
+ 
+ Milestone 2C2B2A adds a durable Magento database ledger, `aavirbhava_ai_incremental_product_work`, as the source of truth for unfinished incremental product work. Queue messages are wake-up signals only. The ledger stores one coalesced row per positive product entity id with latest requested `generation`, nullable processing `claimed_generation`, `state`, bounded `attempts`, `next_attempt_at`, opaque `lease_token`, `lease_expires_at`, sanitized `last_error_code`, and timestamps. It never stores product content, snapshots, prompts, embeddings, provider responses, credentials, URLs, headers, customer data, raw exception messages, or traces.
+ 
+ Ledger states are `pending`, `queued`, `processing`, `retry_wait`, `complete`, and `blocked`. Scheduling a product increments the latest requested generation. If no worker is processing, the row becomes fresh `pending` with attempts reset; if a worker is processing, the active state, lease token, lease expiry, claimed generation, and old-generation attempts are preserved so no second claim can start. A consumer can process only after atomically claiming the current due generation and receiving an opaque lease token. Completion, retry, and terminal updates prove the exact product id, claimed generation, and lease. These decision/update transitions use short `SELECT ... FOR UPDATE` row-locking transactions that read the latest generation while locked and include that generation in the update predicate; no transaction is held across embedding or OpenSearch work. If a newer generation was requested while the older claim ran, the older completion/failure clears only the old lease and releases the newest generation as fresh `pending` work with attempts reset; it never marks the newer generation complete, blocked, or retried.
+ 
+-The staged durable scheduler validates the entire id list before mutation, deduplicates and sorts ids, records every id in the ledger, and only then publishes product-id wake-ups. If publishing fails after recording, the ledger remains due for cron recovery. Production DI still points to `UnavailableIncrementalProductIndexScheduler`; activation waits for observer/mview event capture, reconciliation, and final scheduler cutover.
++The durable scheduler validates the entire id list before mutation, deduplicates and sorts ids, records every id in the ledger, and only then publishes product-id wake-ups. If publishing fails after recording, the ledger remains due for cron recovery. `UnavailableIncrementalProductIndexScheduler` remains directly constructible as an explicit fail-closed fallback, but it is no longer the production preference.
+ 
+ The staged consumer validates one product id, acquires a non-blocking Magento product worker lock, claims due ledger work, invokes `ProductIncrementalIndexerInterface::process()` exactly once for a successful claim, then completes only the claimed generation/lease while still holding the lock. If the product lock is unavailable, the consumer returns before claiming; durable recovery can wake the product later. Lock-management failures are sanitized, and unlock failures never replace a primary indexing or ledger failure. Only indexing failures are classified. Ledger persistence failures during completion, retry, or terminal recording propagate as sanitized ledger failures and are never converted into terminal product work. Known retryable failures are recorded as `retry_wait`; safety, validation, configuration, incompatible-index, malformed-data, provider/refusal-like, and unknown failures become `blocked`. The allowlist currently treats only `OpenSearchBackendUnavailableException` as transient. Retry uses the claim's real attempt count and is bounded to five attempts with deterministic exponential backoff from 60 seconds up to 3600 seconds. Failure text is never persisted.
+ 
+@@ -306,9 +306,11 @@ On any failure after the run began: no new batches are started, `abortRun()` is
+ 
+ `Model\Config\Backend\InvalidateProductIndex` (a `Magento\Framework\App\Config\Value` subclass) invalidates `ai_product_rag` through `Magento\Framework\Indexer\IndexerRegistry` only when a content-affecting indexing setting changes: searchable attribute codes, description flags, variant aggregation, or the attribute value budget. `batch_size` never invalidates the index. No indexing or embedding work happens during the config save.
+ 
+-### Indexer and mview wiring
++### Catalogue change capture and reconciliation
+ 
+-`etc/indexer.xml` registers the indexer with the action class `Model\Indexer\ProductIndexer` (implements both `Magento\Framework\Indexer\ActionInterface` and `Magento\Framework\Mview\ActionInterface`). `etc/mview.xml` declares the matching view with **no subscriptions** — the mview schema requires at least one `table` inside `subscriptions`, so the element is omitted entirely. The inert view satisfies `Magento\Framework\Mview\View::load()` (which `reindexAll()` calls unconditionally) without creating a changelog or enabling incremental processing. The action class and the config backend model are not `final` because Magento generates interceptors for `ActionInterface` implementers and `Config\Value` subclasses.
++`etc/indexer.xml` registers the indexer with the action class `Model\Indexer\ProductIndexer` (implements both `Magento\Framework\Indexer\ActionInterface` and `Magento\Framework\Mview\ActionInterface`). Magento's update-on-save product model invokes core indexers from DB commit callbacks, but it does not automatically invoke arbitrary custom product indexers. The module therefore captures update-on-save product changes through post-commit observers/plugins that schedule only validated product ids when the assistant indexer is not in scheduled mode. Scheduled mode is captured through `etc/mview.xml`; subscriptions are limited to tables whose changelog entity is the product id (`catalog_product_entity*` via `entity_id`, `catalog_product_website` via `product_id`, and `catalog_category_product` via `product_id`). The module does not subscribe category or option tables whose IDs are not product IDs.
++
++Indirect catalogue dependencies such as category names/paths and product attribute option labels are handled by `IncrementalProductReconciliationInterface`. Category and attribute commit events request a fresh bounded reconciliation pass by resetting a singleton cursor; they do not fan out product IDs, load products, embed, or touch OpenSearch. A cron job (`aavirbhava_ai_incremental_product_reconciliation`, every ten minutes) takes a Magento lock, reads a small keyset batch of product entity ids after the checkpoint, schedules those ids through the durable scheduler, advances the checkpoint only after scheduling succeeds, and resets the cursor after a complete pass. The checkpoint stores only cursor metadata and timestamps.
+ 
+ ## Search index
+ 
+@@ -331,13 +333,13 @@ The client seam is `AssistantSearchClientInterface` (`OpenSearchAssistantClient`
+ 
+ - Register a custom indexer named `ai_product_rag` (registered in Milestone 2B2).
+ - Full reindex processes products in configurable batches through the OpenSearch writer (Milestone 2C1).
+-- Product/category changes eventually enqueue affected entity IDs; observers and additional mview subscriptions are deferred. Milestones 2C2B2A and 2C2B2B1 add durable ledger recovery and full-rebuild fencing, but production row/list/mview scheduling remains fail-closed through `UnavailableIncrementalProductIndexScheduler` until event capture/reconciliation and final activation are complete.
++- Product/category changes enqueue affected product entity IDs through the durable scheduler. Update-on-save capture runs after commit and suppresses direct observer/plugin scheduling when the assistant indexer is in scheduled mode so mview triggers do not double schedule the same direct change.
+ - The staged queue consumer invokes the Milestone 2C2A incremental core to normalize, hash, embed only when needed, and upsert/delete documents. The core resolves the store read alias to exactly one compatible physical index, reads state from that physical index, and writes/deletes only that physical index. Before no-op, write, or delete completion it rechecks the frozen embedding config and confirms the alias still points to the same compatible physical target; any change fails closed for later reconciliation.
+ - The vector content hash is an integrity and diagnostics value only. The Milestone 2C2 consumer skips embedding generation based on the normalized `embeddingContentHash` combined with the frozen embedding fingerprint and schema compatibility — not on the vector hash alone.
+ - Disabled, deleted, invisible, or unassigned products are removed for the relevant store scope.
+-- A scheduled reconciliation detects missed events.
++- A scheduled bounded reconciliation detects missed events and indirect catalogue changes without storing product content in its checkpoint.
+ 
+-Hybrid retrieval and reranking are not yet implemented. The embedding fingerprint/dimension invalidation path is in place (a model or endpoint change that alters the fingerprint or dimensions invalidates the assistant index). Milestone 2C2A narrows local alias races for one incremental execution, Milestone 2C2B1 adds staged Magento queue transport for product ids only, Milestone 2C2B2A adds durable ledger recovery, and Milestone 2C2B2B1 fences full rebuilds against concurrent incremental claims. Production activation, observer/mview capture, and replay/reconciliation of missed product events remain mandatory later Milestone 2C2B work.
++Hybrid retrieval and reranking are not yet implemented. The embedding fingerprint/dimension invalidation path is in place (a model or endpoint change that alters the fingerprint or dimensions invalidates the assistant index). Milestone 2C2A narrows local alias races for one incremental execution, Milestone 2C2B1 adds Magento queue transport for product ids only, Milestone 2C2B2A adds durable ledger recovery, Milestone 2C2B2B1 fences full rebuilds against concurrent incremental claims, and Milestone 2C2B2B2 activates durable catalogue-change scheduling plus bounded reconciliation.
+ 
+ ## Failure policy
+ 
+diff --git a/docs/DEVELOPMENT_RULES.md b/docs/DEVELOPMENT_RULES.md
+index 7e4b74f..930aa35 100644
+--- a/docs/DEVELOPMENT_RULES.md
++++ b/docs/DEVELOPMENT_RULES.md
+@@ -49,7 +49,7 @@
+ - Enrich embeddings through `EmbeddingEnrichmentServiceInterface` only, in bounded batches, correlating vectors positionally with the normalized documents. The frozen embedding configuration must be re-validated before and after each provider request; a mid-run provider/model/base-URL/dimension change fails the run. The per-vector content hash is integrity/diagnostics only — the Milestone 2C2 consumer decides whether to skip embedding from the normalized `embeddingContentHash` combined with the embedding fingerprint and schema compatibility.
+ - Never write index documents through the unavailable writer or accept partial run state: `OpenSearchProductDocumentWriter` requires the backend up and vector-capable before creating indexes, validates schema, store scope, and website assignment per batch, rejects interleaved store processing, verifies index ownership before refresh and alias activation, treats alias activation as the single atomic commit point, and re-uses the writer for a fresh run only after activation or abort.
+ - Invoke incremental product reconciliation only through `ProductIncrementalIndexerInterface::process()` with one validated positive product id. The core must reload active store scopes, store-scoped config, live alias metadata, Magento snapshot data, and existing indexed state on every execution; duplicate queue delivery must be harmless, and no processed-id cache may be introduced.
+-- The staged queue publisher may publish only product ids. Validate the entire input before publishing anything, deduplicate and sort list updates deterministically, publish one id per message, and surface publisher failures as sanitized indexing exceptions. Do not activate it as the scheduler preference until durable ledger recovery, full-rebuild fencing, observer/mview capture, reconciliation, and final activation are all complete.
++- The queue publisher may publish only product ids. Validate the entire input before publishing anything, deduplicate and sort list updates deterministically, publish one id per message, and surface publisher failures as sanitized indexing exceptions. The production scheduler must record durable ledger work before queue publication so a publisher failure remains recoverable.
+ - Full assistant-index rebuilds must acquire the fixed Magento rebuild gate before acquiring the durable rebuild fence, drain existing processing claims until the documented lease-plus-margin deadline using injected clock/sleeper services, renew before further store/batch work, verify the exact owner token before alias activation, hold the rebuild gate across verify/activate/exact-token release, and wake bounded incremental recovery after the fence is released. Incremental consumers must keep the product lock, then acquire the rebuild gate only around fence-check and claim, release it before indexing/embedding, and let fenced queued wake-ups become immediately due again.
+ - Durable incremental work must flow through the ledger. Store only product id, latest requested generation, nullable claimed/processing generation, state, bounded attempts, next-attempt time, opaque lease token/expiry, sanitized error code, and timestamps. Never persist product content, snapshots, embeddings, provider payloads, URLs, credentials, raw exception text, traces, customer/cart data, or PII.
+ - Every ledger completion, retry, terminal transition, or lease-expiry recovery must prove exact product id, claimed generation, lease token, and locked latest generation. Generation N completion must never erase generation N+1: scheduling during processing preserves the active lease and releases newer work only after the current claim finalizes or expires. Duplicate/stale queue wake-ups must be no-ops.
+@@ -85,9 +85,9 @@
+ - Do not add display labels or customer-facing descriptions inside provider implementations; keep UI metadata in the label registry.
+ - Do not call `addCategoryIds()` before `load()` or call `getCategoryIds()` per product on the fly — both defeat batching and reintroduce N+1 queries.
+ - Do not bypass `StoreScopeInterface` with the admin store or inactive store views.
+-- Do not index, embed, or generate anything synchronously inside a config save, a product save, the indexer action, or recovery cron; publish identifiers only after the durable queue path is activated, and rebuild through the bounded orchestration.
++- Do not index, embed, or generate anything synchronously inside a config save, a product save, the indexer action, an observer/plugin capture path, or recovery/reconciliation cron; publish identifiers only through the durable queue path, and rebuild through the bounded orchestration.
+ - Do not silently discard a product id passed to incremental scheduling; validate and refuse explicitly before publication or fallback refusal.
+-- Do not declare an mview `subscriptions` element without at least one `table`; declare an inert view by omitting `subscriptions` entirely.
++- Do not declare an mview `subscriptions` element without at least one `table`; subscribe only tables where the changelog entity column is the product entity id.
+ 
+ ## Configuration rules
+ 
+diff --git a/docs/IMPLEMENTATION_PLAN.md b/docs/IMPLEMENTATION_PLAN.md
+index e7f55bb..505ba0e 100644
+--- a/docs/IMPLEMENTATION_PLAN.md
++++ b/docs/IMPLEMENTATION_PLAN.md
+@@ -33,7 +33,7 @@ Exit condition: contract tests pass for every enabled provider without domain lo
+ 
+ Exit condition: evaluation queries retrieve expected products and no store-scoping leaks occur.
+ 
+-Current status: Milestones 0, 1, and 2B1 are closed. Milestone 2B2 closed the `ai_product_rag` indexer registration and full-rebuild orchestration (run context, two-phase writer contract, safe unavailable defaults, sanitized failure taxonomy, config-driven invalidation, inert mview view). Milestone 3A delivered real, testable embedding provider adapters (`openai`, `voyage`, `local_openai_compatible`) plus a store-scoped `EmbeddingGenerationService`, `EmbeddingRequest`/`EmbeddingResult` boundaries, provider endpoint policy, bounded HTTP transport, sanitized embedding exception taxonomy, and config corrections. Milestone 2C1 closed the store-scoped OpenSearch search index and the production `OpenSearchProductDocumentWriter` (two-phase lifecycle, per-store physical index + atomic alias activation, embedding enrichment, bulk writes, safe abort), replacing the unavailable writer as the DI default. The final 2C1 hardening pass added strict `_meta` ownership proofs before alias activation, separate new-index compatibility verification before refresh/swap, interleaved-store rejection, bulk-response and cluster-info validation, deterministic OpenSearch endpoint/auth configuration tests through a builder seam, and `index_abort_failed` cleanup-failure propagation that preserves the primary rebuild failure. Milestone 2C2A adds the transport-independent incremental product-indexing core with exact alias-to-physical target binding, exact catalogue reconciliation, missing/ineligible deletes, complete-document no-op, embedding-content vector reuse, and fresh embedding fallback when reuse cannot be proven. Milestone 2C2B1 delivers staged Magento queue declarations, a product-id-only publisher, and a validating consumer. Milestone 2C2B2A adds the durable incremental work ledger with separate latest and claimed generations, row-locked lease-proven transitions, per-product live-worker fencing, bounded retry classification, lease-expiry attempt accounting, and cron recovery. Milestone 2C2B2B1 adds the durable full-rebuild fence, cross-process rebuild gate, lease-bound processing-claim drain, batch/store heartbeat, strict fence-row validation, exact-token release, and post-cutover incremental recovery wake-up. Production DI remains on the unavailable scheduler until observer/mview capture, reconciliation, and final activation are complete. Remaining Milestone 2 work: observer/mview event capture, event replay/reconciliation, final scheduler activation, then hybrid retrieval (BM25 + vector + rank fusion) and optional reranking. Chat (primary LLM) generation, storefront UI, and guardrail classification remain out of scope.
++Current status: Milestones 0, 1, and 2B1 are closed. Milestone 2B2 closed the `ai_product_rag` indexer registration and full-rebuild orchestration (run context, two-phase writer contract, safe unavailable defaults, sanitized failure taxonomy, config-driven invalidation, inert mview view). Milestone 3A delivered real, testable embedding provider adapters (`openai`, `voyage`, `local_openai_compatible`) plus a store-scoped `EmbeddingGenerationService`, `EmbeddingRequest`/`EmbeddingResult` boundaries, provider endpoint policy, bounded HTTP transport, sanitized embedding exception taxonomy, and config corrections. Milestone 2C1 closed the store-scoped OpenSearch search index and the production `OpenSearchProductDocumentWriter` (two-phase lifecycle, per-store physical index + atomic alias activation, embedding enrichment, bulk writes, safe abort), replacing the unavailable writer as the DI default. The final 2C1 hardening pass added strict `_meta` ownership proofs before alias activation, separate new-index compatibility verification before refresh/swap, interleaved-store rejection, bulk-response and cluster-info validation, deterministic OpenSearch endpoint/auth configuration tests through a builder seam, and `index_abort_failed` cleanup-failure propagation that preserves the primary rebuild failure. Milestone 2C2A adds the transport-independent incremental product-indexing core with exact alias-to-physical target binding, exact catalogue reconciliation, missing/ineligible deletes, complete-document no-op, embedding-content vector reuse, and fresh embedding fallback when reuse cannot be proven. Milestone 2C2B1 delivers Magento queue declarations, a product-id-only publisher, and a validating consumer. Milestone 2C2B2A adds the durable incremental work ledger with separate latest and claimed generations, row-locked lease-proven transitions, per-product live-worker fencing, bounded retry classification, lease-expiry attempt accounting, and cron recovery. Milestone 2C2B2B1 adds the durable full-rebuild fence, cross-process rebuild gate, lease-bound processing-claim drain, batch/store heartbeat, strict fence-row validation, exact-token release, and post-cutover incremental recovery wake-up. Milestone 2C2B2B2 activates durable incremental scheduling with post-commit update-on-save capture, product-id-only mview subscriptions, bounded reconciliation for missed/indirect catalogue changes, and a durable cursor checkpoint. Remaining Milestone 2 work: hybrid retrieval (BM25 + vector + rank fusion) and optional reranking. Chat (primary LLM) generation, storefront UI, and guardrail classification remain out of scope.
+ 
+ ## Milestone 3 — Guardrails and read-only assistant
+ 
+diff --git a/docs/STATUS.md b/docs/STATUS.md
+index 98bccb3..8dfaa3e 100644
+--- a/docs/STATUS.md
++++ b/docs/STATUS.md
+@@ -2,7 +2,7 @@
+ 
+ ## Current milestone
+ 
+-Milestones 0–2B2 and 3A are closed. Milestone 2C1 — the store-scoped assistant search index and the production `OpenSearchProductDocumentWriter` — is implemented and verified: per-store prefix/alias/physical-index naming, the fail-closed `AssistantSearchClientInterface` (production OpenSearch client + unavailable fallback), the versioned `dynamic: false` product mapping with `knn_vector`, enriched `IndexedProductDocument` payloads, bounded embedding enrichment, two-phase writer lifecycle with atomic alias activation and idempotent abort, config-driven index prefix, and the extended sanitized indexing exception taxonomy. The final 2C1 safety hardening verifies new physical index `_meta` before activation, proves every existing alias target by strict name parsing plus `_meta`, rejects mixed/unproven aliases and interleaved-store processing, hardens bulk and cluster-info parsing, and validates normalized endpoint/auth config through an injectable OpenSearch builder seam. Milestone 2C2A adds the transport-independent incremental indexing core: one positive product id, active-store iteration, disabled-store skip, exact alias compatibility proof, idempotent delete for missing/ineligible products, complete-document no-op, embedding-content vector reuse, and fresh embedding when reuse cannot be proven. Milestones 2C2B1, 2C2B2A, and 2C2B2B1 add staged Magento queue XML, a durable product-id-only work ledger, a staged durable scheduler, a ledger-coordinated single-message consumer, allowlist retry policy, bounded cron wake-up recovery, and durable full-rebuild fencing with post-cutover recovery wake-up. Production incremental scheduling intentionally remains unavailable until observer/mview capture, reconciliation, and final activation. Hybrid retrieval, reranking, chat (primary LLM) generation, storefront UI, and guardrail classification remain out of scope.
++Milestones 0–2B2 and 3A are closed. Milestone 2C1 — the store-scoped assistant search index and the production `OpenSearchProductDocumentWriter` — is implemented and verified: per-store prefix/alias/physical-index naming, the fail-closed `AssistantSearchClientInterface` (production OpenSearch client + unavailable fallback), the versioned `dynamic: false` product mapping with `knn_vector`, enriched `IndexedProductDocument` payloads, bounded embedding enrichment, two-phase writer lifecycle with atomic alias activation and idempotent abort, config-driven index prefix, and the extended sanitized indexing exception taxonomy. The final 2C1 safety hardening verifies new physical index `_meta` before activation, proves every existing alias target by strict name parsing plus `_meta`, rejects mixed/unproven aliases and interleaved-store processing, hardens bulk and cluster-info parsing, and validates normalized endpoint/auth config through an injectable OpenSearch builder seam. Milestone 2C2A adds the transport-independent incremental indexing core: one positive product id, active-store iteration, disabled-store skip, exact alias compatibility proof, idempotent delete for missing/ineligible products, complete-document no-op, embedding-content vector reuse, and fresh embedding when reuse cannot be proven. Milestones 2C2B1, 2C2B2A, 2C2B2B1, and 2C2B2B2 add Magento queue XML, a durable product-id-only work ledger, the activated durable scheduler, a ledger-coordinated single-message consumer, allowlist retry policy, bounded cron wake-up recovery, durable full-rebuild fencing with post-cutover recovery wake-up, post-commit update-on-save capture, product-id-only mview subscriptions, and bounded reconciliation for missed/indirect catalogue changes. Hybrid retrieval, reranking, chat (primary LLM) generation, storefront UI, and guardrail classification remain out of scope.
+ 
+ ## Completed
+ 
+@@ -76,7 +76,7 @@ Milestone 2B2:
+ - Sanitized exception taxonomy rooted at `ProductIndexingException` (extends `LocalizedException`) with stable error codes: `backend_unavailable`, `invalid_entity_ids`, `run_init_failed`, `store_prep_failed`, `batch_normalization_failed`, `batch_write_failed`, `activation_failed`, `abort_failed`, `index_abort_failed`, `incremental_scheduler_unavailable`, `incremental_queue_publish_failed`, `invalid_metrics`, `invalid_result`; optional aborted-run result attached; generic customer-safe messages.
+ - `UnavailableProductDocumentWriter` — indexing never fails open: every lifecycle call throws `backend_unavailable`; `abortRun` is a safe idempotent no-op. `UnavailableIncrementalProductIndexScheduler` remains as an explicit safe fallback that validates positive ids (never silently discards), then refuses with `incremental_scheduler_unavailable`.
+ - `Model\Indexer\ProductIndexer` implements both `Magento\Framework\Indexer\ActionInterface` and `Magento\Framework\Mview\ActionInterface`: `executeFull` rebuilds; `executeRow/executeList/execute` forward to the scheduler. Not final because Magento generates interceptors for every `ActionInterface` implementer.
+-- `etc/indexer.xml` registers indexer `ai_product_rag` (view id + action class). `etc/mview.xml` declares the matching view with no subscriptions — the schema requires a `table` element if `subscriptions` is present, so it is omitted entirely; the inert view satisfies `Magento\Framework\Mview\View::load()` during reindex and never activates a changelog.
++- `etc/indexer.xml` registers indexer `ai_product_rag` (view id + action class). The original 2B2 view was inert; Milestone 2C2B2B2 now supplies product-id-only mview subscriptions for scheduled mode.
+ - `Model\Config\Backend\InvalidateProductIndex` extends `Magento\Framework\App\Config\Value` (not final because Magento intercepts `Value` subclasses) and invalidates `ai_product_rag` only when a content-affecting indexing setting changes (`searchable_attribute_codes`, description flags, variant aggregation, attribute value budget); `batch_size` never invalidates. Attached via `backend_model` in `system.xml`; registry failures become sanitized `ConfigurationException`.
+ - `magento/module-indexer >=100.4 <101.0` declared in `composer.json` and `Magento_Indexer` sequenced in `module.xml` (framework `IndexerRegistry` lives in `magento/framework`, which was already required).
+ 
+@@ -120,13 +120,13 @@ Milestone 2C2B1:
+ - `MagentoIncrementalProductIndexScheduler` is a staged, directly injectable queue publisher. It validates positive integer ids, validates a list completely before publishing anything, deduplicates and sorts deterministically, publishes only one product id string per message, and converts unexpected publisher failures to sanitized `incremental_queue_publish_failed` without leaking raw broker details.
+ - Queue transport is declared through `communication.xml`, `queue_publisher.xml`, `queue_topology.xml`, and `queue_consumer.xml` using topic/queue/consumer `aavirbhava.ai_shopping_assistant.product.incremental_index`. The publisher leaves connection and queue name resolution to Magento so AMQP, STOMP, and database-backed installations can use their configured transport.
+ - `IncrementalProductIndexConsumer` validates the received payload as one positive id, invokes `ProductIncrementalIndexerInterface::process()` exactly once, rejects malformed payloads with sanitized indexing exceptions, and lets indexing/provider/OpenSearch failures propagate from the handler. Magento's default consumer rejects ordinary handler failures with `requeue=false`, so this is not durable retry behavior yet.
+-- Existing `ProductIndexer::executeFull()` behavior is unchanged; row/list/mview execution continues to call the scheduler contract, which remains the fail-closed `UnavailableIncrementalProductIndexScheduler` production preference until 2C2B2 supplies bounded durable recovery and reconciliation.
++- Existing `ProductIndexer::executeFull()` behavior is unchanged; row/list/mview execution validates product ids and calls the activated durable scheduler.
+ 
+ Milestone 2C2B2A:
+ 
+ - `aavirbhava_ai_incremental_product_work` stores one durable, coalesced row per product id with latest requested generation, nullable claimed/processing generation, state (`pending`, `queued`, `processing`, `retry_wait`, `complete`, `blocked`), bounded attempts, next attempt, opaque lease token/expiry, sanitized last error code, and timestamps only.
+ - `DbIncrementalWorkLedger` records changes, atomically claims due work, completes only exact claimed-generation/lease pairs inside row-locking transactions, records retry or terminal state without raw errors, recovers expired leases with attempt accounting, and supports bounded deterministic due-id selection.
+-- `DurableIncrementalProductIndexScheduler` is staged and directly injectable. It validates, deduplicates, sorts, records ledger work before queue publication, and leaves recorded work due if publication fails. It is not the production scheduler preference.
++- `DurableIncrementalProductIndexScheduler` is the production scheduler preference. It validates, deduplicates, sorts, records ledger work before queue publication, and leaves recorded work due if publication fails. `UnavailableIncrementalProductIndexScheduler` remains constructible as an explicit fail-closed fallback.
+ - `IncrementalProductIndexConsumer` now treats queue messages as wake-ups: it validates the id, holds a Magento product worker lock across claim/index/finalization, invokes the incremental core once only for a claim, records success/retry/blocked state, propagates ledger persistence failures separately, and returns safely for stale, duplicate, or already-locked messages.
+ - `IncrementalFailureDispositionPolicy` retries only allowlisted transient `OpenSearchBackendUnavailableException` failures, with at most five attempts and 60-3600 second deterministic backoff. Unknown, validation, safety, configuration, malformed, provider/refusal-like, and incompatible-index failures are terminal/blocked.
+ - `IncrementalWorkRecovery` runs from cron every five minutes, takes a Magento lock, recovers expired leases, marks up to 50 due rows as queued, and republishes product-id wake-ups without indexing or embedding. Expired leases consume bounded attempts unless a newer generation was scheduled, in which case the newer work is released fresh.
+@@ -136,7 +136,7 @@ Milestone 2C2B2B1:
+ - `aavirbhava_ai_rebuild_fence` stores a singleton full-rebuild fence with only active state, opaque owner token, lease expiry, and timestamps; active and inactive row shapes are validated strictly before ownership decisions.
+ - `FullProductReindexer` requires the fence, ledger, recovery, clock, sleeper, and Magento lock manager dependencies. It acquires the fixed rebuild gate before acquiring the durable fence, drains processing claims until the incremental lease plus safety margin, renews around stores and product batches, holds the rebuild gate across ownership proof, alias activation, and exact-token release, and wakes bounded incremental recovery after release.
+ - `DbIncrementalWorkLedger::claimDueWork()` locks the rebuild-fence row before a product work row and returns no claim while a valid rebuild fence is active. Product-change recording still increments durable generations during the fence for post-cutover replay, and consumed queued wake-ups that encounter the fence are restored to immediately due `pending` state.
+-- Production row/list/mview scheduling remains the fail-closed `UnavailableIncrementalProductIndexScheduler`; observer/mview capture, reconciliation, and final activation are still deferred.
++- Milestone 2C2B2B2 adds post-commit update-on-save capture, product-id-only mview subscriptions, and bounded reconciliation. Direct observers/plugins suppress scheduling when the assistant indexer is in scheduled mode so mview handles direct row changes without duplicate capture. Category/attribute metadata changes reset the reconciliation cursor rather than doing unbounded fan-out.
+ 
+ ## Verified in the current workspace (executed results)
+ 
+@@ -163,7 +163,7 @@ Milestone 2C2B2B1:
+ - Milestone 3A coverage includes the DTO validation cases (`EmbeddingInput`, `EmbeddingVector` numeric/finite/dimension, `EmbeddingUsage` non-negative, `EmbeddingResult` unique/one-to-one identifiers, `EmbeddingRequest` bounds), input validation (empty, whitespace, non-string, over-count, over-length, combined over-total, invalid UTF-8, trimming, positional identifiers), result validation (reordered/unknown identifiers, vector-count mismatch, dimension mismatch), the generation service (store scoping, config wrap, unknown provider wrap, oversized-input refusal before provider invocation, provider exception propagation, unexpected-failure sanitization, secret-read wrap, no fallback consultation, request snapshot fields), the URL policy (https/http, schemes, credentials, fragments, malformed), the transport (status/body, POST + JSON headers + raw body, options, timeout rounding, malformed URL without send, timeout mapping, generic failure sanitization, oversized body), the endpoint policy (cloud default/override fail-closed, local require/allowed/rejected), and the three adapters (request body shape, endpoint, optional/mandatory API key, custom base URL rejection, status mapping, invalid JSON, missing/duplicate/unknown indexes, dimension mismatch, reordered-index restoration, transport failure sanitization).
+ - In-Magento smoke tests passed for 3A: `setup:upgrade`, `setup:di:compile`, and `cache:flush` succeed; the `EmbeddingGenerationServiceInterface` preference resolves to `EmbeddingGenerationService`; the embedding registry contains exactly `local_openai_compatible`, `openai`, `voyage` and the LLM registry is empty; Admin embedding option source returns the deterministic order `local_openai_compatible, openai, voyage` while the LLM source is empty; embedding labels resolve (`OpenAI`, `Voyage AI`, `Local OpenAI-Compatible`); `indexer:reindex ai_product_rag` remains a successful no-op; calling the generation service with the blank default config fails closed with `embedding_configuration_invalid` (no network call).
+ - Milestone 2C1 coverage: naming service (prefix/alias/physical name construction, safe run-token derivation, assistant-owned detection including run-shaped-only ownership, prefix validity, `parseAssistantIndex`), mapping (create body, `dynamic: false`, `knn_vector` dimension/space type/method block, `index.knn` and `refresh_interval` settings, `_meta` provenance, fail-closed fingerprint/base-URL hash/prefix validation), indexed-document and payload-builder validation (including `_id` and `StoragePayload` separation), embedding enrichment (document input type, positional correlation, vector hash, batch bounds, failure sanitization, frozen-config change before/after provider requests), the client factory (scheme/host/port/query/credential/path/embedded-port rejection, bracketed IPv6 preservation, retries=0, auth requiring non-empty credentials, credentials absent from host URLs, normalized builder config assertions), the production client (bulk-response cases: missing/non-boolean/true `errors`, non-list items, count mismatch, unknown keys, item error-key presence, wrong order, missing/duplicate/empty `_id`s; cluster-info parsing; `indexMeta`; sanitized exceptions with no raw previous causes and no secret-bearing messages), the writer lifecycle (per-store index creation, partial-creation self-clean, embedding fingerprint/dimension/base-URL-hash derivation, schema/scope/website rejection, interleaved-store rejection, chunked bulk writes, new-index `_meta` verification before refresh, atomic alias activation removing only `_meta`-proven assistant targets, mixed/unproven alias refusal, idempotent ownership-proof abort, reuse after activation/abort, write-after-activation refusal, backend/capability unavailable fail-closed, invalid-config wrap), the 14 new exception codes, and `FullProductReindexer` mapping of `opensearch_backend_unavailable` and `embedding_enrichment_failed` through `withResult()` plus abort-failure reporting.
+-- PHPUnit: 736 unit tests, 1871 assertions passed after the Milestone 2C2B2B1 fencing correction; the DB-backed ledger integration test also passed separately inside Docker with 13 tests and 165 assertions, and the DB-backed rebuild-fence integration test passed with 10 tests and 17 assertions. Previous Milestone 2C2B2B1 rebuild-fence work: 732 tests, 1848 assertions; Milestone 2C2B2A unlock-failure correction: 726 tests, 1815 assertions; Milestone 2C2B2A atomicity/worker-fencing correction: 723 tests, 1801 assertions; Milestone 2C2B2A concurrency/retry correction: 715 tests, 1769 assertions; Milestone 2C2B2A durable ledger/recovery: 710 tests, 1753 assertions; Milestone 2C2B1 correction: 688 tests, 1675 assertions; Milestone 2C2B1 initial: 687 tests, 1673 assertions; Milestone 2C2A final: 664 tests, 1610 assertions; Milestone 2C2A review corrections: 655 tests, 1584 assertions; Milestone 2C2A initial: 628 tests, 1504 assertions; Milestone 2C1 final: 596 tests, 1450 assertions. Executed with the workspace root's PHPUnit 9.5.24; the module requires `^10.5 || ^11.0`, so CI runs a newer runner.
++- PHPUnit: 758 unit tests, 1932 assertions passed after Milestone 2C2B2B2 activation. The DB-backed ledger integration test also passed separately inside Docker with 13 tests and 165 assertions, the DB-backed rebuild-fence integration test passed with 10 tests and 17 assertions, and the DB-backed reconciliation checkpoint integration test passed with 4 tests and 23 assertions. Previous Milestone 2C2B2B1 fencing correction: 736 tests, 1871 assertions; Milestone 2C2B2B1 rebuild-fence work: 732 tests, 1848 assertions; Milestone 2C2B2A unlock-failure correction: 726 tests, 1815 assertions; Milestone 2C2B2A atomicity/worker-fencing correction: 723 tests, 1801 assertions; Milestone 2C2B2A concurrency/retry correction: 715 tests, 1769 assertions; Milestone 2C2B2A durable ledger/recovery: 710 tests, 1753 assertions; Milestone 2C2B1 correction: 688 tests, 1675 assertions; Milestone 2C2B1 initial: 687 tests, 1673 assertions; Milestone 2C2A final: 664 tests, 1610 assertions; Milestone 2C2A review corrections: 655 tests, 1584 assertions; Milestone 2C2A initial: 628 tests, 1504 assertions; Milestone 2C1 final: 596 tests, 1450 assertions. Executed with the workspace root's PHPUnit 9.5.24; the module requires `^10.5 || ^11.0`, so CI runs a newer runner.
+ - Milestone 2C2A coverage adds incremental core cases for invalid product ids, disabled-store no-touch before indexing config reads, two-store physical-target isolation, exact catalogue reconciliation, malformed batch refusal without delete/write/embed side effects, runtime snapshot type refusal, normalized document entity/document-id/schema proof, normalization result contract contradictions, missing/ineligible deletes, delete-not-found idempotency, complete-hash no-op with zero embedding/write, embedding-content vector reuse with zero embedding calls, changed embedding content and absent state causing fresh embedding, malformed/wrong-dimension/non-finite stored vectors never reused, fingerprint/schema incompatibility, missing/multiple/foreign alias targets, store/website metadata mismatches, duplicate execution idempotency, provider/OpenSearch failure redaction, alias/config change refusal before successful no-op/write/delete completion, no network calls during construction, and production-client exact document lookup/delete/write response validation including strict `found` and `_id` contracts plus trusted-only 404 handling.
+ - PHP syntax checks pass for all `Api/` and `Model/` files; all seven Magento XML files are well formed; `composer.json` is valid (`composer validate --strict` via the workspace root's `vendor/bin/composer`); `git diff --check` passes; the standalone structure validator passes.
+ - PHPStan level 5 passes on the changed production indexing files for the Milestone 2C2A review corrections.
+@@ -180,7 +180,7 @@ Start Magento with `bin/start` from the repository root. Plain `docker compose u
+ - Browser-based Admin rendering of the configuration section has not been verified. Admin form rendering, scoped save/load through the UI, and per-store overrides remain to be tested.
+ - The embedding adapters have not been exercised against live providers; all transport behavior is covered by mocked/fixture responses as required.
+ - Real chat (primary LLM) provider adapters are not implemented, so the Primary LLM Admin dropdown renders an empty option list until chat adapters are contributed through DI; this is expected and tested.
+-- Production queue scheduler activation, observers, new mview subscriptions, event journal/replay/reconciliation, hybrid retrieval, and reranking are not implemented. Durable full-rebuild fencing is implemented but does not by itself activate incremental scheduling.
++- Event journal/replay beyond the durable ledger, hybrid retrieval, and reranking are not implemented. Durable incremental scheduling is activated through observer/plugin capture, mview subscriptions, and bounded reconciliation; no live queue publish/consume smoke was executed for this activation pass.
+ - A live OpenSearch smoke test was executed from the Magento phpfpm container against the docker OpenSearch 2.12 service: cluster health returned green, a throwaway assistant physical index with `knn_vector` and ownership `_meta` was created, aliased, mapping metadata was read back, the alias was removed, the index was deleted, and no smoke indexes remained.
+ - The `indexing` Admin group is registered in `system.xml` and compiles, but its browser rendering and per-store save/load (including the new `index_prefix` field) have not been exercised through the Admin UI.
+ - The `InvalidateProductIndex` backend model is unit-tested but has not been exercised through an actual Admin config save.
+@@ -188,4 +188,4 @@ Start Magento with `bin/start` from the repository root. Plain `docker compose u
+ 
+ ## Next implementation slice
+ 
+-Milestone 2C2B2B: observer/mview event capture, event replay/reconciliation, and production scheduler activation around the accepted 2C2A incremental core, 2C2B2A durable ledger, and 2C2B2B1 rebuild fence. Hybrid retrieval (BM25 + vector + rank fusion, optional reranking) remains a later Milestone 2 slice.
++Next Milestone 2 slice: hybrid retrieval (BM25 + vector + rank fusion, optional reranking). Storefront chat/UI, guardrail classification, and LLM orchestration remain later milestones.
+diff --git a/etc/crontab.xml b/etc/crontab.xml
+index 9fc6ecd..443ac14 100644
+--- a/etc/crontab.xml
++++ b/etc/crontab.xml
+@@ -7,5 +7,10 @@
+              method="execute">
+             <schedule>*/5 * * * *</schedule>
+         </job>
++        <job name="aavirbhava_ai_incremental_product_reconciliation"
++             instance="Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation\IncrementalProductReconciliationCron"
++             method="execute">
++            <schedule>*/10 * * * *</schedule>
++        </job>
+     </group>
+ </config>
+diff --git a/etc/db_schema.xml b/etc/db_schema.xml
+index 165d3a0..fab61e5 100644
+--- a/etc/db_schema.xml
++++ b/etc/db_schema.xml
+@@ -65,4 +65,22 @@
+             <column name="lease_expires_at"/>
+         </index>
+     </table>
++    <table name="aavirbhava_ai_incremental_reconciliation" resource="default" engine="innodb"
++           comment="AI Shopping Assistant Incremental Reconciliation Cursor">
++        <column xsi:type="smallint" name="cursor_id" unsigned="true" nullable="false" identity="false"
++                comment="Singleton Cursor ID"/>
++        <column xsi:type="int" name="last_product_id" unsigned="true" nullable="false" identity="false"
++                default="0" comment="Last Scheduled Product Entity ID"/>
++        <column xsi:type="datetime" name="pass_started_at" on_update="false" nullable="true"
++                comment="Pass Started At"/>
++        <column xsi:type="datetime" name="completed_at" on_update="false" nullable="true"
++                comment="Completed At"/>
++        <column xsi:type="timestamp" name="created_at" on_update="false" nullable="false"
++                default="CURRENT_TIMESTAMP" comment="Created At"/>
++        <column xsi:type="timestamp" name="updated_at" on_update="true" nullable="false"
++                default="CURRENT_TIMESTAMP" comment="Updated At"/>
++        <constraint xsi:type="primary" referenceId="PRIMARY">
++            <column name="cursor_id"/>
++        </constraint>
++    </table>
+ </schema>
+diff --git a/etc/di.xml b/etc/di.xml
+index 24b4f01..125ee8c 100644
+--- a/etc/di.xml
++++ b/etc/di.xml
+@@ -42,11 +42,13 @@
+     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\ProductDocumentWriterInterface"
+                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\OpenSearchProductDocumentWriter"/>
+     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalProductIndexSchedulerInterface"
+-                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\UnavailableIncrementalProductIndexScheduler"/>
++                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\DurableIncrementalProductIndexScheduler"/>
+     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalWorkLedgerInterface"
+                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\DbIncrementalWorkLedger"/>
+     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalWorkRecoveryInterface"
+                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\IncrementalWorkRecovery"/>
++    <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\IncrementalProductReconciliationInterface"
++                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation\IncrementalProductReconciliation"/>
+     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\RebuildFenceInterface"
+                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\RebuildFence\DbRebuildFence"/>
+     <preference for="Aavirbhava\AiShoppingAssistant\Model\Indexing\Clock\ClockInterface"
+@@ -57,6 +59,10 @@
+                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\RandomLeaseTokenGenerator"/>
+     <preference for="Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\IncrementalFailureDispositionPolicyInterface"
+                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Queue\IncrementalFailureDispositionPolicy"/>
++    <preference for="Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation\IncrementalReconciliationCheckpointInterface"
++                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation\DbIncrementalReconciliationCheckpoint"/>
++    <preference for="Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation\ProductIdCursorBatchProviderInterface"
++                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Reconciliation\DbProductIdCursorBatchProvider"/>
+     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\ProductIncrementalIndexerInterface"
+                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\IncrementalProductIndexer"/>
+     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\RebuildRunContextFactoryInterface"
+@@ -76,6 +82,15 @@
+     <preference for="Aavirbhava\AiShoppingAssistant\Model\Indexing\Client\OpenSearchClientBuilderInterface"
+                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Client\OpenSearchClientBuilder"/>
+ 
++    <type name="Magento\Catalog\Model\Product\Action">
++        <plugin name="aavirbhava_ai_incremental_product_action_capture"
++                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture\ProductActionChangePlugin"/>
++    </type>
++    <type name="Magento\Catalog\Model\CategoryLinkManagement">
++        <plugin name="aavirbhava_ai_incremental_category_link_capture"
++                type="Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture\CategoryLinkManagementPlugin"/>
++    </type>
++
+     <type name="Aavirbhava\AiShoppingAssistant\Model\Provider\LlmProviderRegistry">
+         <arguments>
+             <argument name="providers" xsi:type="array"/>
+diff --git a/etc/events.xml b/etc/events.xml
+new file mode 100644
+index 0000000..b087b5d
+--- /dev/null
++++ b/etc/events.xml
+@@ -0,0 +1,28 @@
++<?xml version="1.0"?>
++<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
++        xsi:noNamespaceSchemaLocation="urn:magento:framework:Event/etc/events.xsd">
++    <event name="catalog_product_save_commit_after">
++        <observer name="aavirbhava_ai_incremental_product_save_capture"
++                  instance="Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture\ProductChangeCommitObserver"/>
++    </event>
++    <event name="catalog_product_delete_commit_after">
++        <observer name="aavirbhava_ai_incremental_product_delete_capture"
++                  instance="Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture\ProductChangeCommitObserver"/>
++    </event>
++    <event name="catalog_category_save_commit_after">
++        <observer name="aavirbhava_ai_incremental_category_save_capture"
++                  instance="Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture\CategoryChangeCommitObserver"/>
++    </event>
++    <event name="catalog_category_delete_commit_after">
++        <observer name="aavirbhava_ai_incremental_category_delete_capture"
++                  instance="Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture\CategoryChangeCommitObserver"/>
++    </event>
++    <event name="catalog_entity_attribute_save_commit_after">
++        <observer name="aavirbhava_ai_incremental_catalog_attribute_capture"
++                  instance="Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture\IndirectCatalogueChangeObserver"/>
++    </event>
++    <event name="eav_entity_attribute_save_commit_after">
++        <observer name="aavirbhava_ai_incremental_eav_attribute_capture"
++                  instance="Aavirbhava\AiShoppingAssistant\Model\Indexing\Capture\IndirectCatalogueChangeObserver"/>
++    </event>
++</config>
+diff --git a/etc/mview.xml b/etc/mview.xml
+index 3d120d3..09f9ab8 100644
+--- a/etc/mview.xml
++++ b/etc/mview.xml
+@@ -2,5 +2,16 @@
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="urn:magento:framework:Mview/etc/mview.xsd">
+     <view id="ai_product_rag" class="Aavirbhava\AiShoppingAssistant\Model\Indexer\ProductIndexer"
+-          group="indexer"/>
++          group="indexer">
++        <subscriptions>
++            <table name="catalog_product_entity" entity_column="entity_id"/>
++            <table name="catalog_product_entity_datetime" entity_column="entity_id"/>
++            <table name="catalog_product_entity_decimal" entity_column="entity_id"/>
++            <table name="catalog_product_entity_int" entity_column="entity_id"/>
++            <table name="catalog_product_entity_text" entity_column="entity_id"/>
++            <table name="catalog_product_entity_varchar" entity_column="entity_id"/>
++            <table name="catalog_product_website" entity_column="product_id"/>
++            <table name="catalog_category_product" entity_column="product_id"/>
++        </subscriptions>
++    </view>
+ </config>

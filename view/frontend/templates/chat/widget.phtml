@@ -1,0 +1,164 @@
+<?php
+/**
+ * Default/Luma storefront chat widget. Vanilla JS only (no jQuery/
+ * Knockout/RequireJS requirement of its own) — see
+ * view/frontend/web/js/{chat-widget-core,chat-widget-luma}.js. Every
+ * decision (identity, validation, retrieval, tool-calling, output
+ * validation) belongs to Controller\Chat\Send; this template only
+ * renders whatever JSON that endpoint returns.
+ *
+ * @var \Aavirbhava\AiShoppingAssistant\Block\Frontend\ChatWidget $block
+ */
+?>
+<style>
+    .aavirbhava-chat-widget { position: fixed; right: 1rem; bottom: 1rem; z-index: 900; font-family: inherit; }
+    .aavirbhava-chat-toggle {
+        border-radius: 999px; padding: .8rem 1.4rem; color: var(--aavirbhava-primary-text-color, #fff); border: 0; cursor: pointer; font-size: 1rem;
+        background: var(--aavirbhava-primary-color, #1979c3);
+        background: linear-gradient(135deg, var(--aavirbhava-primary-color, #1979c3), color-mix(in srgb, var(--aavirbhava-primary-color, #1979c3) 75%, black));
+        box-shadow: 0 4px 14px rgba(0,0,0,.25);
+        transition: transform .15s ease, box-shadow .15s ease;
+    }
+    .aavirbhava-chat-toggle:hover {
+        transform: translateY(-1px); box-shadow: 0 6px 18px rgba(0,0,0,.3);
+        /* Luma's own `button:hover` reset (styles-m.css) has higher
+           specificity (element + pseudo-class) than a bare class selector
+           would, so the background must be restated here explicitly —
+           otherwise hovering the toggle silently falls back to Luma's
+           flat gray button color instead of the configured gradient. */
+        background: var(--aavirbhava-primary-color, #1979c3);
+        background: linear-gradient(135deg, var(--aavirbhava-primary-color, #1979c3), color-mix(in srgb, var(--aavirbhava-primary-color, #1979c3) 75%, black));
+    }
+    .aavirbhava-chat-panel {
+        position: absolute; right: 0; bottom: 3.5rem; width: 400px; height: 600px; min-width: 300px; min-height: 360px;
+        max-width: calc(100vw - 2rem); max-height: calc(100vh - 6rem);
+        display: none; flex-direction: column; background: #fff; border: 1px solid #e2e2e2; border-radius: .75rem;
+        box-shadow: 0 12px 32px rgba(0,0,0,.18), 0 2px 8px rgba(0,0,0,.08); overflow: hidden;
+    }
+    .aavirbhava-chat-panel--open { display: flex; }
+    .aavirbhava-chat-panel--minimized {
+        /* min-height:360px on the base rule would otherwise force a tall
+           empty flex container even with height:auto and the log/form
+           hidden below — both bounds must be relaxed together. */
+        height: auto !important; min-height: 0 !important; width: 300px !important;
+    }
+    .aavirbhava-chat-panel--minimized .aavirbhava-chat-log,
+    .aavirbhava-chat-panel--minimized .aavirbhava-chat-form,
+    .aavirbhava-chat-panel--minimized .aavirbhava-chat-resize-handle { display: none; }
+    .aavirbhava-chat-resize-handle {
+        position: absolute; top: 0; left: 0; width: 16px; height: 16px; z-index: 2; cursor: nwse-resize;
+        background-image:
+            linear-gradient(135deg, transparent 0 38%, rgba(255,255,255,.85) 38% 52%, transparent 52% 100%),
+            linear-gradient(135deg, transparent 0 62%, rgba(255,255,255,.85) 62% 76%, transparent 76% 100%);
+    }
+    .aavirbhava-chat-header {
+        position: relative; display: flex; align-items: center; justify-content: space-between; padding: .65rem .85rem;
+        color: var(--aavirbhava-primary-text-color, #fff);
+        background: var(--aavirbhava-primary-color, #1979c3);
+        background: linear-gradient(135deg, var(--aavirbhava-primary-color, #1979c3), color-mix(in srgb, var(--aavirbhava-primary-color, #1979c3) 75%, black));
+    }
+    .aavirbhava-chat-header-title { font-weight: 600; letter-spacing: .01em; }
+    .aavirbhava-chat-header-actions { display: flex; align-items: center; gap: .15rem; }
+    .aavirbhava-chat-header button {
+        background: rgba(255,255,255,.12); border: 0; border-radius: .35rem; color: var(--aavirbhava-primary-text-color, #fff); font-size: 1.1rem;
+        line-height: 1; cursor: pointer; padding: .3rem .5rem; transition: background .15s ease;
+    }
+    .aavirbhava-chat-header button:hover { background: rgba(255,255,255,.25); }
+    .aavirbhava-chat-log { flex: 1; overflow-y: auto; padding: .65rem .85rem; background: #fafafa; }
+    .aavirbhava-chat-bubble { margin: .45rem 0; padding: .6rem .8rem; border-radius: .65rem; max-width: 90%; line-height: 1.45; }
+    .aavirbhava-chat-bubble p { margin: 0 0 .4rem; }
+    .aavirbhava-chat-bubble p:last-child { margin-bottom: 0; }
+    .aavirbhava-chat-bubble--user { margin-left: auto; background: #e8f1fb; }
+    .aavirbhava-chat-bubble--assistant {
+        margin-right: auto;
+        background: var(--aavirbhava-message-bg-color, #f2f2f2);
+        color: var(--aavirbhava-message-text-color, #222);
+    }
+    .aavirbhava-chat-bubble--thinking { font-style: italic; color: #777; }
+    .aavirbhava-chat-thinking-dots::after { content: '\2026'; animation: aavirbhava-thinking-dots 1.2s steps(4, end) infinite; }
+    @keyframes aavirbhava-thinking-dots {
+        0% { content: ''; } 25% { content: '.'; } 50% { content: '..'; } 75%, 100% { content: '...'; }
+    }
+    .aavirbhava-chat-products { display: flex; flex-direction: column; gap: .5rem; margin-top: .4rem; }
+    .aavirbhava-chat-product-card {
+        display: flex; gap: .6rem; border: 1px solid #e2e2e2; border-radius: .55rem; padding: .5rem .6rem; background: #fff;
+        /* The card is its own fixed-white "island" nested inside the
+           assistant bubble, whose own text color is admin-configurable
+           (--aavirbhava-message-text-color). Without a color reset here,
+           anything inside the card that doesn't set its own explicit
+           color (the un-linked product title, the current price, the
+           recommendation badge) inherits the BUBBLE's configured text
+           color instead of a color guaranteed to read against this
+           card's own white background — a merchant picking a light text
+           color for a dark bubble could make those elements unreadable
+           against this always-white card. */
+        color: #1d1d1d;
+    }
+    .aavirbhava-chat-product-image {
+        flex: 0 0 auto; width: 56px; height: 56px; object-fit: contain; border-radius: .4rem; background: #f5f5f5; border: 1px solid #eee;
+    }
+    .aavirbhava-chat-product-body { flex: 1; min-width: 0; }
+    .aavirbhava-chat-product-title a { color: var(--aavirbhava-primary-color, #1979c3); text-decoration: none; font-weight: 600; }
+    .aavirbhava-chat-product-title a:hover { text-decoration: underline; }
+    .aavirbhava-chat-product-sku { font-size: .72rem; color: #999; margin-left: .4rem; }
+    .aavirbhava-chat-product-badge { margin-left: .4rem; font-size: .68rem; background: #fdf0d5; padding: .1rem .4rem; border-radius: .25rem; }
+    .aavirbhava-chat-price-was { text-decoration: line-through; color: #999; margin-right: .35rem; }
+    .aavirbhava-chat-price-now { font-weight: 700; }
+    .aavirbhava-chat-product-reason { font-size: .85rem; color: #555; margin-top: .15rem; }
+    .aavirbhava-chat-followups, .aavirbhava-chat-confirm { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .5rem; }
+    .aavirbhava-chat-followups button, .aavirbhava-chat-confirm button {
+        border: 1px solid var(--aavirbhava-primary-color, #1979c3); background: #fff; color: var(--aavirbhava-primary-color, #1979c3);
+        border-radius: 999px; padding: .3rem .7rem; font-size: .8rem; cursor: pointer; transition: background .15s ease;
+    }
+    .aavirbhava-chat-followups button:hover, .aavirbhava-chat-confirm button:hover { background: #e8f1fb; }
+    .aavirbhava-chat-form { display: flex; gap: .5rem; padding: .6rem .85rem; border-top: 1px solid #eee; background: #fff; }
+    .aavirbhava-chat-form input { flex: 1; padding: .5rem .65rem; border: 1px solid #d5d5d5; border-radius: .4rem; }
+    .aavirbhava-chat-form button {
+        padding: .5rem .9rem; border: 0; border-radius: .4rem; color: var(--aavirbhava-primary-text-color, #fff); cursor: pointer;
+        background: var(--aavirbhava-primary-color, #1979c3);
+    }
+    .aavirbhava-chat-form button:disabled, .aavirbhava-chat-form input:disabled { opacity: .6; }
+    .aavirbhava-chat-widget button:focus-visible,
+    .aavirbhava-chat-widget input:focus-visible,
+    .aavirbhava-chat-widget a:focus-visible {
+        outline: 2px solid #0b5fa5; outline-offset: 2px;
+    }
+    .aavirbhava-visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+</style>
+<div class="aavirbhava-chat-widget"
+     id="aavirbhava-chat-widget"
+     data-send-url="<?= $block->escapeUrl($block->getSendUrl()) ?>"
+     data-history-url="<?= $block->escapeUrl($block->getHistoryUrl()) ?>"
+     style="<?= $block->escapeHtmlAttr($block->getColorCustomPropertiesStyle()) ?>">
+    <button type="button" class="aavirbhava-chat-toggle" data-role="toggle" aria-expanded="false" aria-controls="aavirbhava-chat-panel">
+        <?= $block->escapeHtml(__('Chat with us')) ?>
+    </button>
+    <div class="aavirbhava-chat-panel" id="aavirbhava-chat-panel" data-role="panel">
+        <div class="aavirbhava-chat-resize-handle" data-role="resize-handle" aria-hidden="true"></div>
+        <div class="aavirbhava-chat-header">
+            <span class="aavirbhava-chat-header-title" id="aavirbhava-chat-heading"><?= $block->escapeHtml(__('Shopping Assistant')) ?></span>
+            <span class="aavirbhava-chat-header-actions">
+                <button type="button" data-role="minimize" aria-label="<?= $block->escapeHtmlAttr(__('Minimize chat')) ?>">&minus;</button>
+                <button type="button" data-role="close" aria-label="<?= $block->escapeHtmlAttr(__('Close chat')) ?>">&times;</button>
+            </span>
+        </div>
+        <div class="aavirbhava-chat-log"
+             data-role="log"
+             role="log"
+             aria-live="polite"
+             aria-relevant="additions"
+             aria-labelledby="aavirbhava-chat-heading">
+        </div>
+        <form data-role="form" class="aavirbhava-chat-form">
+            <label class="aavirbhava-visually-hidden" for="aavirbhava-chat-input"><?= $block->escapeHtml(__('Type your message')) ?></label>
+            <input type="text"
+                   id="aavirbhava-chat-input"
+                   data-role="input"
+                   autocomplete="off"
+                   placeholder="<?= $block->escapeHtmlAttr(__('Ask about products…')) ?>"/>
+            <button type="submit" data-role="send"><?= $block->escapeHtml(__('Send')) ?></button>
+        </form>
+    </div>
+</div>
+<script src="<?= $block->escapeUrl($block->getViewFileUrl('Aavirbhava_AiShoppingAssistant::js/chat-widget-core.js')) ?>"></script>
+<script src="<?= $block->escapeUrl($block->getViewFileUrl('Aavirbhava_AiShoppingAssistant::js/chat-widget-luma.js')) ?>"></script>

@@ -154,10 +154,41 @@ final class ProductDocumentNormalizer implements ProductDocumentNormalizerInterf
             $searchableText,
             $this->hashService->hash($embeddingPayload),
             $this->hashService->hash($completePayload),
-            $snapshot->updatedAt()
+            $this->formatUpdatedAt($snapshot->updatedAt())
         );
 
         return new ProductNormalizationResult(true, ProductEligibilityResultInterface::REASON_ELIGIBLE, $document);
+    }
+
+    /**
+     * ProductSnapshotInterface::updatedAt() carries Magento's own raw
+     * `catalog_product_entity.updated_at` value verbatim — MySQL DATETIME
+     * format (`Y-m-d H:i:s`, no timezone marker; Magento stores timestamps
+     * in UTC by convention). ProductIndexMapping declares this field as
+     * OpenSearch `date` type with strict ISO-8601 formats
+     * (strict_date_time_no_millis / strict_date_optional_time /
+     * epoch_millis) — the raw MySQL string satisfies none of them, and
+     * OpenSearch rejects the whole document at bulk-index time
+     * (mapper_parsing_exception), a real, confirmed live-testing finding,
+     * not a hypothetical. This is the only consumer of
+     * ProductSnapshotInterface::updatedAt() (confirmed by inspection), so
+     * converting here — rather than at the snapshot layer, which has no
+     * reason to know about OpenSearch's date format at all — keeps this
+     * concern localized to the class actually shaping data for the index.
+     */
+    private function formatUpdatedAt(?string $mysqlDateTime): ?string
+    {
+        if ($mysqlDateTime === null || $mysqlDateTime === '') {
+            return null;
+        }
+
+        $parsed = \DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $mysqlDateTime, new \DateTimeZone('UTC'));
+
+        if ($parsed === false) {
+            return null;
+        }
+
+        return $parsed->format(DATE_ATOM);
     }
 
     /**

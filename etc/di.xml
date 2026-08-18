@@ -17,6 +17,56 @@
                 type="Aavirbhava\AiShoppingAssistant\Model\Provider\ProviderLabelRegistry"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Embedding\EmbeddingGenerationServiceInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Embedding\EmbeddingGenerationService"/>
+    <!--
+        FallbackChatGenerationService is a decorator: it depends on the
+        concrete Model\Chat\ChatGenerationService class (not this interface)
+        to reach the undecorated, primary-only implementation without a DI
+        cycle. Every existing caller of ChatGenerationServiceInterface
+        (ChatEntryPipeline, tests) gets retry/circuit-breaker/fallback
+        transparently with no code change on their side.
+    -->
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Chat\ChatGenerationServiceInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Chat\FallbackChatGenerationService"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Chat\CircuitBreakerInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Chat\Fallback\CacheCircuitBreaker"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Model\Chat\Fallback\BackoffSleeperInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Chat\Fallback\SystemBackoffSleeper"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Chat\CommerceScopeClassifierInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Chat\CommerceScopeClassifier"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Chat\ChatEntryPipelineInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Chat\ChatEntryPipeline"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Retrieval\HybridRetrievalServiceInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Retrieval\HybridRetrievalService"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Ranking\RankingPipelineInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Ranking\RankingPipeline"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Revalidation\LiveRevalidationServiceInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Revalidation\LiveRevalidationService"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Chat\OutputValidatorInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Chat\OutputValidator"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Tool\CommerceToolRegistryInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Tool\CommerceToolRegistry"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Chat\ToolCallingChatServiceInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Chat\ToolCallingChatService"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Playground\PlaygroundQueryRunnerInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Playground\PlaygroundQueryRunner"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Provider\OllamaModelListServiceInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Provider\Llm\OllamaModelListService"/>
+    <!--
+        No blog module (Magefan_Blog, Amasty, Mageplaza, or otherwise) is
+        installed in this Magento instance (confirmed via module:status
+        and composer.json) — NullBlogContentSearcher is the correct
+        default until a real one is added. A real integration is a single
+        preference swap here, with its own adapter reaching only that
+        module's public repository/API, never its internal tables.
+    -->
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Tool\BlogContentSearcherInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Tool\NullBlogContentSearcher"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Cart\CartResolverInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Cart\CartResolver"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Chat\ConversationHistoryStoreInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Chat\DbConversationHistoryStore"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Chat\ChatIdentityResolverInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Chat\ChatIdentityResolver"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductIndexEligibilityPolicyInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Catalog\ProductIndexEligibilityPolicy"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Catalog\UntrustedContentSanitizerInterface"
@@ -93,7 +143,10 @@
 
     <type name="Aavirbhava\AiShoppingAssistant\Model\Provider\LlmProviderRegistry">
         <arguments>
-            <argument name="providers" xsi:type="array"/>
+            <argument name="providers" xsi:type="array">
+                <item name="openai" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Provider\Llm\OpenAiProvider</item>
+                <item name="openai_compatible" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Provider\Llm\OpenAiCompatibleProvider</item>
+            </argument>
         </arguments>
     </type>
     <type name="Aavirbhava\AiShoppingAssistant\Model\Provider\EmbeddingProviderRegistry">
@@ -111,10 +164,79 @@
                 <item name="openai" xsi:type="string">OpenAI</item>
                 <item name="anthropic" xsi:type="string">Anthropic Claude</item>
                 <item name="xai" xsi:type="string">xAI Grok</item>
-                <item name="openai_compatible" xsi:type="string">OpenAI-Compatible</item>
+                <item name="openai_compatible" xsi:type="string">Local / Ollama (OpenAI-Compatible)</item>
                 <item name="voyage" xsi:type="string">Voyage AI</item>
                 <item name="local_openai_compatible" xsi:type="string">Local OpenAI-Compatible</item>
             </argument>
+        </arguments>
+    </type>
+
+    <!--
+        Registered signals always ALL run, in this order, every time — unlike
+        LlmProviderRegistry/EmbeddingProviderRegistry (one identifier is
+        selected per store via merchant config). The array-construction
+        mechanism is mirrored for the same third-party extensibility: a
+        Phase 2 signal (PromotionSignal, MarginSignal, ...) is added with a
+        new class plus one new <item> here, with no change to RankingPipeline
+        or the four Phase-1 signals. AvailabilitySignal is registered last so
+        it is the authoritative gate regardless of what upstream signals
+        scored.
+    -->
+    <type name="Aavirbhava\AiShoppingAssistant\Model\Ranking\RankingPipeline">
+        <arguments>
+            <argument name="signals" xsi:type="array">
+                <item name="text_relevance" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Ranking\Signal\TextRelevanceSignal</item>
+                <item name="vector_similarity" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Ranking\Signal\VectorSimilaritySignal</item>
+                <item name="attribute_match" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Ranking\Signal\AttributeMatchSignal</item>
+                <item name="availability" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Ranking\Signal\AvailabilitySignal</item>
+            </argument>
+        </arguments>
+    </type>
+
+    <!--
+        Each item key must match the tool's own name() exactly
+        (CommerceToolRegistry validates this at construction, mirroring
+        LlmProviderRegistry). get_cart/add_to_cart/remove_from_cart (Task 7)
+        are the first WRITE-capable tools; each still gates itself purely
+        through its own authorize()/execute() (guardrails.cart_mutations_
+        enabled, and for the two mutating tools, guardrails.require_cart_
+        confirmation) — registering them required no change to
+        ToolCallingChatService's round-trip loop.
+    -->
+    <type name="Aavirbhava\AiShoppingAssistant\Model\Tool\CommerceToolRegistry">
+        <arguments>
+            <argument name="tools" xsi:type="array">
+                <item name="search_products" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Tool\SearchProductsTool</item>
+                <item name="get_product_details" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Tool\GetProductDetailsTool</item>
+                <item name="compare_products" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Tool\CompareProductsTool</item>
+                <item name="check_price" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Tool\CheckPriceTool</item>
+                <item name="check_inventory" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Tool\CheckInventoryTool</item>
+                <item name="get_cart" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Tool\GetCartTool</item>
+                <item name="add_to_cart" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Tool\AddToCartTool</item>
+                <item name="remove_from_cart" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Tool\RemoveFromCartTool</item>
+                <item name="search_store_content" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Tool\SearchStoreContentTool</item>
+            </argument>
+        </arguments>
+    </type>
+
+    <!--
+        Model\Session\ChatSession's own storage namespace (Task 8) —
+        without this, Magento\Framework\Session\Storage defaults to the
+        shared "default" namespace, which would collide with any other
+        unconfigured session consumer. Mirrors
+        Magento\Checkout\Model\Session/Magento\Customer\Model\Session's
+        own di.xml wiring exactly (see etc/checkout/di.xml,
+        etc/customer/di.xml in Magento core).
+    -->
+    <virtualType name="Aavirbhava\AiShoppingAssistant\Model\Session\ChatSession\Storage"
+                 type="Magento\Framework\Session\Storage">
+        <arguments>
+            <argument name="namespace" xsi:type="string">aavirbhava_ai_shopping_assistant</argument>
+        </arguments>
+    </virtualType>
+    <type name="Aavirbhava\AiShoppingAssistant\Model\Session\ChatSession">
+        <arguments>
+            <argument name="storage" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Session\ChatSession\Storage</argument>
         </arguments>
     </type>
 </config>

@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Backend:etc/menu.xsd">
+    <menu>
+        <add id="Aavirbhava_AiShoppingAssistant::playground"
+             title="AI Shopping Assistant"
+             translate="title"
+             module="Aavirbhava_AiShoppingAssistant"
+             sortOrder="910"
+             parent="Magento_Backend::marketing"
+             resource="Aavirbhava_AiShoppingAssistant::playground"/>
+        <add id="Aavirbhava_AiShoppingAssistant::playground_index"
+             title="Playground"
+             translate="title"
+             module="Aavirbhava_AiShoppingAssistant"
+             sortOrder="10"
+             parent="Aavirbhava_AiShoppingAssistant::playground"
+             action="aavirbhava_aishoppingassistant/playground/index"
+             resource="Aavirbhava_AiShoppingAssistant::playground"/>
+    </menu>
+</config>

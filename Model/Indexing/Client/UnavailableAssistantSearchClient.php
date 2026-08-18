@@ -93,4 +93,9 @@ final class UnavailableAssistantSearchClient implements AssistantSearchClientInt
     {
         throw new OpenSearchBackendUnavailableException();
     }
+
+    public function search(string $indexName, array $queryBody): array
+    {
+        throw new OpenSearchBackendUnavailableException();
+    }
 }

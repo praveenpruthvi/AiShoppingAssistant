@@ -70,7 +70,10 @@ final class ProductIndexMappingTest extends TestCase
         $embedding = $body['mappings']['properties'][ProductIndexMappingInterface::FIELD_EMBEDDING];
         self::assertSame('knn_vector', $embedding['type']);
         self::assertSame(1536, $embedding['dimension']);
-        self::assertSame(ProductIndexMappingInterface::KNN_SPACE_TYPE, $embedding['space_type']);
+        // A field-level space_type alongside a method block is invalid on
+        // real OpenSearch (mapper_parsing_exception: unknown parameter
+        // [space_type]) — space_type must live only inside method.
+        self::assertArrayNotHasKey('space_type', $embedding);
         self::assertSame('hnsw', $embedding['method']['name']);
         self::assertSame('lucene', $embedding['method']['engine']);
         self::assertSame(ProductIndexMappingInterface::KNN_SPACE_TYPE, $embedding['method']['space_type']);

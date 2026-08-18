@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Aavirbhava\AiShoppingAssistant\Test\Unit\Fake;
 
 use Aavirbhava\AiShoppingAssistant\Api\LlmProviderInterface;
+use Aavirbhava\AiShoppingAssistant\Model\Config\SecretValue;
 use Aavirbhava\AiShoppingAssistant\Model\Dto\ChatRequest;
 use Aavirbhava\AiShoppingAssistant\Model\Dto\ChatResponse;
 use Aavirbhava\AiShoppingAssistant\Model\Dto\ConnectionResult;
@@ -37,8 +38,13 @@ final class FakeLlmProvider implements LlmProviderInterface
         throw new \RuntimeException('Fake LLM provider is not expected to be invoked.');
     }
 
-    public function testConnection(): ConnectionResult
-    {
+    public function testConnection(
+        int $storeId,
+        string $model,
+        string $baseUrl,
+        SecretValue $apiKey,
+        int $timeoutSeconds
+    ): ConnectionResult {
         throw new \RuntimeException('Fake LLM provider is not expected to be invoked.');
     }
 

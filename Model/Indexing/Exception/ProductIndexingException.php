@@ -121,6 +121,12 @@ class ProductIndexingException extends LocalizedException
     /** The document or embedding configuration is incompatible with the run. */
     public const ERROR_INDEX_COMPATIBILITY_MISMATCH = 'index_compatibility_mismatch';
 
+    /** A read-time search query could not be executed against the backend. */
+    public const ERROR_SEARCH_QUERY_FAILED = 'search_query_failed';
+
+    /** A search response was malformed or could not be verified. */
+    public const ERROR_SEARCH_RESPONSE_INVALID = 'search_response_invalid';
+
     /**
      * @param string $errorCode stable machine-readable failure category
      * @param Phrase $phrase sanitized, customer-safe message

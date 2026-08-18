@@ -7,6 +7,7 @@ namespace Aavirbhava\AiShoppingAssistant\Test\Unit\Model\Config;
 use Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductAttributePolicyInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\GeneralConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\GuardrailConfigInterface;
+use Aavirbhava\AiShoppingAssistant\Model\Config\ColorContrast;
 use Aavirbhava\AiShoppingAssistant\Model\Config\ConfigurationReader;
 use Aavirbhava\AiShoppingAssistant\Model\Config\Exception\ConfigurationException;
 use Aavirbhava\AiShoppingAssistant\Model\Config\Path;
@@ -29,7 +30,11 @@ final class ConfigurationReaderTest extends TestCase
                 static fn (string $path): mixed => $values[$path] ?? null
             );
 
-        return new ConfigurationReader($scopeConfig, $this->policy());
+        // ColorContrast is a pure, dependency-free computation — used
+        // directly here rather than mocked, the same way this module's
+        // other simple deterministic collaborators (e.g. LlmResponseParser
+        // in OutputValidatorTest) are used directly rather than mocked.
+        return new ConfigurationReader($scopeConfig, $this->policy(), new ColorContrast());
     }
 
     private function policy(): ProductAttributePolicyInterface
@@ -46,6 +51,7 @@ final class ConfigurationReaderTest extends TestCase
         $values = [
             Path::GENERAL_ENABLED => '1',
             Path::GENERAL_STRICT_STORE_ONLY => '1',
+            Path::GENERAL_MAX_CONVERSATION_MESSAGES => '60',
             Path::LLM_PROVIDER => 'openai',
             Path::LLM_MODEL => 'gpt-5.6-terra',
             Path::LLM_BASE_URL => 'https://example.test/v1',
@@ -70,6 +76,7 @@ final class ConfigurationReaderTest extends TestCase
             Path::GUARDRAILS_MAX_INPUT_CHARACTERS => '1000',
             Path::GUARDRAILS_MAX_TOOL_CALLS => '4',
             Path::GUARDRAILS_CART_MUTATIONS_ENABLED => '0',
+            Path::GUARDRAILS_REQUIRE_CART_CONFIRMATION => '0',
             Path::GUARDRAILS_BLOCK_EXTERNAL_URLS => '1',
             Path::GUARDRAILS_BLOCK_CODE_GENERATION => '1',
             Path::GUARDRAILS_OUT_OF_SCOPE_MESSAGE => 'Please stay on topic.',
@@ -83,12 +90,13 @@ final class ConfigurationReaderTest extends TestCase
                 static fn (string $path): mixed => $values[$path] ?? null
             );
 
-        $reader = new ConfigurationReader($scopeConfig, $this->policy());
+        $reader = new ConfigurationReader($scopeConfig, $this->policy(), new ColorContrast());
 
         $general = $reader->readGeneral($storeId);
         self::assertInstanceOf(GeneralConfigInterface::class, $general);
         self::assertTrue($general->isEnabled());
         self::assertTrue($general->isStrictStoreOnly());
+        self::assertSame(60, $general->maxConversationMessages());
 
         $llm = $reader->readLlm($storeId);
         self::assertSame('openai', $llm->provider());
@@ -121,9 +129,117 @@ final class ConfigurationReaderTest extends TestCase
         self::assertSame(1000, $guardrails->maxInputCharacters());
         self::assertSame(4, $guardrails->maxToolCalls());
         self::assertFalse($guardrails->areCartMutationsEnabled());
+        self::assertFalse($guardrails->requiresCartConfirmation());
         self::assertTrue($guardrails->blocksExternalUrls());
         self::assertTrue($guardrails->blocksCodeGeneration());
         self::assertSame('Please stay on topic.', $guardrails->outOfScopeMessage());
+    }
+
+    public function testReadsAppearanceConfigurationWhenBothBubbleColorsAreExplicitlySet(): void
+    {
+        // Manual values always win, even though white-on-#eee is a
+        // deliberately borderline pairing here — this reader never
+        // second-guesses two explicitly configured colors.
+        $reader = $this->reader([
+            Path::APPEARANCE_PRIMARY_COLOR => '#112233',
+            Path::APPEARANCE_MESSAGE_BUBBLE_COLOR => '#eee',
+            Path::APPEARANCE_MESSAGE_TEXT_COLOR => '#222222',
+        ]);
+
+        $appearance = $reader->readAppearance(1);
+        self::assertSame('#112233', $appearance->primaryColor());
+        self::assertSame('#eee', $appearance->messageBubbleColor());
+        self::assertSame('#222222', $appearance->messageTextColor());
+    }
+
+    public function testPrimaryTextColorIsAlwaysAutoComputedAgainstThePrimaryColor(): void
+    {
+        // #112233 is a very dark navy — readable text against it is white,
+        // never a value any admin field can override (there is no such
+        // field).
+        $reader = $this->reader([Path::APPEARANCE_PRIMARY_COLOR => '#112233']);
+
+        self::assertSame('#ffffff', $reader->readAppearance(1)->primaryTextColor());
+    }
+
+    public function testAppearanceColorsFallBackToThisModulesOriginalDefaultsWhenUnset(): void
+    {
+        $reader = $this->reader([]);
+
+        $appearance = $reader->readAppearance(1);
+        self::assertSame(ConfigurationReader::DEFAULT_PRIMARY_COLOR, $appearance->primaryColor());
+        self::assertSame(ConfigurationReader::DEFAULT_MESSAGE_BUBBLE_COLOR, $appearance->messageBubbleColor());
+        self::assertSame(ConfigurationReader::DEFAULT_MESSAGE_TEXT_COLOR, $appearance->messageTextColor());
+    }
+
+    public function testInvalidAppearanceColorsAreTreatedAsUnsetRatherThanEmittedVerbatim(): void
+    {
+        $reader = $this->reader([
+            Path::APPEARANCE_PRIMARY_COLOR => 'red; } body { display: none',
+            Path::APPEARANCE_MESSAGE_BUBBLE_COLOR => 'not-a-color',
+            Path::APPEARANCE_MESSAGE_TEXT_COLOR => '#12345',
+        ]);
+
+        $appearance = $reader->readAppearance(1);
+        self::assertSame(ConfigurationReader::DEFAULT_PRIMARY_COLOR, $appearance->primaryColor());
+        self::assertSame(ConfigurationReader::DEFAULT_MESSAGE_BUBBLE_COLOR, $appearance->messageBubbleColor());
+        self::assertSame(ConfigurationReader::DEFAULT_MESSAGE_TEXT_COLOR, $appearance->messageTextColor());
+    }
+
+    public function testMessageTextColorIsAutoComputedWhenOnlyTheBubbleColorIsSet(): void
+    {
+        // #1a1a2e is a dark navy — readable text against it is white, not
+        // this module's default #222222 (which would be nearly invisible
+        // against such a dark background).
+        $reader = $this->reader([Path::APPEARANCE_MESSAGE_BUBBLE_COLOR => '#1a1a2e']);
+
+        $appearance = $reader->readAppearance(1);
+        self::assertSame('#1a1a2e', $appearance->messageBubbleColor());
+        self::assertSame('#ffffff', $appearance->messageTextColor());
+    }
+
+    public function testMessageBubbleColorIsAutoComputedWhenOnlyTheTextColorIsSet(): void
+    {
+        // White text needs a dark background — not this module's default
+        // #f2f2f2 (which would be nearly invisible against white text).
+        $reader = $this->reader([Path::APPEARANCE_MESSAGE_TEXT_COLOR => '#ffffff']);
+
+        $appearance = $reader->readAppearance(1);
+        self::assertSame('#ffffff', $appearance->messageTextColor());
+        self::assertSame('#2b2b2f', $appearance->messageBubbleColor());
+    }
+
+    public function testReadsCapabilitiesConfiguration(): void
+    {
+        $reader = $this->reader([
+            Path::CAPABILITIES_PRODUCT_DISCOVERY_ENABLED => '1',
+            Path::CAPABILITIES_PRODUCT_DETAILS_ENABLED => '0',
+            Path::CAPABILITIES_COMPARISON_ENABLED => '1',
+            Path::CAPABILITIES_PRICE_CHECKING_ENABLED => '0',
+            Path::CAPABILITIES_STOCK_CHECKING_ENABLED => '1',
+            Path::CAPABILITIES_POLICY_SEARCH_ENABLED => '0',
+        ]);
+
+        $capabilities = $reader->readCapabilities(1);
+        self::assertTrue($capabilities->isProductDiscoveryEnabled());
+        self::assertFalse($capabilities->isProductDetailsEnabled());
+        self::assertTrue($capabilities->isComparisonEnabled());
+        self::assertFalse($capabilities->isPriceCheckingEnabled());
+        self::assertTrue($capabilities->isStockCheckingEnabled());
+        self::assertFalse($capabilities->isPolicySearchEnabled());
+    }
+
+    public function testCapabilitiesDefaultToEnabledWhenConfigurationIsUnavailable(): void
+    {
+        $reader = $this->reader([]);
+
+        $capabilities = $reader->readCapabilities(1);
+        self::assertTrue($capabilities->isProductDiscoveryEnabled());
+        self::assertTrue($capabilities->isProductDetailsEnabled());
+        self::assertTrue($capabilities->isComparisonEnabled());
+        self::assertTrue($capabilities->isPriceCheckingEnabled());
+        self::assertTrue($capabilities->isStockCheckingEnabled());
+        self::assertTrue($capabilities->isPolicySearchEnabled());
     }
 
     public function testConvertsBooleanStrings(): void
@@ -132,6 +248,7 @@ final class ConfigurationReaderTest extends TestCase
             Path::GENERAL_ENABLED => '1',
             Path::GENERAL_STRICT_STORE_ONLY => '0',
             Path::GUARDRAILS_CART_MUTATIONS_ENABLED => '1',
+            Path::GUARDRAILS_REQUIRE_CART_CONFIRMATION => '0',
             Path::GUARDRAILS_BLOCK_EXTERNAL_URLS => '0',
             Path::GUARDRAILS_BLOCK_CODE_GENERATION => '1',
         ]);
@@ -142,6 +259,7 @@ final class ConfigurationReaderTest extends TestCase
 
         $guardrails = $reader->readGuardrails(1);
         self::assertTrue($guardrails->areCartMutationsEnabled());
+        self::assertFalse($guardrails->requiresCartConfirmation());
         self::assertFalse($guardrails->blocksExternalUrls());
         self::assertTrue($guardrails->blocksCodeGeneration());
     }
@@ -226,6 +344,21 @@ final class ConfigurationReaderTest extends TestCase
         self::assertSame(ConfigurationReader::MAX_FINAL_PRODUCTS, $retrieval->finalProducts());
     }
 
+    public function testMaxConversationMessagesIsClampedToItsBounds(): void
+    {
+        $reader = $this->reader([Path::GENERAL_MAX_CONVERSATION_MESSAGES => '99999']);
+        self::assertSame(
+            ConfigurationReader::MAX_MAX_CONVERSATION_MESSAGES,
+            $reader->readGeneral(1)->maxConversationMessages()
+        );
+
+        $reader = $this->reader([Path::GENERAL_MAX_CONVERSATION_MESSAGES => '0']);
+        self::assertSame(
+            ConfigurationReader::MIN_MAX_CONVERSATION_MESSAGES,
+            $reader->readGeneral(1)->maxConversationMessages()
+        );
+    }
+
     public function testNumbersAtOrBelowLowerBoundAreHandledSafely(): void
     {
         $reader = $this->reader([
@@ -267,6 +400,7 @@ final class ConfigurationReaderTest extends TestCase
         self::assertSame(ConfigurationReader::DEFAULT_MAX_INPUT_CHARACTERS, $guardrails->maxInputCharacters());
         self::assertSame(ConfigurationReader::DEFAULT_MAX_TOOL_CALLS, $guardrails->maxToolCalls());
         self::assertFalse($guardrails->areCartMutationsEnabled());
+        self::assertTrue($guardrails->requiresCartConfirmation());
         self::assertTrue($guardrails->blocksExternalUrls());
         self::assertTrue($guardrails->blocksCodeGeneration());
         self::assertSame(
@@ -282,6 +416,7 @@ final class ConfigurationReaderTest extends TestCase
         $general = $reader->readGeneral(1);
         self::assertFalse($general->isEnabled());
         self::assertTrue($general->isStrictStoreOnly());
+        self::assertSame(ConfigurationReader::DEFAULT_MAX_CONVERSATION_MESSAGES, $general->maxConversationMessages());
 
         $fallback = $reader->readFallback(1);
         self::assertFalse($fallback->isEnabled());
@@ -464,7 +599,7 @@ final class ConfigurationReaderTest extends TestCase
                     : null
             );
 
-        $indexing = (new ConfigurationReader($scopeConfig, $policy))->readIndexing(1);
+        $indexing = (new ConfigurationReader($scopeConfig, $policy, new ColorContrast()))->readIndexing(1);
         self::assertSame(['color'], $indexing->searchableAttributeCodes());
     }
 

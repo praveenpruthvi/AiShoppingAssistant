@@ -10,7 +10,8 @@ final readonly class GeneralConfig implements GeneralConfigInterface
 {
     public function __construct(
         private bool $enabled,
-        private bool $strictStoreOnly
+        private bool $strictStoreOnly,
+        private int $maxConversationMessages
     ) {
     }
 
@@ -22,5 +23,10 @@ final readonly class GeneralConfig implements GeneralConfigInterface
     public function isStrictStoreOnly(): bool
     {
         return $this->strictStoreOnly;
+    }
+
+    public function maxConversationMessages(): int
+    {
+        return $this->maxConversationMessages;
     }
 }

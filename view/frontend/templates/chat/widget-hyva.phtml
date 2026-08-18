@@ -1,0 +1,207 @@
+<?php
+/**
+ * Hyva storefront chat widget. Alpine.js + Tailwind utility classes
+ * (Hyva's own component model — no jQuery/Knockout/RequireJS/UI
+ * components) — see view/frontend/web/js/{chat-widget-core,
+ * chat-widget-hyva}.js. Behavior is equivalent to the default/Luma
+ * template (chat/widget.phtml); only the rendering approach differs,
+ * since Luma's imperative DOM and Hyva's declarative Alpine bindings are
+ * different enough paradigms to not share markup. Every decision
+ * (identity, validation, retrieval, tool-calling, output validation)
+ * belongs to Controller\Chat\Send; this template only renders whatever
+ * JSON that endpoint returns.
+ *
+ * A small dedicated <style> block (below) carries only the handful of
+ * rules Tailwind's static utility classes can't express — admin-
+ * configurable colors sourced from CSS custom properties, and the
+ * custom top-left resize handle — everything else stays plain Tailwind,
+ * preserving Hyva's own styling paradigm rather than replacing it.
+ *
+ * No Hyva theme is installed in this dev environment, so this template
+ * could not be rendered against a real Hyva theme — see the Task 11
+ * status report's Hyva compatibility findings for exactly what could and
+ * couldn't be live-verified.
+ *
+ * @var \Aavirbhava\AiShoppingAssistant\Block\Frontend\ChatWidget $block
+ */
+?>
+<style>
+    .aavirbhava-hyva-toggle {
+        color: var(--aavirbhava-primary-text-color, #fff);
+        background: var(--aavirbhava-primary-color, #1979c3);
+        background: linear-gradient(135deg, var(--aavirbhava-primary-color, #1979c3), color-mix(in srgb, var(--aavirbhava-primary-color, #1979c3) 75%, black));
+        transition: transform .15s ease, box-shadow .15s ease;
+    }
+    .aavirbhava-hyva-toggle:hover {
+        transform: translateY(-1px); filter: brightness(1.05);
+        /* Restated defensively, matching the Luma template's own fix for
+           a real bug found there: Luma's global `button:hover` reset has
+           higher CSS specificity (element + pseudo-class) than a bare
+           class selector, silently overriding the configured gradient on
+           hover. Tailwind's preflight doesn't carry an equivalent global
+           button-hover rule, so this hasn't been observed on Hyva, but
+           restating it here costs nothing and closes the same risk. */
+        background: var(--aavirbhava-primary-color, #1979c3);
+        background: linear-gradient(135deg, var(--aavirbhava-primary-color, #1979c3), color-mix(in srgb, var(--aavirbhava-primary-color, #1979c3) 75%, black));
+    }
+    .aavirbhava-hyva-header {
+        color: var(--aavirbhava-primary-text-color, #fff);
+        background: var(--aavirbhava-primary-color, #1979c3);
+        background: linear-gradient(135deg, var(--aavirbhava-primary-color, #1979c3), color-mix(in srgb, var(--aavirbhava-primary-color, #1979c3) 75%, black));
+    }
+    .aavirbhava-hyva-header button { background: rgba(255,255,255,.12); transition: background .15s ease; }
+    .aavirbhava-hyva-header button:hover { background: rgba(255,255,255,.25); }
+    .aavirbhava-hyva-bubble-assistant {
+        background: var(--aavirbhava-message-bg-color, #f3f4f6);
+        color: var(--aavirbhava-message-text-color, #111827);
+    }
+    .aavirbhava-hyva-accent { color: var(--aavirbhava-primary-color, #1979c3); border-color: var(--aavirbhava-primary-color, #1979c3); }
+    .aavirbhava-hyva-panel { resize: none; }
+    .aavirbhava-hyva-panel--minimized {
+        /* Tailwind's min-h-[360px] utility would otherwise force a tall
+           empty flex container even with height:auto and the body/form
+           hidden below — both bounds must be relaxed together. */
+        height: auto !important; min-height: 0 !important; width: 300px !important;
+    }
+    .aavirbhava-hyva-panel--minimized .aavirbhava-hyva-body,
+    .aavirbhava-hyva-panel--minimized .aavirbhava-hyva-form,
+    .aavirbhava-hyva-panel--minimized .aavirbhava-hyva-resize-handle { display: none; }
+    .aavirbhava-hyva-resize-handle {
+        position: absolute; top: 0; left: 0; width: 16px; height: 16px; z-index: 2; cursor: nwse-resize;
+        background-image:
+            linear-gradient(135deg, transparent 0 38%, rgba(255,255,255,.85) 38% 52%, transparent 52% 100%),
+            linear-gradient(135deg, transparent 0 62%, rgba(255,255,255,.85) 62% 76%, transparent 76% 100%);
+    }
+    .aavirbhava-hyva-thinking-dots::after { content: '\2026'; animation: aavirbhava-hyva-thinking-dots 1.2s steps(4, end) infinite; }
+    @keyframes aavirbhava-hyva-thinking-dots {
+        0% { content: ''; } 25% { content: '.'; } 50% { content: '..'; } 75%, 100% { content: '...'; }
+    }
+</style>
+<div class="fixed right-4 bottom-4 z-[900]"
+     style="<?= $block->escapeHtmlAttr($block->getColorCustomPropertiesStyle()) ?>"
+     x-data="aavirbhavaChatWidget({ sendUrl: '<?= /* @noEscape */ $block->escapeJs($block->getSendUrl()) ?>', historyUrl: '<?= /* @noEscape */ $block->escapeJs($block->getHistoryUrl()) ?>' })">
+    <button type="button"
+            class="aavirbhava-hyva-toggle rounded-full px-5 py-3 shadow-lg"
+            @click="toggle()"
+            :aria-expanded="open.toString()"
+            aria-controls="aavirbhava-hyva-chat-panel">
+        <?= $block->escapeHtml(__('Chat with us')) ?>
+    </button>
+
+    <div id="aavirbhava-hyva-chat-panel"
+         x-ref="panel"
+         x-show="open"
+         x-transition
+         :class="{'aavirbhava-hyva-panel--minimized': minimized}"
+         @keydown.escape.window="close()"
+         @pointermove.window="onResize($event)"
+         @pointerup.window="stopResize()"
+         class="aavirbhava-hyva-panel absolute right-0 bottom-16 flex h-[600px] w-[400px] min-h-[360px] min-w-[300px] max-h-[calc(100vh-6rem)] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl"
+         style="display: none;">
+        <div class="aavirbhava-hyva-resize-handle" @pointerdown="startResize($event)" aria-hidden="true"></div>
+        <div class="aavirbhava-hyva-header flex items-center justify-between px-3 py-2">
+            <span id="aavirbhava-hyva-chat-heading" class="font-semibold tracking-wide"><?= $block->escapeHtml(__('Shopping Assistant')) ?></span>
+            <span class="flex items-center gap-1">
+                <button type="button" class="rounded px-2 py-1 text-lg leading-none" @click="minimized = !minimized" x-text="minimized ? '▢' : '−'" :aria-label="minimized ? 'Maximize chat' : 'Minimize chat'"></button>
+                <button type="button" class="rounded px-2 py-1 text-xl leading-none" @click="close()" aria-label="<?= $block->escapeHtmlAttr(__('Close chat')) ?>">&times;</button>
+            </span>
+        </div>
+
+        <div class="aavirbhava-hyva-body flex-1 space-y-2 overflow-y-auto bg-gray-50 p-3"
+             x-ref="log"
+             role="log"
+             aria-live="polite"
+             aria-relevant="additions"
+             aria-labelledby="aavirbhava-hyva-chat-heading">
+            <template x-for="(entry, index) in messages" :key="index">
+                <div class="max-w-[90%] rounded-lg p-2.5 leading-relaxed"
+                     :class="entry.role === 'user' ? 'ml-auto bg-blue-50' : 'mr-auto aavirbhava-hyva-bubble-assistant'">
+                    <p class="mb-1 last:mb-0" x-show="entry.role === 'user'" x-text="entry.text"></p>
+                    <div class="mb-1 last:mb-0" x-show="entry.role === 'assistant'" x-html="entry.html"></div>
+
+                    <template x-if="entry.role === 'assistant' && entry.products && entry.products.length > 0">
+                        <div class="flex flex-col gap-2">
+                            <template x-for="product in entry.products" :key="product.sku">
+                                <!-- text-gray-900 here is a deliberate, fixed
+                                     reset: this card is its own white "island"
+                                     nested inside the assistant bubble, whose
+                                     text color is admin-configurable
+                                     (aavirbhava-hyva-bubble-assistant). Without
+                                     it, the un-linked product name, the price,
+                                     and the recommendation badge (none of
+                                     which set their own text color) would
+                                     inherit the bubble's configured color
+                                     instead of one guaranteed to read against
+                                     this always-white card. -->
+                                <div class="flex gap-2 rounded-lg border border-gray-200 bg-white p-2 text-gray-900">
+                                    <img :src="product.imageUrl" x-show="product.imageUrl" alt=""
+                                         class="h-14 w-14 flex-none rounded border border-gray-100 bg-gray-50 object-contain">
+                                    <div class="min-w-0 flex-1">
+                                        <div class="font-semibold">
+                                            <a :href="product.url" x-show="product.url" target="_blank" rel="noopener noreferrer" class="aavirbhava-hyva-accent no-underline hover:underline" x-text="product.name"></a>
+                                            <span x-show="!product.url" x-text="product.name"></span>
+                                            <span x-show="product.sku" class="ml-1 text-xs text-gray-400" x-text="product.sku"></span>
+                                            <span x-show="product.recommendationType !== 'organic'"
+                                                  class="ml-1 rounded bg-yellow-100 px-1 text-xs"
+                                                  x-text="product.recommendationType"></span>
+                                        </div>
+                                        <div x-show="product.price !== null">
+                                            <span x-show="product.specialPrice !== null" class="mr-1 text-gray-500 line-through" x-text="formatPrice(product.price)"></span>
+                                            <span class="font-bold" x-text="formatPrice(product.specialPrice !== null ? product.specialPrice : product.price)"></span>
+                                        </div>
+                                        <p class="text-sm text-gray-600" x-show="product.reason" x-text="product.reason"></p>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </template>
+
+                    <template x-if="entry.role === 'assistant' && entry.awaitingConfirmation">
+                        <div class="mt-2 flex flex-wrap gap-2">
+                            <button type="button" class="aavirbhava-hyva-accent rounded-full border px-3 py-1 text-xs hover:bg-blue-50" @click="confirmYes()">
+                                <?= $block->escapeHtml(__('Yes, go ahead')) ?>
+                            </button>
+                            <button type="button" class="aavirbhava-hyva-accent rounded-full border px-3 py-1 text-xs hover:bg-blue-50" @click="confirmNo()">
+                                <?= $block->escapeHtml(__('No, cancel')) ?>
+                            </button>
+                        </div>
+                    </template>
+
+                    <template x-if="entry.role === 'assistant' && entry.followUps && entry.followUps.length > 0">
+                        <div class="mt-2 flex flex-wrap gap-2">
+                            <template x-for="question in entry.followUps" :key="question">
+                                <button type="button"
+                                        class="aavirbhava-hyva-accent rounded-full border px-3 py-1 text-xs hover:bg-blue-50"
+                                        @click="askFollowUp(question)"
+                                        x-text="question">
+                                </button>
+                            </template>
+                        </div>
+                    </template>
+                </div>
+            </template>
+
+            <div x-show="loading" class="aavirbhava-hyva-bubble-assistant mr-auto max-w-[90%] rounded-lg p-2 italic">
+                <?= $block->escapeHtml(__('Thinking')) ?><span class="aavirbhava-hyva-thinking-dots"></span>
+            </div>
+        </div>
+
+        <form class="aavirbhava-hyva-form flex gap-2 border-t border-gray-200 p-2" @submit.prevent="submit()">
+            <label for="aavirbhava-hyva-chat-input" class="sr-only"><?= $block->escapeHtml(__('Type your message')) ?></label>
+            <input type="text"
+                   id="aavirbhava-hyva-chat-input"
+                   x-model="input"
+                   :disabled="loading"
+                   autocomplete="off"
+                   placeholder="<?= $block->escapeHtmlAttr(__('Ask about products…')) ?>"
+                   class="flex-1 rounded border border-gray-300 px-2 py-1 disabled:opacity-60"/>
+            <button type="submit"
+                    :disabled="loading"
+                    class="aavirbhava-hyva-toggle rounded px-3 py-1 disabled:opacity-60">
+                <?= $block->escapeHtml(__('Send')) ?>
+            </button>
+        </form>
+    </div>
+</div>
+<script src="<?= $block->escapeUrl($block->getViewFileUrl('Aavirbhava_AiShoppingAssistant::js/chat-widget-core.js')) ?>"></script>
+<script src="<?= $block->escapeUrl($block->getViewFileUrl('Aavirbhava_AiShoppingAssistant::js/chat-widget-hyva.js')) ?>"></script>

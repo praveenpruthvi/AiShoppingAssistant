@@ -141,4 +141,20 @@ interface AssistantSearchClientInterface
      * @throws ProductIndexingException when the index cannot be deleted
      */
     public function deleteIndex(string $indexName): void;
+
+    /**
+     * Executes a read-only query against an exact index or alias and returns
+     * its raw hits, verified but otherwise untransformed.
+     *
+     * Query bodies are the caller's responsibility; this method only executes
+     * the request and validates the response shape. Never writes anything.
+     *
+     * @param array<string, mixed> $queryBody
+     *
+     * @return list<array{_id: string, _score: float, _source: array<string, mixed>}>
+     *
+     * @throws ProductIndexingException when the backend fails or the response
+     *     cannot be verified
+     */
+    public function search(string $indexName, array $queryBody): array;
 }

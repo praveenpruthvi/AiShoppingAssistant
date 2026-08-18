@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<page xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:noNamespaceSchemaLocation="urn:magento:framework:View/Layout/etc/page_configuration.xsd">
+    <!--
+        No <head><css .../></head> entry here deliberately: a layout-level
+        css include would load on every page regardless of whether
+        ChatWidget::_toHtml() ends up rendering anything, so the widget's
+        (small) stylesheet is inlined in its own Luma template instead —
+        when the assistant is disabled, this page carries zero widget
+        footprint, not just an empty container. The Hyva template needs no
+        separate stylesheet at all (Tailwind utility classes only).
+    -->
+    <body>
+        <referenceContainer name="before.body.end">
+            <block class="Aavirbhava\AiShoppingAssistant\Block\Frontend\ChatWidget" name="aavirbhava.ai.chat.widget"/>
+        </referenceContainer>
+    </body>
+</page>

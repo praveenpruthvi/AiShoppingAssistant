@@ -83,4 +83,36 @@
             <column name="cursor_id"/>
         </constraint>
     </table>
+    <table name="aavirbhava_ai_conversation_message" resource="default" engine="innodb"
+           comment="AI Shopping Assistant Conversation History Message">
+        <column xsi:type="bigint" name="message_id" unsigned="true" nullable="false" identity="true"
+                comment="Message ID"/>
+        <column xsi:type="varchar" name="conversation_id" nullable="false" length="64"
+                comment="Opaque Conversation ID (session-scoped, never a customer/order identifier)"/>
+        <column xsi:type="smallint" name="store_id" unsigned="true" nullable="false" identity="false"
+                comment="Store View ID"/>
+        <column xsi:type="varchar" name="role" nullable="false" length="20"
+                comment="Message Role (user, assistant, tool)"/>
+        <column xsi:type="mediumtext" name="content" nullable="false"
+                comment="Message Content"/>
+        <column xsi:type="varchar" name="tool_call_id" nullable="true" length="64"
+                comment="Tool Call ID (tool-role messages only)"/>
+        <column xsi:type="mediumtext" name="tool_calls" nullable="true"
+                comment="JSON-Encoded Tool Calls (assistant-role messages only)"/>
+        <column xsi:type="mediumtext" name="response_payload" nullable="true"
+                comment="JSON-Encoded Products/Follow-Up-Questions/Actions (final assistant message of a turn only) — the same shape ChatResponseSerializer sends a live turn, persisted so a restored turn can render identical product cards"/>
+        <column xsi:type="timestamp" name="created_at" on_update="false" nullable="false"
+                default="CURRENT_TIMESTAMP" comment="Created At"/>
+        <constraint xsi:type="primary" referenceId="PRIMARY">
+            <column name="message_id"/>
+        </constraint>
+        <index referenceId="AAVIRBHAVA_AI_CONVERSATION_MESSAGE_LOOKUP" indexType="btree">
+            <column name="conversation_id"/>
+            <column name="store_id"/>
+            <column name="message_id"/>
+        </index>
+        <index referenceId="AAVIRBHAVA_AI_CONVERSATION_MESSAGE_CREATED_AT" indexType="btree">
+            <column name="created_at"/>
+        </index>
+    </table>
 </schema>
