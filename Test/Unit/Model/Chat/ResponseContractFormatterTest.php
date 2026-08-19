@@ -11,6 +11,34 @@ use PHPUnit\Framework\TestCase;
 #[CoversClass(ResponseContractFormatter::class)]
 final class ResponseContractFormatterTest extends TestCase
 {
+    public function testEstablishesAShoppingAssistantPersonaForThisStore(): void
+    {
+        $formatter = new ResponseContractFormatter();
+
+        $message = $formatter->format();
+
+        self::assertStringContainsString('You are a shopping assistant for this store', $message->content);
+    }
+
+    public function testInstructsNeverInventingAProductPriceSkuUrlStockOrAttribute(): void
+    {
+        $formatter = new ResponseContractFormatter();
+
+        $message = $formatter->format();
+
+        self::assertStringContainsString('Never invent a product', $message->content);
+        self::assertStringContainsString('price, SKU, URL,', $message->content);
+    }
+
+    public function testInstructsSayingSoPlainlyWhenNothingActuallyMatches(): void
+    {
+        $formatter = new ResponseContractFormatter();
+
+        $message = $formatter->format();
+
+        self::assertStringContainsString('say so plainly', $message->content);
+    }
+
     public function testFormatsAsASystemMessageNamingEveryRequiredField(): void
     {
         $formatter = new ResponseContractFormatter();
@@ -52,5 +80,16 @@ final class ResponseContractFormatterTest extends TestCase
 
         self::assertStringContainsString('genuine, customer-useful', $message->content);
         self::assertStringContainsString('never a bare restatement of a number comparison', $message->content);
+    }
+
+    public function testInstructsFollowUpQuestionsToBeWrittenInTheCustomersOwnVoice(): void
+    {
+        $formatter = new ResponseContractFormatter();
+
+        $message = $formatter->format();
+
+        self::assertStringContainsString("CUSTOMER's own voice", $message->content);
+        self::assertStringContainsString('add the Tiberius Gym Tank to my cart', $message->content);
+        self::assertStringContainsString('phrase one as a question addressed TO the customer', $message->content);
     }
 }

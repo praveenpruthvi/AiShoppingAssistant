@@ -65,10 +65,63 @@ use Aavirbhava\AiShoppingAssistant\Model\Dto\ChatMessage;
  *   fact (material, use case, why it fits the request) the model already
  *   writes correctly most of the time, rather than mechanically restating
  *   the numbers it just compared.
+ *
+ * A persona + strict-grounding paragraph now leads the instructions
+ * (Task 27): this module had rules governing the JSON *shape* of a
+ * response and (in ProductContextFormatter, only on a turn with
+ * candidates) rules scoping *which products* may be named, but no single
+ * always-present statement of who the assistant is and that it must
+ * never invent a fact absent from this turn's actual data — auditing the
+ * two existing formatters found no such statement anywhere, not an
+ * oversight this task is guessing at. Placed here rather than in
+ * ProductContextFormatter specifically because this message is always
+ * included, every turn, including one where retrieval found nothing at
+ * all — the "say so plainly instead of inventing something" instruction
+ * has to reach the model on exactly those turns too, not only when a
+ * candidate list exists. Deliberately overlaps with
+ * ProductContextFormatter's own "never invent a SKU/price/stock/URL"
+ * sentence rather than replacing it — the same redundant-validation
+ * philosophy this codebase already uses elsewhere (e.g.
+ * AbstractEmbeddingProvider re-checking fields its own DTO already
+ * guarantees): two independent reinforcements of the same rule, from a
+ * general persona-level statement and a specific per-turn data-scoped
+ * one, are cheaper insurance than one. OutputValidator's fabricated_sku/
+ * fabricated_price/fabricated_url checks remain the actual, unchanged
+ * enforcement boundary — this paragraph can only reduce how often a
+ * response needs rejecting or reconciling in the first place, never
+ * substitute for those checks.
+ *
+ * follow_up_questions must now be written in the customer's own voice,
+ * not the assistant's (Task 28): the storefront widget renders each one
+ * as a clickable chip and, on click, sends its exact text back as the
+ * *customer's own next message* (Controller\Chat\Send has no separate
+ * "chip click" signal — see chat-widget-luma.js's submitMessage(question)/
+ * chat-widget-hyva.js's askFollowUp(question), both indistinguishable
+ * from the customer typing that text themselves). Before this task,
+ * nothing in the instructions said which voice to use, and the model
+ * defaulted to phrasing these as questions addressed TO the customer
+ * ("Would you like to add this to your cart?", "Which of these
+ * interests you most?") — live-reproduced clicking one sending the
+ * assistant's own question back to it labeled as the customer's message,
+ * which then confused the next turn (the "customer" appearing to ask the
+ * assistant its own question back). The fix is prompt-only: the
+ * schema/parser/response contract shape is unchanged, still a plain
+ * array of strings — only what those strings should say changed.
  */
 final class ResponseContractFormatter
 {
     private const INSTRUCTIONS = <<<'TEXT'
+You are a shopping assistant for this store. You help customers find,
+compare, and learn about real products and services this store actually
+sells, using only the retrieved candidates, live tool results, and any
+product carried over from earlier in this conversation that are actually
+provided to you for this turn. Never invent a product, price, SKU, URL,
+stock status, or attribute that is not present in that data — not even
+one you believe is a plausible, realistic product for a store like this.
+If nothing provided to you for this turn actually matches what the
+customer is asking for, say so plainly instead of describing something
+that merely sounds right.
+
 Respond with a single JSON object only — no markdown code fences, no text
 before or after the JSON, no other shape. The object must have exactly
 these fields: "message" (string, your reply to the customer), "product_skus"
@@ -96,6 +149,17 @@ request — never a bare restatement of a number comparison like "price 32
 is below 50". If you compared a price against a budget, say so naturally
 ("a great fit under your budget"), but always alongside a real reason to
 want the product itself.
+
+Write every follow_up_questions entry in the CUSTOMER's own voice, never
+the assistant's. Each one becomes a clickable suggestion that gets sent
+back to you verbatim as though the customer had typed it themselves, so
+it must be a short, natural thing the customer might actually say or ask
+next — e.g. "add the Tiberius Gym Tank to my cart", "show me other tank
+tops under $20", "what's it made of", "do you have this in blue". Never
+phrase one as a question addressed TO the customer, like "Would you like
+to add this to your cart?" or "Which of these interests you most?" — a
+suggestion in the assistant's voice puts the assistant's own words in
+the customer's mouth and confuses the next turn.
 TEXT;
 
     public function format(): ChatMessage

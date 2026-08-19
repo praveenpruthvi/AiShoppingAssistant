@@ -56,7 +56,7 @@
             </capabilities>
             <indexing>
                 <batch_size>100</batch_size>
-                <searchable_attribute_codes>manufacturer,color,size,material</searchable_attribute_codes>
+                <searchable_attribute_codes>manufacturer,color,size,material,climate,pattern,style_general,style_bottom,activity,collar,sleeve</searchable_attribute_codes>
                 <include_short_description>1</include_short_description>
                 <include_long_description>1</include_long_description>
                 <aggregate_configurable_variants>0</aggregate_configurable_variants>

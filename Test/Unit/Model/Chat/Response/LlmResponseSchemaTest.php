@@ -22,6 +22,16 @@ final class LlmResponseSchemaTest extends TestCase
         self::assertArrayHasKey('actions', $schema['properties']);
     }
 
+    public function testFollowUpQuestionsDescriptionInstructsTheCustomersOwnVoice(): void
+    {
+        $schema = LlmResponseSchema::schema();
+        $description = $schema['properties']['follow_up_questions']['description'] ?? null;
+
+        self::assertNotNull($description);
+        self::assertStringContainsString('CUSTOMER', $description);
+        self::assertStringContainsString('never a question addressed', $description);
+    }
+
     public function testNeverExposesAPriceUrlOrStockField(): void
     {
         $encoded = json_encode(LlmResponseSchema::schema());

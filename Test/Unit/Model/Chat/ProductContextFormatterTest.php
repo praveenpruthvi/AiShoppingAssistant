@@ -53,9 +53,20 @@ final class ProductContextFormatterTest extends TestCase
 
         $message = $formatter->format([$candidate]);
 
-        self::assertStringContainsString('never invent', $message->content);
+        self::assertStringContainsString('invent a SKU', $message->content);
         self::assertStringContainsString('price', $message->content);
         self::assertStringContainsString('stock', $message->content);
+    }
+
+    public function testPermitsReferencingAProductAlreadyNamedEarlierInTheConversation(): void
+    {
+        $formatter = new ProductContextFormatter();
+        $candidate = new SearchCandidate(1, 'SKU-1', 1, 'Name', '', [], [], true, 4, 0.0, 0.0);
+
+        $message = $formatter->format([$candidate]);
+
+        self::assertStringContainsString('already named', $message->content);
+        self::assertStringContainsString('earlier in this', $message->content);
     }
 
     public function testAttributesWithNoValuesAreOmitted(): void

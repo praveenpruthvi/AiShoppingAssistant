@@ -1,6 +1,6 @@
 # Progress Log — Aavirbhava_AiShoppingAssistant
 
-Last updated from: Robustness and consistency task status report (2026-08-18) — a broad, repeated (57-call) test across clean/terse/typo/incomplete-grammar/ambiguous real customer phrasings found and fixed three more genuine bugs beyond Task 22's price-threshold fix: `containsUrl()` rejected ANY url the model mentioned, even a 100%-real one it had legitimately retrieved and repeated back (now only rejects a url that doesn't match a real revalidated product); the model sometimes hallucinates a tool call literally named "product_skus" (confusing the response-schema field with a real tool), wasting its round budget and occasionally returning a genuinely empty completion — now prompted against directly and, when it still happens, retried once instead of failing the turn outright; and a same-task attempt to raise the tool-call round cap from 4 to 6 was tried, measured, and reverted after live data showed it mostly just made already-failing ambiguous queries take longer (into a real ~60s nginx timeout) rather than turning them into successes. A new completeness check also catches the model naming a real product in its message text without selecting its SKU into product_skus, retrying once to include it rather than under-rendering silently. Net measured result: a targeted post-fix re-test of the worst-performing queries from the broad test reached 11/12 (91.7%) success, with the one failure being a genuine model hallucination the safety check correctly caught. Phase 1 (per architecture.md's roadmap table) remains functionally complete as of Task 11.
+Last updated from: Attribute indexing coverage task status report (2026-08-19) — fixed a real, confirmed gap: the admin `indexing/searchable_attribute_codes` config's shipped default (`manufacturer,color,size,material`) never included `climate`/`pattern`/`style_general`/`style_bottom`/`activity`/`collar`/`sleeve` — real, comprehensively-populated PDP attributes confirmed via direct SQL against the catalog's own EAV tables (climate/pattern/material each populated on all 147 configurable products catalog-wide; style attributes together cover effectively the whole catalog, split by attribute set) and confirmed missing from a real OpenSearch document fetched directly for MH08 (Oslo Trek Hoodie) before the fix — only `material` was indexed even though `climate`/`pattern` were just as real and just as populated. Root-caused to the admin config list specifically, not the normalizer (read directly — it has no hardcoded attribute subset, it normalizes whatever the config-driven resolver hands it) and not inconsistent underlying Magento data (confirmed the opposite: comprehensively populated, just never configured to be captured). Fixed by broadening both the module's shipped default and this environment's own already-stored config override (found via direct SQL — a real value in `core_config_data` was silently taking precedence over the XML default) to the full attribute list, then running a real `indexer:reindex ai_product_rag`. Live-confirmed via a direct post-reindex OpenSearch query and via the real chat pipeline: "what climate are the mens hoodies suited for" now returns a rich, fully grounded answer using real Climate option values, and coverage was spot-checked generalizing to yoga pants and Gear/Bag-category SKUs too, not just the one reported hoodie case. Empty-products fix (Task 29) and follow-up-chip voice (Task 28) remain in place and unaffected. Phase 1 (per architecture.md's roadmap table) remains functionally complete as of Task 11.
 Environment: local Magento via docker-magento (markshust/docker-magento).
 
 ## Status by architecture area
@@ -10,15 +10,15 @@ Environment: local Magento via docker-magento (markshust/docker-magento).
 | 1 | Module structure | Partially implemented — **`Controller/Adminhtml/Playground/{Index,TestConnection}.php`, `Block/Adminhtml/Playground/Index.php`, `etc/adminhtml/{routes.xml,menu.xml}`, `view/adminhtml/{layout,templates}` now exist (Task 9), the module's first admin Controller/Block/layout/template files**; storefront `Controller/Chat/Send.php` + `etc/frontend/routes.xml` (Task 8) plus **`Block/Frontend/ChatWidget.php` + `view/frontend/{layout,templates,web/js}` (Task 11), the module's first frontend Block/layout/template/static-asset files**. **A second storefront Controller now exists, `Controller/Chat/History.php` (Task 19)** — a read-only `GET /aichat/chat/history`, the module's first GET-only (no CSRF interface needed) storefront action. Still no Cron/Ui top-level dirs; cron/observer/plugin classes live under Model/Indexing/* instead (layout deviation, not functional) |
 | 2 | Provider abstraction | Embedding: done (OpenAI, Voyage, local-compatible — 3 real adapters). LLM: **OpenAI adapter (Task 1) plus, as of Task 13, `OpenAiCompatibleProvider`** — a generic local-server adapter (Ollama, vLLM, llama.cpp, LM Studio, per architecture.md's original scope) speaking the same OpenAI chat/completions wire format, configurable base URL, optional API key, selectable as either the primary or fallback LLM provider through the existing shared `Model\Config\Source\Provider` dropdown. `Model\Provider\Llm\AbstractChatProvider`/`ChatEndpointPolicy` now exist too (extracted from `OpenAiProvider`, mirroring the embedding side's `AbstractEmbeddingProvider`/`ProviderEndpointPolicy` split, deferred since Task 1 specifically until a second chat adapter existed to justify it) — both providers now share request/response handling, differing only in endpoint-resolution policy, header-building, and the max-output-tokens field name (`max_completion_tokens` vs. Ollama's `max_tokens`). **The admin dropdown label is now "Local / Ollama (OpenAI-Compatible)" (Task 14)**, clearer than Task 13's plain "OpenAI-Compatible" — the underlying `openai_compatible` identifier is unchanged. **A real "Fetch Ollama Models" admin action now exists (Task 14)** — `Controller/Adminhtml/System/Config/FetchOllamaModels.php` + `Model/Provider/Llm/OllamaModelListService.php` call Ollama's own native `GET /api/tags` and populate an HTML5 `<datalist>` bound to the Model field via a small `frontend_model` block (`Block/Adminhtml/System/Config/OllamaModelField`), live-verified against real pulled models. Anthropic/xAI still not implemented |
 | 3 | Admin config sections | Partially implemented — system.xml has general/llm/fallback/embedding/retrieval/guardrails/capabilities/indexing. The "Assistant Capabilities" group (Task 6) gates the 5 read-only tools **plus, as of Task 10, `policy_search_enabled` gating search_store_content**; `guardrails` (Task 7) has `require_cart_confirmation` alongside `cart_mutations_enabled`, gating all 3 cart tools. **`general` (Task 8) now also has `max_conversation_messages`** (default 40, bounds 2-200) — architecture.md's "max turns" field, implemented as a message count rather than a turn count since a single customer-visible turn can span several persisted messages via the tool-call round-trip. **Test Connection is now wired (Task 9)** — `Controller/Adminhtml/Playground/TestConnection.php`, a small AJAX action reusing the exact `ConfiguredProviderResolverInterface`/`ConfigurationReaderInterface`/`SecretReaderInterface` path a real chat call uses, calling `LlmProviderInterface::testConnection()` (built Task 1, never wired until now). **An `appearance` group was added in Task 21 (window/header + message-bubble colors); Task 22 upgraded all 3 fields from plain text to a real color-picker (`frontend_model`, Magento's own shipped `jquery/colorpicker/js/colorpicker`)** and made every field's effective value auto-compute a readable pairing when left unset rather than falling back to a fixed default. Still no Marketing/Recommendations Phase-2 stub |
-| 4 | Custom OpenSearch index | Done — **the Task 3 `space_type` bug is now fixed and live-verified (Task 4)**: `Model/Indexing/Mapping/ProductIndexMapping.php` no longer sets a field-level `space_type` alongside `method.space_type`; a real index was created against the live OpenSearch 2.12 cluster using the actual production `createBody()` output and confirmed successful. Naming (alias + run-token) fine; `ai_product_rag` indexer registered, standard bin/magento indexer commands work. **A second, real bulk-write-blocking bug is now fixed (Task 15)**: `ProductDocumentNormalizer` passed `ProductSnapshotInterface::updatedAt()` — Magento's raw MySQL `Y-m-d H:i:s` string — straight through into the `updated_at` field, which `ProductIndexMapping` declares as OpenSearch `date` type requiring strict ISO-8601; every real bulk write failed (`mapper_parsing_exception`) the moment a real embedding provider and real catalog data were present to reach that code path, which no prior task's environment ever had at the same time. A real `indexer:reindex ai_product_rag` against this store's actual catalog now succeeds and produces real, queryable OpenSearch documents with real 768-dimension embeddings |
+| 4 | Custom OpenSearch index | Done — **the Task 3 `space_type` bug is now fixed and live-verified (Task 4)**: `Model/Indexing/Mapping/ProductIndexMapping.php` no longer sets a field-level `space_type` alongside `method.space_type`; a real index was created against the live OpenSearch 2.12 cluster using the actual production `createBody()` output and confirmed successful. Naming (alias + run-token) fine; `ai_product_rag` indexer registered, standard bin/magento indexer commands work. **A second, real bulk-write-blocking bug is now fixed (Task 15)**: `ProductDocumentNormalizer` passed `ProductSnapshotInterface::updatedAt()` — Magento's raw MySQL `Y-m-d H:i:s` string — straight through into the `updated_at` field, which `ProductIndexMapping` declares as OpenSearch `date` type requiring strict ISO-8601; every real bulk write failed (`mapper_parsing_exception`) the moment a real embedding provider and real catalog data were present to reach that code path, which no prior task's environment ever had at the same time. A real `indexer:reindex ai_product_rag` against this store's actual catalog now succeeds and produces real, queryable OpenSearch documents with real 768-dimension embeddings. **A new `aavirbhava:ai-shopping-assistant:index-coverage` console command (Task 24)** diagnoses index/catalog drift directly: `Model/Diagnostics/CatalogSkuProvider` (real salable/visible/enabled catalog SKUs, via the standard `CatalogInventory\Helper\Stock::addIsInStockFilterToCollection()` listing filters) vs. `Model/Diagnostics/IndexedSkuProvider` (a plain match-all query, capped at 10000 documents, against the store's live read alias — not is_enabled-filtered, since every indexed document already passed `ProductIndexEligibilityPolicy`'s gate at index time), composed by `IndexCoverageChecker` into a two-way SKU diff the command prints per store (or `--store-id=<id>` for one). Deliberately simple/fast — a diagnostic, not a reconciliation tool, and it takes no repair action of its own. Live-run against this store's real catalog: 181 salable/visible/enabled products, 181 indexed documents, 0 missing either direction — fully covered, no drift found. **A real attribute-indexing coverage gap is now fixed (Task 30)**: `indexing/searchable_attribute_codes`' shipped default (`manufacturer,color,size,material`) never included `climate`/`pattern`/`style_general`/`style_bottom`/`activity`/`collar`/`sleeve` — real, genuinely populated PDP attributes confirmed via direct SQL against the catalog's EAV tables (climate/pattern/material each on 98/98 "Top"-set and 147/147 catalog-wide configurable products; style_general/style_bottom together cover effectively the whole catalog, split by attribute set) and confirmed absent from a real OpenSearch document for MH08 (Oslo Trek Hoodie) fetched directly before the fix — only `material` was indexed, `climate`/`pattern` were not, despite both being 100%-populated real data. Root-caused to the admin config list alone, not the normalizer (read directly, confirmed it has no hardcoded attribute subset of its own — it normalizes whatever the resolver, driven entirely by config, hands it) and not inconsistent underlying Magento data (the opposite: comprehensively populated, just never configured to be captured). Fixed by broadening both the module's shipped default (`etc/config.xml`) and this environment's own already-stored `core_config_data` override (found via direct SQL — the live effective value, taking precedence over the XML default) to the full attribute list, via the standard `bin/magento config:set`, then a real `indexer:reindex ai_product_rag`. Live-confirmed via a direct post-reindex OpenSearch query that MH08's document now carries `climate`/`material`/`pattern`, and via the real chat pipeline that a genuinely single-turn "what climate are the mens hoodies suited for" now returns a rich, fully grounded answer using real Climate option values (All-Weather, Cool, Spring, Windy, Mild, Indoor, Cold, Wintry) — plus spot-checked coverage generalizing to yoga pants (Bottom set) and even Gear/Bag-category SKUs, not just the one reported hoodie case |
 | 5 | Async indexing | Done, exceeds spec — durable DB ledger + queue + content-hash re-embed, no sync embedding on save, full-rebuild fenced against concurrent incremental writes |
-| 6 | Runtime request pipeline | Full pipeline wired end-to-end: input validation → scope classifier → general.enabled/store-scope gates → hybrid retrieval + ranking → live revalidation of ranked candidates → **prior conversation history loaded and threaded in (Task 8)** → `ToolCallingChatService` (offers the store's allowlisted, capability-enabled tools, runs the tool-call round-trip up to `guardrails.max_tool_calls` rounds, now with a real `cartId`) → Output Validator against the revalidated set merged with whatever tools verified mid-conversation → structured response contract or safe fallback → **on success only, this turn's exchange is persisted for the next turn (Task 8)**. A provider failure (primary and fallback both exhausted) does not propagate uncaught. All 8 tools from architecture.md's original list are built — search_products, get_product_details, compare_products, check_price, check_inventory, get_cart, add_to_cart, remove_from_cart — **plus a 9th, `search_store_content` (Task 10)**, a keyword-only unified CMS/blog/product search distinct from search_products' semantic retrieval. **A real Controller endpoint now exists (`POST /aichat/chat/send`) resolving real session-backed identity (conversation id, customer group, cart) — the cart-id/session gap flagged since Task 3/7 is now closed**; all 9 tools, including the Task 7 cart-mutation confirmation gate, are reachable end-to-end by a genuine multi-turn customer conversation, not just direct construction. Order-assistance tools from architecture.md's broader "Assistant Capabilities" sketch remain unbuilt — architecture.md's own Phase roadmap table lists "Order assistance, returns, support escalation, voice/image-based search" under Phase 4, resolving the ambiguity Task 9's report flagged; this was never truly undecided Phase-1 scope. **A real storefront widget now calls this endpoint (Task 11)** — the pipeline is no longer only reachable by a real customer conversation in principle (Task 8), but by an actual clickable UI a shopper uses. **A retrieval/ranking failure (a `ProductIndexingException`/`ProviderException` from `HybridRetrievalService`/its query-embedding step) now also short-circuits to the same safe-response shape instead of propagating raw (Task 12)** — closing the one gap Task 11's own live check surfaced (an unconfigured-OpenSearch environment previously produced a raw PHP error page through the real endpoint); reason code `retrieval_unavailable`, kept distinct from `assistant_unavailable` so ops can tell the two backends' outages apart in logs. **`add_to_cart` now handles configurable products (Task 16)**: a call with no `option_selection` returns `needs_options` listing the real required attributes (Size/Color/etc.) and their real available values; a call with free-text `option_selection` (e.g. "M, gray", tolerant of extra words like "pink one") is matched case-insensitively against the product's real attribute/value labels, resolved to the one real, salable child variant, and only then added — via the real Magento cart-item `configurable_item_options` mechanism (parent SKU + attribute-id/value-index pairs, not the child SKU directly, since a configurable child is legitimately not individually visible and `LiveRevalidationServiceInterface`'s visibility gate would incorrectly reject it). An unmatched or ambiguous phrase, an incomplete selection, or a real combination that isn't currently salable never mutates the cart — each returns a distinct, honest status instead of guessing. **A real, live-confirmed bug in `get_cart`'s tool schema is now fixed (Task 17)**: `'properties' => []` json_encode()s as a JSON array, invalid for JSON Schema's `properties` keyword (must be an object, even empty) — OpenAI's real API tolerates it, a real Ollama instance does not, rejecting the *entire* chat request with HTTP 400 the moment `get_cart` is offered as a tool (i.e. whenever `cart_mutations_enabled` is on), which surfaced as every real chat message silently falling back to `assistant_unavailable`. Fixed by returning `new \stdClass()` instead (always encodes as `{}`), plus the same fix in `AbstractChatProvider::buildTool()`'s own empty-parameters fallback default for consistency. **A conversation's visible transcript now survives a page reload or a new tab (Task 19)**: a new `Model/Chat/ConversationHistoryViewBuilder` filters `ConversationHistoryStoreInterface::recentMessages()`'s raw, LLM-context-shaped list (which also carries intermediate tool-call-request/tool-result plumbing) down to exactly what a customer actually saw — their own messages plus the final assistant text of each turn — for `Controller/Chat/History.php` to serve. Deliberately reads `ChatSession::getConversationId()` directly rather than through `ChatIdentityResolverInterface::resolve()` (Task 8), since resolve() allocates a fresh conversation id and may auto-vivify a guest quote as a side effect — neither of which a passive per-page-load "anything to restore" check should ever trigger for a visitor who has never opened the widget. Does not restore structured product cards/follow-ups/confirmation state for past turns — only the final response text is persisted per turn, not the full `AssistantResponse` those were built from. **A restored turn now DOES include real product cards too (Task 20)**, closing that exact gap from Task 19: `ChatEntryPipeline` now persists `ChatResponseSerializer::serializeDisplayPayload()`'s output (products/follow_up_questions/actions, the identical shape a live turn's response carries) alongside the turn's final message via a new `response_payload` column and `ConversationHistoryStoreInterface::appendTurn()`'s new optional 5th param; a new `recentMessagesWithResponsePayloads()` method (backed by a new `StoredConversationMessage` DTO, kept deliberately separate from `ChatMessage`/`recentMessages()` since that one still only feeds LLM context and has no use for UI-only display data) reads it back for `ConversationHistoryViewBuilder`/`Controller/Chat/History` to serve. `awaiting_confirmation` is deliberately never restored — a stale confirmation token from a past page load is short-lived server-side, and re-offering that affordance would just invite a confusing, already-expired confirm attempt |
+| 6 | Runtime request pipeline | Full pipeline wired end-to-end: input validation → scope classifier → general.enabled/store-scope gates → hybrid retrieval + ranking → live revalidation of ranked candidates → **prior conversation history loaded and threaded in (Task 8)** → `ToolCallingChatService` (offers the store's allowlisted, capability-enabled tools, runs the tool-call round-trip up to `guardrails.max_tool_calls` rounds, now with a real `cartId`) → Output Validator against the revalidated set merged with whatever tools verified mid-conversation → structured response contract or safe fallback → **on success only, this turn's exchange is persisted for the next turn (Task 8)**. A provider failure (primary and fallback both exhausted) does not propagate uncaught. All 8 tools from architecture.md's original list are built — search_products, get_product_details, compare_products, check_price, check_inventory, get_cart, add_to_cart, remove_from_cart — **plus a 9th, `search_store_content` (Task 10)**, a keyword-only unified CMS/blog/product search distinct from search_products' semantic retrieval. **A real Controller endpoint now exists (`POST /aichat/chat/send`) resolving real session-backed identity (conversation id, customer group, cart) — the cart-id/session gap flagged since Task 3/7 is now closed**; all 9 tools, including the Task 7 cart-mutation confirmation gate, are reachable end-to-end by a genuine multi-turn customer conversation, not just direct construction. Order-assistance tools from architecture.md's broader "Assistant Capabilities" sketch remain unbuilt — architecture.md's own Phase roadmap table lists "Order assistance, returns, support escalation, voice/image-based search" under Phase 4, resolving the ambiguity Task 9's report flagged; this was never truly undecided Phase-1 scope. **A real storefront widget now calls this endpoint (Task 11)** — the pipeline is no longer only reachable by a real customer conversation in principle (Task 8), but by an actual clickable UI a shopper uses. **A retrieval/ranking failure (a `ProductIndexingException`/`ProviderException` from `HybridRetrievalService`/its query-embedding step) now also short-circuits to the same safe-response shape instead of propagating raw (Task 12)** — closing the one gap Task 11's own live check surfaced (an unconfigured-OpenSearch environment previously produced a raw PHP error page through the real endpoint); reason code `retrieval_unavailable`, kept distinct from `assistant_unavailable` so ops can tell the two backends' outages apart in logs. **`add_to_cart` now handles configurable products (Task 16)**: a call with no `option_selection` returns `needs_options` listing the real required attributes (Size/Color/etc.) and their real available values; a call with free-text `option_selection` (e.g. "M, gray", tolerant of extra words like "pink one") is matched case-insensitively against the product's real attribute/value labels, resolved to the one real, salable child variant, and only then added — via the real Magento cart-item `configurable_item_options` mechanism (parent SKU + attribute-id/value-index pairs, not the child SKU directly, since a configurable child is legitimately not individually visible and `LiveRevalidationServiceInterface`'s visibility gate would incorrectly reject it). An unmatched or ambiguous phrase, an incomplete selection, or a real combination that isn't currently salable never mutates the cart — each returns a distinct, honest status instead of guessing. **A real, live-confirmed bug in `get_cart`'s tool schema is now fixed (Task 17)**: `'properties' => []` json_encode()s as a JSON array, invalid for JSON Schema's `properties` keyword (must be an object, even empty) — OpenAI's real API tolerates it, a real Ollama instance does not, rejecting the *entire* chat request with HTTP 400 the moment `get_cart` is offered as a tool (i.e. whenever `cart_mutations_enabled` is on), which surfaced as every real chat message silently falling back to `assistant_unavailable`. Fixed by returning `new \stdClass()` instead (always encodes as `{}`), plus the same fix in `AbstractChatProvider::buildTool()`'s own empty-parameters fallback default for consistency. **A conversation's visible transcript now survives a page reload or a new tab (Task 19)**: a new `Model/Chat/ConversationHistoryViewBuilder` filters `ConversationHistoryStoreInterface::recentMessages()`'s raw, LLM-context-shaped list (which also carries intermediate tool-call-request/tool-result plumbing) down to exactly what a customer actually saw — their own messages plus the final assistant text of each turn — for `Controller/Chat/History.php` to serve. Deliberately reads `ChatSession::getConversationId()` directly rather than through `ChatIdentityResolverInterface::resolve()` (Task 8), since resolve() allocates a fresh conversation id and may auto-vivify a guest quote as a side effect — neither of which a passive per-page-load "anything to restore" check should ever trigger for a visitor who has never opened the widget. Does not restore structured product cards/follow-ups/confirmation state for past turns — only the final response text is persisted per turn, not the full `AssistantResponse` those were built from. **A restored turn now DOES include real product cards too (Task 20)**, closing that exact gap from Task 19: `ChatEntryPipeline` now persists `ChatResponseSerializer::serializeDisplayPayload()`'s output (products/follow_up_questions/actions, the identical shape a live turn's response carries) alongside the turn's final message via a new `response_payload` column and `ConversationHistoryStoreInterface::appendTurn()`'s new optional 5th param; a new `recentMessagesWithResponsePayloads()` method (backed by a new `StoredConversationMessage` DTO, kept deliberately separate from `ChatMessage`/`recentMessages()` since that one still only feeds LLM context and has no use for UI-only display data) reads it back for `ConversationHistoryViewBuilder`/`Controller/Chat/History` to serve. `awaiting_confirmation` is deliberately never restored — a stale confirmation token from a past page load is short-lived server-side, and re-offering that affordance would just invite a confusing, already-expired confirm attempt. **`ChatEntryPipeline::handle()` now always logs one compact trace per real request to its own dedicated log file (Task 24)**: the whole method body runs inside a try/finally around a mutable `Model/Chat/Debug/ChatDebugTrace` accumulator, so `Model/Chat/Debug/ChatDebugLogger` records the trace no matter which branch returns — the incoming message, the scope classifier's decision, the retrieval query and every candidate's real BM25/vector/rank scores, live revalidation's before/after counts and dropped SKUs (the one real "filter" step this pipeline has — no structured price/attribute filter exists anywhere in retrieval, confirmed again by this task's own code search, unchanged since Task 22/23's findings), and the final product SKUs actually returned; fields for a stage never reached (e.g. retrieval on a disabled-store or out-of-scope short-circuit) stay null rather than guessed. Scoped to the up-front retrieval/revalidation `ChatEntryPipeline` always runs itself — a mid-conversation `search_products` tool call the model makes on its own isn't separately traced in this pass, a disclosed scope boundary, not a silent gap. Getting the new `var/log/aavirbhava_ai_shopping_assistant_chat.log` channel genuinely isolated from `system.log`/`debug.log`/syslog took two live-verified rounds — see Task 24's history entry below for the full root cause (Magento's DI array-merge-by-key behavior for `Magento\Framework\Logger\Monolog`'s default handlers, and a `NullHandler`'s default threshold silently swallowing every record before a real handler after it in the array ever ran). **A real, silent product-loss bug is now fixed (Task 25)**: the Task 24 debug trace itself proved retrieval and live revalidation were never the problem (`availability_filter` 8→8) — the LLM's own `product_skus` selection was silently dropping real, qualifying matches (a plain "jackets below $60" landed on only 4 of the 5 real matches). A new `Model/Chat/PriceConstraintDetector` parses an explicit price threshold straight from the customer's own query text (regex-based, exclusive vs. inclusive bounds, plus a "between $X and $Y" range), and a new `Model/Chat/PriceConstraintReconciler` deterministically corrects the validated response's `products[]` against it — once, after `OutputValidator` has already passed the response, never as another model round-trip: any real, live-revalidated candidate that qualifies but was dropped is added (with an honest, code-generated reason), and any selected product that doesn't actually qualify is removed, with any now-dangling `AssistantAction` SKU reference pruned too. `ChatDebugTrace` gained matching `price_constraint`/`added_skus`/`removed_skus` fields so the correction itself is directly visible in the same debug log that surfaced the bug. Live-confirmed for three different real thresholds against this store's real catalog, not just the one reported example — see Task 25's history entry below. **A real multi-turn follow-up bug is now fixed (Task 26)**: the debug log (Task 24) proved conversation history was genuinely threaded into the LLM call for a short follow-up ("medium size"/"the cheaper one") right after a successful product query, but this turn's own retrieval — run on the follow-up text alone, with no product-type signal — returned candidates completely unrelated to the prior turn, and whether the model recovered depended entirely on it independently calling a tool with a remembered SKU (worked once, failed once live). A new `Model/Chat/PriorTurnProductCarryOver` recovers the immediately preceding, already-validated assistant turn's real product SKUs (via `recentMessagesWithResponsePayloads()`, Task 20's UI-restore read path) and `ChatEntryPipeline` re-revalidates them live before merging into this turn's verified set whenever conversation history exists, regardless of this turn's own retrieval quality; `ProductContextFormatter`'s prompt was also relaxed from "this list is the complete and only set of products you may mention" to explicitly permit a product already named earlier in the same conversation, since `OutputValidator`'s fabricated_sku check (not the prompt wording) is the actual security boundary. Live-confirmed for two differently-worded follow-ups, both via the debug log's new `carried_over_skus` field — see Task 26's history entry below. **`PriceConstraintDetector` gained "within $X" and "around $X" (Task 27)**: "within" was a real, confirmed gap — present in `OutputValidator`'s own, separately-maintained threshold-phrase list since Task 22 but never carried over when this detector was built in Task 25, live-reproduced as "show me price within $50" detecting no constraint at all — now an inclusive max bound like "up to"/"no more than". "around $X" is deliberately a symmetric ±20% range, not a single max bound — "around" doesn't mean "at most," so a customer asking for something around $50 would still expect a genuinely close $55 item to surface, which a max-bound-only reading would incorrectly exclude; "about" was deliberately left uncovered since it collides with its far more common non-price sense ("tell me about $50 gift cards"). "budget of $X"/"$X budget"/"$X or under" were checked against the existing phrase lists and found already covered — confirmed by new tests, not assumed. **A real "zero product cards despite naming real products in text" bug is now fixed (Task 29)**: `ProductMentionCompletenessChecker`'s matching logic itself was proven correct for both an empty and a partial mismatch (a direct raw-parse capture caught a real 0-of-1 miss corrected by the existing retry) — the real cause was `MAX_STRUCTURED_OUTPUT_ATTEMPTS`'s single shared 2-attempt budget covering three different retry purposes (malformed JSON, invalid/empty provider response, completeness): a completeness gap first surfacing on the *last* allowed attempt, because an earlier attempt was already spent on an unrelated compliance correction, previously had zero chance of ever being corrected. Fixed with a new `MAX_TOTAL_ATTEMPTS` (3) — one bonus attempt reserved specifically for completeness, never consumable by a malformed/invalid-response retry, so the extra cost only applies in the rare compound case, not every turn. This closes a real cascading effect Task 26's `PriorTurnProductCarryOver` correctly exposed rather than caused: skipping a genuinely product-less turn is correct behavior, but this bug meant a turn that *should* have had products sometimes didn't, costing the *next* turn its rightful carry-over context — live-confirmed the two-turn "hoodies" → "cotton materials" sequence now succeeds end-to-end with real carry-over data |
 | 7 | Fallback chain | **Done (Task 5)** — `FallbackChatGenerationService` decorates `ChatGenerationServiceInterface`: bounded retry (3 attempts, ~200-800ms backoff) against transient failures only, a cache-backed circuit breaker per store/provider-role (`failure_threshold`/`cooldown_seconds` from existing config), then the configured fallback provider, then propagation that `ChatEntryPipeline` turns into a safe non-AI response. Only `FallbackEligibilityPolicy`-eligible (transient availability) failures are retried or trigger fallback at all — safety/config/auth failures propagate immediately, matching the policy's "never bypass a safety boundary" contract. `ResponseMetadata.fallbackUsed` is now populated accurately (was hardcoded false) |
-| 8 | Response contract | Done — `AssistantResponse` (message, products[] with sku/reason/recommendation_type/verified_at + live price/url, follow_up_questions, actions, metadata). LLM asked for structured JSON via `ChatRequest::responseSchema` (never a price/URL/stock field in the schema); every non-`reason` product fact comes from `RevalidatedProduct`, never the LLM. `recommendation_type` always `"organic"` today; Phase 2 values (`recommended`/`promoted`) are accepted by the DTO but nothing produces them yet. **The Output Validator now also catches a fabricated price mentioned in free text (Task 5), not just SKUs/URLs** — see area 8 note in Task 5 history below for the regex approach and its known limits. **`ChatResponseSerializer`'s JSON now also carries `awaiting_confirmation` (Task 11)** — a boolean `ChatEntryPipeline` derives by scanning this turn's tool round-trip for a `confirmation_required` status a mutating cart tool already returned; it surfaces an already-computed fact for the frontend, it does not decide anything new, and the confirmation token itself never leaves the backend/LLM conversation context. **Structured-output compliance from local/Ollama-served models is now measurably more reliable (Task 16)**: `ChatRequest::responseSchema`'s `response_format: json_schema` mechanism alone (sufficient for OpenAI's real API, which enforces schema at the sampling level) was live-confirmed to not reliably hold for a local model once a tool-call round-trip is in the conversation — the identical request produces compliant JSON for a trivial single-turn prompt but free-form prose, or JSON in a wrapping code fence with an invented shape, once real product context and a real tool result are present. A new always-included `ResponseContractFormatter` system message spells out the exact required JSON shape in plain language (reinforcing, not replacing, `response_format`), `LlmResponseParser` now tolerates a wrapping markdown code fence before giving up, and `ChatEntryPipeline` now retries once (2 attempts total) specifically on a `malformed_response` validation failure, appending the model's own bad output plus a corrective instruction before asking again — never retried for `fabricated_sku`/`fabricated_url`/`fabricated_price`, since those are content problems the model already got right structurally, not format problems, and retrying a hallucination risks encouraging another one. **`product_skus` is now explicitly instructed to cover descriptive/informational answers too, not only recommendations (Task 18)**: live-reproduced that a purely informational query ("what are yoga pants made of") named several real products by name in the free-text message but left `product_skus` (and therefore `products[]`/rendered cards) partially or entirely empty — the existing instruction only described the field's *format*, never *when* to populate it, leaving the model to infer "recommendation only" on its own. `ResponseContractFormatter` now explicitly states any product the message names/describes/discusses belongs in `product_skus` regardless of answer type — a prompting change only, `OutputValidator`'s `fabricated_sku` fail-closed check is unchanged. Live-verified this measurably improves consistency (repeated real runs of the same query went from mostly-empty to a full, correct product set in the majority of runs) but, consistent with this local model's other documented compliance gaps, does not reach 100% — an honestly-reported residual limitation, not something believed fixable by further prompting alone. **A real false-positive in the price-fabrication check is now fixed (Task 22)**: every price-constrained search ("jackets less than $40") was failing outright, live-diagnosed to `reason_code: fabricated_price` — the model's own reply correctly found a real $32 product but also echoed the customer's stated "$40" budget back in the same sentence ("...under $40"), and that echoed number, checked as if it were a claimed product price, matched no real product within tolerance, rejecting the entire otherwise-correct response. `containsFabricatedPrice()` now recognizes threshold-qualifying words ("under", "over", "less than", "between", etc.) immediately before a mentioned price and exempts that mention from the real-price match check entirely, since it's a restated constraint, not a price claim. This also incidentally fixes a second, previously-documented-as-accepted false positive from Task 5 ("free shipping on orders over $75") — that test was rewritten, not deleted, to assert the corrected behavior. A price mentioned with no qualifying word (a bare discount amount like "$5 off") is unaffected and can still false-positive exactly as before — a new, narrower, explicitly documented instance of the same known regex-based limitation. **A second, identical-shaped false positive in the URL check is now fixed (Task 23)**: `containsUrl()` rejected ANY url the model mentioned at all — live-caught rejecting a genuinely accurate product url the model had retrieved via `get_product_details` and repeated back in a "compare these two products" answer. Renamed to `containsFabricatedUrl()` and given the exact same "exempt a real, matching mention" shape `containsFabricatedPrice()` already used — a url now only fails the check if it doesn't match any revalidated product's real url. **A new `ProductMentionCompletenessChecker` (Task 23) catches "here are 2 jackets" rendering only 1 card**: live-reproduced that despite Task 18's own instruction, the model sometimes still names a second real, verified product in its message text without selecting its SKU into `product_skus`. Mechanical, not fuzzy NLP — flags a candidate only when its exact, real product name appears as a literal substring of the message — and `ChatEntryPipeline` retries once with a message naming exactly which SKU(s) were missing; if the retry doesn't fully resolve it, the latest valid (even if still incomplete) response is used rather than falling back to the generic message, since a partial result is always better than none. **`ChatEntryPipeline`'s retry budget now also covers a genuinely empty/invalid provider response (Task 23)**: live-traced a real, previously-silent `assistant_unavailable` cause — the model occasionally hallucinates a tool call literally named "product_skus" (confusing the response-schema field with a real callable tool), which always fails as `unknown_tool` and burns a round of `guardrails.max_tool_calls`; once forced to answer with no tools offered, it sometimes returns nothing at all. `ResponseContractFormatter` now explicitly warns against calling a "product_skus" tool, and a `ProviderInvalidResponseException` (as opposed to a genuine availability failure, which is unchanged and still short-circuits immediately) now gets the same one-retry-with-a-nudge treatment a malformed response already had. The catch block that used to silently discard this exception entirely (`catch (ProviderException)`, no variable bound, nothing logged) now logs it, closing a real diagnosability gap. **A same-task attempt to also raise `guardrails.max_tool_calls`'s default from 4 to 6 was tried and reverted**: the reasoning (more slack to recover from a wasted round) seemed sound, but broad live testing showed it mostly just made already-difficult ambiguous queries ("something for the gym", "gift for my mom") take longer without becoming successes — worst-case real provider calls per turn roughly doubled (up to 14 at the 20s default LLM timeout, ~280s), and this environment's nginx has a real, unoverridden ~60s default `fastcgi_read_timeout` that a meaningful fraction of the broad test's calls hit. Reverted to 4; a confirmation re-test of the same previously-timing-out queries all completed well under that ceiling afterward |
+| 8 | Response contract | Done — `AssistantResponse` (message, products[] with sku/reason/recommendation_type/verified_at + live price/url, follow_up_questions, actions, metadata). LLM asked for structured JSON via `ChatRequest::responseSchema` (never a price/URL/stock field in the schema); every non-`reason` product fact comes from `RevalidatedProduct`, never the LLM. `recommendation_type` always `"organic"` today; Phase 2 values (`recommended`/`promoted`) are accepted by the DTO but nothing produces them yet. **The Output Validator now also catches a fabricated price mentioned in free text (Task 5), not just SKUs/URLs** — see area 8 note in Task 5 history below for the regex approach and its known limits. **`ChatResponseSerializer`'s JSON now also carries `awaiting_confirmation` (Task 11)** — a boolean `ChatEntryPipeline` derives by scanning this turn's tool round-trip for a `confirmation_required` status a mutating cart tool already returned; it surfaces an already-computed fact for the frontend, it does not decide anything new, and the confirmation token itself never leaves the backend/LLM conversation context. **Structured-output compliance from local/Ollama-served models is now measurably more reliable (Task 16)**: `ChatRequest::responseSchema`'s `response_format: json_schema` mechanism alone (sufficient for OpenAI's real API, which enforces schema at the sampling level) was live-confirmed to not reliably hold for a local model once a tool-call round-trip is in the conversation — the identical request produces compliant JSON for a trivial single-turn prompt but free-form prose, or JSON in a wrapping code fence with an invented shape, once real product context and a real tool result are present. A new always-included `ResponseContractFormatter` system message spells out the exact required JSON shape in plain language (reinforcing, not replacing, `response_format`), `LlmResponseParser` now tolerates a wrapping markdown code fence before giving up, and `ChatEntryPipeline` now retries once (2 attempts total) specifically on a `malformed_response` validation failure, appending the model's own bad output plus a corrective instruction before asking again — never retried for `fabricated_sku`/`fabricated_url`/`fabricated_price`, since those are content problems the model already got right structurally, not format problems, and retrying a hallucination risks encouraging another one. **`product_skus` is now explicitly instructed to cover descriptive/informational answers too, not only recommendations (Task 18)**: live-reproduced that a purely informational query ("what are yoga pants made of") named several real products by name in the free-text message but left `product_skus` (and therefore `products[]`/rendered cards) partially or entirely empty — the existing instruction only described the field's *format*, never *when* to populate it, leaving the model to infer "recommendation only" on its own. `ResponseContractFormatter` now explicitly states any product the message names/describes/discusses belongs in `product_skus` regardless of answer type — a prompting change only, `OutputValidator`'s `fabricated_sku` fail-closed check is unchanged. Live-verified this measurably improves consistency (repeated real runs of the same query went from mostly-empty to a full, correct product set in the majority of runs) but, consistent with this local model's other documented compliance gaps, does not reach 100% — an honestly-reported residual limitation, not something believed fixable by further prompting alone. **A real false-positive in the price-fabrication check is now fixed (Task 22)**: every price-constrained search ("jackets less than $40") was failing outright, live-diagnosed to `reason_code: fabricated_price` — the model's own reply correctly found a real $32 product but also echoed the customer's stated "$40" budget back in the same sentence ("...under $40"), and that echoed number, checked as if it were a claimed product price, matched no real product within tolerance, rejecting the entire otherwise-correct response. `containsFabricatedPrice()` now recognizes threshold-qualifying words ("under", "over", "less than", "between", etc.) immediately before a mentioned price and exempts that mention from the real-price match check entirely, since it's a restated constraint, not a price claim. This also incidentally fixes a second, previously-documented-as-accepted false positive from Task 5 ("free shipping on orders over $75") — that test was rewritten, not deleted, to assert the corrected behavior. A price mentioned with no qualifying word (a bare discount amount like "$5 off") is unaffected and can still false-positive exactly as before — a new, narrower, explicitly documented instance of the same known regex-based limitation. **A second, identical-shaped false positive in the URL check is now fixed (Task 23)**: `containsUrl()` rejected ANY url the model mentioned at all — live-caught rejecting a genuinely accurate product url the model had retrieved via `get_product_details` and repeated back in a "compare these two products" answer. Renamed to `containsFabricatedUrl()` and given the exact same "exempt a real, matching mention" shape `containsFabricatedPrice()` already used — a url now only fails the check if it doesn't match any revalidated product's real url. **A new `ProductMentionCompletenessChecker` (Task 23) catches "here are 2 jackets" rendering only 1 card**: live-reproduced that despite Task 18's own instruction, the model sometimes still names a second real, verified product in its message text without selecting its SKU into `product_skus`. Mechanical, not fuzzy NLP — flags a candidate only when its exact, real product name appears as a literal substring of the message — and `ChatEntryPipeline` retries once with a message naming exactly which SKU(s) were missing; if the retry doesn't fully resolve it, the latest valid (even if still incomplete) response is used rather than falling back to the generic message, since a partial result is always better than none. **`ChatEntryPipeline`'s retry budget now also covers a genuinely empty/invalid provider response (Task 23)**: live-traced a real, previously-silent `assistant_unavailable` cause — the model occasionally hallucinates a tool call literally named "product_skus" (confusing the response-schema field with a real callable tool), which always fails as `unknown_tool` and burns a round of `guardrails.max_tool_calls`; once forced to answer with no tools offered, it sometimes returns nothing at all. `ResponseContractFormatter` now explicitly warns against calling a "product_skus" tool, and a `ProviderInvalidResponseException` (as opposed to a genuine availability failure, which is unchanged and still short-circuits immediately) now gets the same one-retry-with-a-nudge treatment a malformed response already had. The catch block that used to silently discard this exception entirely (`catch (ProviderException)`, no variable bound, nothing logged) now logs it, closing a real diagnosability gap. **A same-task attempt to also raise `guardrails.max_tool_calls`'s default from 4 to 6 was tried and reverted**: the reasoning (more slack to recover from a wasted round) seemed sound, but broad live testing showed it mostly just made already-difficult ambiguous queries ("something for the gym", "gift for my mom") take longer without becoming successes — worst-case real provider calls per turn roughly doubled (up to 14 at the 20s default LLM timeout, ~280s), and this environment's nginx has a real, unoverridden ~60s default `fastcgi_read_timeout` that a meaningful fraction of the broad test's calls hit. Reverted to 4; a confirmation re-test of the same previously-timing-out queries all completed well under that ceiling afterward. **`ResponseContractFormatter` now leads with an explicit persona + strict-grounding paragraph (Task 27)**: auditing both system-message-assembling classes found neither carried a "you are a shopping assistant" role statement nor a rule against inventing a fact absent from this turn's data that applied on *every* turn — `ProductContextFormatter`'s own similar sentence only ever sends when candidates exist. The new paragraph ("You are a shopping assistant for this store... never invent a product, price, SKU, URL, stock status, or attribute... say so plainly instead of describing something that merely sounds right") sits in `ResponseContractFormatter` specifically because that message is always included, so the "say so plainly" instruction reaches the model even on a turn where retrieval found nothing at all. Every existing instruction (JSON shape, product_skus completeness, the "not a tool" warning, reason authenticity) was kept verbatim — this was an addition, not a rewrite. `OutputValidator`'s fabricated_sku/fabricated_price/fabricated_url checks are unchanged and remain the actual enforcement boundary; live-confirmed across several varied real queries (including one with genuinely no matching products, correctly declined rather than invented) that responses stayed fully grounded with no new fabrication. **`follow_up_questions` must now be written in the customer's own voice, not the assistant's (Task 28)**: live-reproduced the storefront widget rendering a chip like "Would you like to add this to your cart?" and, on click, sending that exact text back as the customer's own next message — nothing in the instructions had ever said which voice to use. A new paragraph instructs the model to phrase every entry as a short, natural thing the customer might actually say next ("add the Tiberius Gym Tank to my cart", "what's it made of"), never a question addressed to them; `LlmResponseSchema` also gained a matching `description` on that one field (the first this schema has ever had) as a second, provider-native reinforcement. Live-confirmed reliable for product-search/cart-action queries across repeated real runs; honestly, a purely informational query ("what are yoga pants made of") still produced assistant-voice chips in 3/3 repeated attempts — a disclosed, not-fully-solved local-model-compliance gap, consistent with every other prompt-only fix in this module |
 | 9 | Live revalidation | **Done (Task 4)** — `LiveRevalidationService`: store-scoped, customer-group-aware (defaults to NOT_LOGGED_IN when no group is known), checks status/visibility/website assignment/stock/salability/price directly against `ProductRepositoryInterface`/`StockRegistryInterface`; failing products are dropped, never flagged-but-shown. Index still correctly omits price/stock/visibility fields, per design. **`Controller\Chat\Send` (Task 8) now supplies a real customer group id from `Magento\Customer\Model\Session` on every real request** — the NOT_LOGGED_IN default is exercised only by guests and by callers with no session (tests, CLI), no longer the permanent state of every request. **Configurable-product pricing is now correct (Task 16)**: `Product::getPrice()`/`getFinalPrice()` return the parent's own raw `price` attribute, which is 0/unset for a configurable product — only its children carry a real price — so every configurable product was reporting `price: 0`. Replaced with `Product::getPriceInfo()->getPrice(RegularPrice::PRICE_CODE|FinalPrice::PRICE_CODE)->getAmount()->getValue()`, which dispatches through the type-specific pricing model (`ConfigurablePriceResolver` for configurable, resolving the minimum salable child's price — the same "As low as" value Magento's own PDP/catalog listing show) and resolves to the identical value for a simple product, so this is a strict generalization, not a configurable-specific branch. **`RevalidatedProduct` now also carries a live-resolved `imageUrl` (Task 21)** — a new optional trailing constructor parameter (never breaking the 19 existing call sites), resolved via `Magento\Catalog\Block\Product\ImageFactory` (the same non-deprecated, lazy URL-building path Luma's own PDP/category templates use), never the older `Helper\Image::init()->getUrl()`, which was tried first and live-confirmed to return a broken placeholder URL outside a full block/layout render |
 | 10 | Extensible ranking | Done (Task 3) — RankingSignalInterface + four Phase-1 signals, RankingPipeline orchestrator, di.xml array registration mirroring the provider-registry extensibility pattern. Reranker flag read but intentionally not invoked. Phase 2 signals not built, by design |
 | 11 | Admin diagnostic pages | **Done (Task 9)** — `Marketing > AI Shopping Assistant > Playground`: query box + 10 debug panels (parsed intent, BM25, vector, combined ranking with per-signal stages, reranker status, live-data validation, product context sent to the LLM, tool calls, final response, tokens/cost/latency) run against the real, already-DI-wired pipeline via a new `PlaygroundQueryRunnerInterface`/`PlaygroundQueryRunner`. Read-only by construction: cart-mutating tools are structurally excluded from the tools array offered to the model and `cartId` is always `null`, not merely "offered but never confirmed" |
-| 12 | Storefront chat widget | **Done (Task 11)** — a persistent, real chat UI on every storefront page (`before.body.end`), gated on `general.enabled`: not rendered at all when the assistant is disabled. `Block/Frontend/ChatWidget.php` selects between two presentation layers at construction time based on whether `Hyva_Theme` is an installed module: default/Luma (vanilla JS, no jQuery/Knockout/RequireJS dependency) or Hyva (Alpine.js + Tailwind utility classes). Both share one dependency-free core JS module (network call + response normalization only — the two presentation layers differ too much in paradigm, imperative DOM vs. declarative Alpine reactivity, to share rendering code itself). Product cards render only fields `ChatResponseSerializer` already sends (sku/name/price/special_price/url/reason/recommendation_type, all from `RevalidatedProduct`) — no fabricated price/URL, and deliberately no product images (no safe data source for one without a new fetch path, out of this task's scope). **No Hyva theme is installed in this dev environment** — the Hyva template/JS were built to Hyva's own documented Alpine.js/Tailwind conventions but could not be rendered against a real Hyva theme; see the Task 11 status report for exactly what was and wasn't live-verified. **Task 14 diagnosed a real "widget not appearing despite general.enabled=Yes" report and confirmed it was a config-scope data-state issue, not a code defect**: `ChatWidget`/`ConfigurationReader::readGeneral()` correctly reads the store-view-scoped effective value (Magento's own standard store > website > default fallback), but a stale `general/enabled=0` override left at store-view scope (from this session's own repeated Task 9/11/12 test-and-revert config toggles at that same scope) silently took precedence over a `default`-scope value of `1` — the classic "I set it but it doesn't apply" scope mismatch. No code changed for this; the effective config was corrected and the fix was left in place (not reverted, unlike every prior task's temporary test toggle). **The widget panel is now resizable (Task 16)**: a larger default size (400×600px, was 320×480px) with CSS `resize: both`/Tailwind `resize` plus `min-width`/`min-height`/`max-width`/`max-height` bounds on both the Luma (`<style>` block) and Hyva (Tailwind arbitrary-value classes) templates — a pure CSS change, no JS involved, since neither JS file ever manipulated panel width/height. **`chat-widget-core.js` now logs every request/response cycle to `console.debug` (Task 17)** — the outgoing message, and on response the HTTP status/ok, `reason_code`, `metadata`, `awaiting_confirmation`, and the full raw response body, plus a distinct log line if the fetch itself fails; always on (no `general.debug_logging` admin toggle exists in this module to gate behind, confirmed by inspection, and unlike customer-visible UI text, console output carries no customer-facing harm). Centralized in the one shared `sendMessage()` function both Luma and Hyva presentation layers already funnel through, so neither theme's own JS needed changes; live-confirmed in a real headless-Chrome session. **Assistant messages now render real markdown formatting instead of showing raw syntax (Task 18)**: a new, small, dependency-free `renderMarkdown()` in `chat-widget-core.js` handles the patterns actually seen in real responses — `**bold**`, bullet/numbered lists, paragraph breaks — shared by both presentation layers exactly like every other core function. Safety: the raw LLM-sourced text is HTML-escaped first (same untrusted-by-default discipline as every other LLM string in this module), and every tag the formatter injects afterward is a fixed literal (`<strong>`/`<ul>`/`<li>`/`<p>`/`<br>`), never text captured from a regex group used as a tag/attribute — live-confirmed both that real markdown renders correctly (real `<strong>`/`<ul>` tags, no raw `**` left in the DOM) and that a raw `<script>`/`<img onerror>` payload is neutralized to inert escaped text. Luma swaps directly to the new HTML string; Hyva's user-message binding stays `x-text` (unchanged, no markdown for what the customer typed) while assistant messages get a new `x-html`-bound field alongside the existing `x-text` one. **Product card links now open in a new tab (Task 19)** — `target="_blank" rel="noopener noreferrer"` on both Luma's and Hyva's product-title anchor, live-confirmed via a real browser's actual DOM. **The visible chat transcript now survives a page reload and appears identically in a brand new tab (Task 19)** — `chat-widget-core.js` gained `fetchHistory()` (GET `Controller/Chat/History`, always resolves, never rejects — a restore failure degrades to "nothing to restore," never a broken widget), called from both presentation layers' init so the log is repopulated before the customer ever reopens the panel. Works with zero new client-side coordination (no localStorage/BroadcastChannel) because Magento's own session cookie (already backing `ChatSession`'s conversationId since Task 8) is shared by every tab of the same browser already — live-confirmed in one real browser session: the same two-message transcript appeared identically after a real page reload in the original tab AND in a brand new tab opened in the same browser context. **Product names in cards are now real links with the SKU de-emphasized alongside them (Task 20)** — `target="_blank" rel="noopener noreferrer"` on the name itself was already in place since Task 19; added a small, muted `.aavirbhava-chat-product-sku` span (Luma) / `text-xs text-gray-400` span (Hyva) next to it, since neither theme actually rendered the SKU anywhere before this task despite `product.sku` already being available client-side. **`*italic*` markdown now renders correctly (Task 20)** — `renderMarkdown()` only handled `**bold**` before; added a second regex pass for single-asterisk emphasis, deliberately run AFTER the bold pass specifically to avoid the classic trap of a single-asterisk regex matching inside an already-valid `**bold**` pair — by the time the italic regex runs, every `**...**` sequence has already become a real `<strong>` tag with no asterisks left in it, so bold and italic in the same message both render correctly, live-confirmed via the real, deployed script in a real browser (not a simulation). **Widget UI/UX overhaul (Task 21):** both templates restyled (gradient header/toggle, refined box-shadow, spacing/typography polish on bubbles and cards); two new admin "Appearance" color fields (window/header, message bubble background + text) threaded through as `--aavirbhava-*` CSS custom properties, defaulting to the existing blue/gray when unset; product cards now show a real, live-resolved catalog image (new `RevalidatedProduct::imageUrl`, sourced via `Magento\Catalog\Block\Product\ImageFactory`, same live-data-only discipline as price/URL); the resize handle moved to the top-left via a custom pointer-drag implementation (native CSS `resize` only supports bottom-right, and the panel's own right/bottom anchoring means growing width/height from a top-left handle naturally keeps the bottom-right corner fixed); a minimize/maximize toggle collapses the panel to just its header bar, with open/minimized state persisted per-session via `sessionStorage`. **A real, previously undiagnosed bug is now fixed**: the floating toggle button's click handler correctly flipped the panel's `hidden` DOM property the whole time, but Luma's own `.aavirbhava-chat-panel { display: flex }` rule (author-origin CSS) unconditionally overrode the browser's `[hidden] { display: none }` default (user-agent-origin CSS, which always loses the cascade regardless of selector specificity) — the panel was visually open on every page load no matter what was clicked. Fixed by switching to a class-based `--open` toggle instead of the `hidden` attribute. Hyva's existing `x-show` mechanism was never affected by this bug (it toggles an inline `style`, which always outranks a class rule). **A real color-clash bug in product cards is now fixed (Task 22)**: `.aavirbhava-chat-price-now`/the recommendation badge/an un-linked product title had no explicit text color of their own, so they inherited the enclosing assistant bubble's admin-configurable `--aavirbhava-message-text-color` — a merchant picking a light text color (meant for a dark bubble) made those elements invisible against the product card's own fixed-white background. Fixed by giving the card container an explicit, fixed base text color independent of the bubble's theme (both templates), so the card reads correctly regardless of what the surrounding bubble's colors are set to. **The three Appearance color fields are now real color-picker inputs, not plain text (Task 22)** — a new `Block\Adminhtml\System\Config\ColorPickerField` wires each one to Magento's own shipped `jquery/colorpicker/js/colorpicker` widget (the same one `Magento_Swatches`' admin "Visual Swatch" editor already uses), following the exact `frontend_model` + inline-`<script>` convention `OllamaModelField` (Task 14) already established for this module's other admin-JS field — not a custom-built picker. **Any color left unset now auto-computes to a readable pairing instead of a fixed default that might clash (Task 22)**: `ConfigurationReader::readAppearance()` never returns null for any color — if only one half of the message-bubble background/text pair is explicitly set, the other is computed via a new `ColorContrast` helper (a standard YIQ perceived-brightness heuristic) to stay readable against it; the header/toggle text color is always auto-computed against whatever the primary color resolves to (there's no separate field for it); and manual values, when both halves of a pair are set, are always used exactly as configured, never second-guessed. **Product card images now fill their frame consistently (Task 23)**: `.aavirbhava-chat-product-image`/Hyva's equivalent `<img>` switched from `object-fit: contain` (Luma) / `object-contain` (Hyva) to `cover`, so every card's image area is filled the same way regardless of the source photo's own aspect ratio, live-confirmed |
+| 12 | Storefront chat widget | **Done (Task 11)** — a persistent, real chat UI on every storefront page (`before.body.end`), gated on `general.enabled`: not rendered at all when the assistant is disabled. `Block/Frontend/ChatWidget.php` selects between two presentation layers at construction time based on whether `Hyva_Theme` is an installed module: default/Luma (vanilla JS, no jQuery/Knockout/RequireJS dependency) or Hyva (Alpine.js + Tailwind utility classes). Both share one dependency-free core JS module (network call + response normalization only — the two presentation layers differ too much in paradigm, imperative DOM vs. declarative Alpine reactivity, to share rendering code itself). Product cards render only fields `ChatResponseSerializer` already sends (sku/name/price/special_price/url/reason/recommendation_type, all from `RevalidatedProduct`) — no fabricated price/URL, and deliberately no product images (no safe data source for one without a new fetch path, out of this task's scope). **No Hyva theme is installed in this dev environment** — the Hyva template/JS were built to Hyva's own documented Alpine.js/Tailwind conventions but could not be rendered against a real Hyva theme; see the Task 11 status report for exactly what was and wasn't live-verified. **Task 14 diagnosed a real "widget not appearing despite general.enabled=Yes" report and confirmed it was a config-scope data-state issue, not a code defect**: `ChatWidget`/`ConfigurationReader::readGeneral()` correctly reads the store-view-scoped effective value (Magento's own standard store > website > default fallback), but a stale `general/enabled=0` override left at store-view scope (from this session's own repeated Task 9/11/12 test-and-revert config toggles at that same scope) silently took precedence over a `default`-scope value of `1` — the classic "I set it but it doesn't apply" scope mismatch. No code changed for this; the effective config was corrected and the fix was left in place (not reverted, unlike every prior task's temporary test toggle). **The widget panel is now resizable (Task 16)**: a larger default size (400×600px, was 320×480px) with CSS `resize: both`/Tailwind `resize` plus `min-width`/`min-height`/`max-width`/`max-height` bounds on both the Luma (`<style>` block) and Hyva (Tailwind arbitrary-value classes) templates — a pure CSS change, no JS involved, since neither JS file ever manipulated panel width/height. **`chat-widget-core.js` now logs every request/response cycle to `console.debug` (Task 17)** — the outgoing message, and on response the HTTP status/ok, `reason_code`, `metadata`, `awaiting_confirmation`, and the full raw response body, plus a distinct log line if the fetch itself fails; always on (no `general.debug_logging` admin toggle exists in this module to gate behind, confirmed by inspection, and unlike customer-visible UI text, console output carries no customer-facing harm). Centralized in the one shared `sendMessage()` function both Luma and Hyva presentation layers already funnel through, so neither theme's own JS needed changes; live-confirmed in a real headless-Chrome session. **Assistant messages now render real markdown formatting instead of showing raw syntax (Task 18)**: a new, small, dependency-free `renderMarkdown()` in `chat-widget-core.js` handles the patterns actually seen in real responses — `**bold**`, bullet/numbered lists, paragraph breaks — shared by both presentation layers exactly like every other core function. Safety: the raw LLM-sourced text is HTML-escaped first (same untrusted-by-default discipline as every other LLM string in this module), and every tag the formatter injects afterward is a fixed literal (`<strong>`/`<ul>`/`<li>`/`<p>`/`<br>`), never text captured from a regex group used as a tag/attribute — live-confirmed both that real markdown renders correctly (real `<strong>`/`<ul>` tags, no raw `**` left in the DOM) and that a raw `<script>`/`<img onerror>` payload is neutralized to inert escaped text. Luma swaps directly to the new HTML string; Hyva's user-message binding stays `x-text` (unchanged, no markdown for what the customer typed) while assistant messages get a new `x-html`-bound field alongside the existing `x-text` one. **Product card links now open in a new tab (Task 19)** — `target="_blank" rel="noopener noreferrer"` on both Luma's and Hyva's product-title anchor, live-confirmed via a real browser's actual DOM. **The visible chat transcript now survives a page reload and appears identically in a brand new tab (Task 19)** — `chat-widget-core.js` gained `fetchHistory()` (GET `Controller/Chat/History`, always resolves, never rejects — a restore failure degrades to "nothing to restore," never a broken widget), called from both presentation layers' init so the log is repopulated before the customer ever reopens the panel. Works with zero new client-side coordination (no localStorage/BroadcastChannel) because Magento's own session cookie (already backing `ChatSession`'s conversationId since Task 8) is shared by every tab of the same browser already — live-confirmed in one real browser session: the same two-message transcript appeared identically after a real page reload in the original tab AND in a brand new tab opened in the same browser context. **Product names in cards are now real links with the SKU de-emphasized alongside them (Task 20)** — `target="_blank" rel="noopener noreferrer"` on the name itself was already in place since Task 19; added a small, muted `.aavirbhava-chat-product-sku` span (Luma) / `text-xs text-gray-400` span (Hyva) next to it, since neither theme actually rendered the SKU anywhere before this task despite `product.sku` already being available client-side. **`*italic*` markdown now renders correctly (Task 20)** — `renderMarkdown()` only handled `**bold**` before; added a second regex pass for single-asterisk emphasis, deliberately run AFTER the bold pass specifically to avoid the classic trap of a single-asterisk regex matching inside an already-valid `**bold**` pair — by the time the italic regex runs, every `**...**` sequence has already become a real `<strong>` tag with no asterisks left in it, so bold and italic in the same message both render correctly, live-confirmed via the real, deployed script in a real browser (not a simulation). **Widget UI/UX overhaul (Task 21):** both templates restyled (gradient header/toggle, refined box-shadow, spacing/typography polish on bubbles and cards); two new admin "Appearance" color fields (window/header, message bubble background + text) threaded through as `--aavirbhava-*` CSS custom properties, defaulting to the existing blue/gray when unset; product cards now show a real, live-resolved catalog image (new `RevalidatedProduct::imageUrl`, sourced via `Magento\Catalog\Block\Product\ImageFactory`, same live-data-only discipline as price/URL); the resize handle moved to the top-left via a custom pointer-drag implementation (native CSS `resize` only supports bottom-right, and the panel's own right/bottom anchoring means growing width/height from a top-left handle naturally keeps the bottom-right corner fixed); a minimize/maximize toggle collapses the panel to just its header bar, with open/minimized state persisted per-session via `sessionStorage`. **A real, previously undiagnosed bug is now fixed**: the floating toggle button's click handler correctly flipped the panel's `hidden` DOM property the whole time, but Luma's own `.aavirbhava-chat-panel { display: flex }` rule (author-origin CSS) unconditionally overrode the browser's `[hidden] { display: none }` default (user-agent-origin CSS, which always loses the cascade regardless of selector specificity) — the panel was visually open on every page load no matter what was clicked. Fixed by switching to a class-based `--open` toggle instead of the `hidden` attribute. Hyva's existing `x-show` mechanism was never affected by this bug (it toggles an inline `style`, which always outranks a class rule). **A real color-clash bug in product cards is now fixed (Task 22)**: `.aavirbhava-chat-price-now`/the recommendation badge/an un-linked product title had no explicit text color of their own, so they inherited the enclosing assistant bubble's admin-configurable `--aavirbhava-message-text-color` — a merchant picking a light text color (meant for a dark bubble) made those elements invisible against the product card's own fixed-white background. Fixed by giving the card container an explicit, fixed base text color independent of the bubble's theme (both templates), so the card reads correctly regardless of what the surrounding bubble's colors are set to. **The three Appearance color fields are now real color-picker inputs, not plain text (Task 22)** — a new `Block\Adminhtml\System\Config\ColorPickerField` wires each one to Magento's own shipped `jquery/colorpicker/js/colorpicker` widget (the same one `Magento_Swatches`' admin "Visual Swatch" editor already uses), following the exact `frontend_model` + inline-`<script>` convention `OllamaModelField` (Task 14) already established for this module's other admin-JS field — not a custom-built picker. **Any color left unset now auto-computes to a readable pairing instead of a fixed default that might clash (Task 22)**: `ConfigurationReader::readAppearance()` never returns null for any color — if only one half of the message-bubble background/text pair is explicitly set, the other is computed via a new `ColorContrast` helper (a standard YIQ perceived-brightness heuristic) to stay readable against it; the header/toggle text color is always auto-computed against whatever the primary color resolves to (there's no separate field for it); and manual values, when both halves of a pair are set, are always used exactly as configured, never second-guessed. **Product card images now fill their frame consistently (Task 23)**: `.aavirbhava-chat-product-image`/Hyva's equivalent `<img>` switched from `object-fit: contain` (Luma) / `object-contain` (Hyva) to `cover`, so every card's image area is filled the same way regardless of the source photo's own aspect ratio, live-confirmed. **Confirmed (Task 28), no frontend change needed**: both themes' follow-up-chip click handlers (`chat-widget-luma.js`'s `submitMessage(question)`, `chat-widget-hyva.js`'s `askFollowUp(question)`) already just send the chip's exact text back as the next real customer message, with no voice-specific handling of any kind — the follow_up_questions voice bug (see row 8) was entirely a backend prompting problem |
 
 No classic architecture-violation anti-patterns found as of the last full audit (no sync embedding on save, no unvalidated LLM output shown, no price/stock shown without revalidation, no hardcoded single-vendor provider logic). The Task 3 `space_type` bug (area 4) is fixed as of Task 4 — see history below.
 
@@ -2690,6 +2690,940 @@ initial 5-task priority order (LLM adapter → pipeline skeleton → retrieval
   added.
 - **Not done / blocked:** nothing blocked. The full-scale Part E re-run
   (see Known gaps) is a scope/time trade-off, not a blocker.
+
+### Task 24 — Index-coverage diagnostic CLI and a dedicated chat debug log (DONE)
+- **Files:** New — `Model/Diagnostics/CatalogSkuProvider.php`,
+  `Model/Diagnostics/IndexedSkuProvider.php`,
+  `Model/Diagnostics/IndexCoverageReport.php`,
+  `Model/Diagnostics/IndexCoverageChecker.php`,
+  `Console/Command/IndexCoverageCommand.php`,
+  `Model/Chat/Debug/ChatDebugTrace.php`,
+  `Model/Chat/Debug/ChatDebugLogger.php`, plus a test file for each
+  (`Test/Unit/Model/Diagnostics/*`, `Test/Unit/Console/Command/
+  IndexCoverageCommandTest.php`, `Test/Unit/Model/Chat/Debug/
+  ChatDebugLoggerTest.php`). Modified — `Model/Chat/
+  ChatEntryPipeline.php` (new `ChatDebugLogger`/`ChatDebugTrace`
+  wiring, whole method body now inside a try/finally, two new small
+  helper methods) + `Test/Unit/Model/Chat/ChatEntryPipelineTest.php`
+  (factory updated for the new constructor arg, no test logic
+  changed); `etc/di.xml` (console command registration, the debug-log
+  Monolog virtualType chain). 22 net new tests (1319 → 1341 unit, 3197
+  → 3245 assertions).
+- **Part A — index-coverage command:** `aavirbhava:ai-shopping-
+  assistant:index-coverage` (optionally `--store-id=<id>`, defaults to
+  every active store) compares two independently-sourced SKU lists per
+  store: `CatalogSkuProvider` (real salable/visible/enabled catalog
+  SKUs — Magento's own standard `status`/`visibility` attribute
+  filters plus `CatalogInventory\Helper\Stock::
+  addIsInStockFilterToCollection()`, the same helper category/search
+  listings use, which also respects the merchant's own "Display Out of
+  Stock Products" setting rather than a stricter stock-table-only
+  definition) and `IndexedSkuProvider` (a plain match-all query against
+  the store's live read alias, capped at 10000 documents — a fast
+  diagnostic, not built to reconcile a store with more SKUs than that;
+  not `is_enabled`-filtered, since every document present already
+  passed `ProductIndexEligibilityPolicy`'s enabled/visible gate at
+  index time, so a plain per-store count is the correct comparison).
+  `IndexCoverageChecker` composes both into a two-way diff
+  (`missingFromIndex`/`missingFromCatalog`); the command prints a
+  summary table plus up to 50 specific SKUs per direction (with a
+  remainder count beyond that), and reports "never indexed" rather
+  than erroring when no alias exists yet for a store. An unreachable
+  backend is reported per-store (`ProductIndexingException` caught,
+  logged to the command's own output) rather than aborting a
+  multi-store run. `CatalogSkuProvider`/`IndexedSkuProvider`/
+  `IndexCoverageChecker` are deliberately not `final` (unlike most of
+  this module) purely so they stay mockable in each other's unit
+  tests — no Api interface was added for a diagnostic-only feature
+  with a single implementation. `IndexCoverageCommand` itself is also
+  not final — Magento's DI compiler generates an interceptor for every
+  console command (matching every Magento core command, none of which
+  are final either) and `setup:di:compile` fails outright otherwise,
+  caught via a real `setup:upgrade` run during this task, not assumed.
+- **Part A — real finding for this store:** live-run against this
+  store's actual catalog and index: **181 real salable/visible/enabled
+  products, 181 indexed documents, 0 missing from the index, 0
+  orphaned documents in the index — fully covered, no drift found.**
+  This is the honest answer to the task's own open question, not just
+  confirmation the tool runs.
+- **Part B — dedicated chat debug log:** `ChatEntryPipeline::handle()`
+  now always logs one compact trace to a new
+  `var/log/aavirbhava_ai_shopping_assistant_chat.log` file, regardless
+  of outcome — a request-tracing aid, not an error log. The whole
+  method body was wrapped in a try/finally around a new mutable
+  `ChatDebugTrace` accumulator (constructed once at the very top, from
+  the raw incoming message, so it's always available to the finally
+  block even on the earliest possible short-circuit) — each field is
+  filled in only once the pipeline actually reaches that stage:
+  in-scope/reason code from the scope classifier; the retrieval query
+  text and every `SearchCandidate`'s real `bm25Score`/`vectorScore`/
+  ranked `score`; live revalidation's before/after SKU counts and
+  exactly which SKUs were dropped (`recordAvailabilityFilter()` — this
+  is the one real "filter" step this pipeline has; re-confirmed by
+  code search that no structured price/attribute filter exists
+  anywhere in retrieval or ranking, unchanged since Task 22/23); and
+  the final response's product SKUs. `ChatDebugLogger::record()`
+  assembles one structured `debug()`-level context array from the
+  trace. Deliberately scoped to the up-front retrieval/revalidation
+  step `ChatEntryPipeline` always runs itself for every turn — a
+  mid-conversation `search_products` tool call the model makes on its
+  own isn't separately traced in this pass (seeing that would mean
+  threading the debug logger into `ToolCallingChatService`/
+  `SearchProductsTool` too, a larger change than this task's own
+  scope), a disclosed boundary, not a silent gap.
+- **Part B — getting real isolation from system.log took two live-
+  verified fix rounds, not one:** the first version logged at PSR
+  `info()` level via a virtualType overriding only the "debug" item of
+  `Magento\Framework\Logger\Monolog`'s default handler array
+  (`system`/`debug`/`syslog`, declared in `app/etc/di.xml`) — live-
+  sending a real chat message showed the trace correctly in the new
+  file, but `grep` also found it in `system.log`. Root cause, found by
+  reading `app/etc/di.xml` directly rather than guessing: Magento's DI
+  merges a virtualType's array argument with its base type's *by item
+  key*, so the inherited `system` handler (`Handler\System`, threshold
+  `Logger::INFO`) stayed attached and caught the `info()`-level call
+  (`Handler\Debug`'s inherited slot wasn't the culprit — it requires
+  `dev/debug/debug_logging`; `Handler\System` has no such gate). Fixed
+  by switching the log call to `debug()` (below `Handler\System`'s
+  `INFO` floor) — the same "debug" key + `debug()`-level combination
+  `Magento_Payment`/`Magento_Shipping`'s own virtual debug loggers
+  already rely on for the identical isolation, confirmed by reading
+  their real `etc/di.xml`. That fix alone still left the inherited
+  `syslog` handler active (`Handler\Syslog`, threshold `Logger::DEBUG`
+  — genuinely the OS syslog, confirmed by reading its source), so a
+  second override — `Monolog\Handler\NullHandler` on both the `system`
+  and `syslog` keys — was added for full isolation regardless of
+  future log-level choices on this channel. That alone introduced a
+  second, distinct, also live-caught bug: a `NullHandler` built with
+  its default threshold (`DEBUG`) returns `true` from `handle()` for a
+  `debug()`-level record, and `Monolog\Logger::addRecord()` stops
+  passing a record to any further handler the instant one returns
+  `true` — since the inherited `system` key still sits *before* the
+  real file handler in the merged array, every record was being
+  silently swallowed by the `NullHandler` with the real handler never
+  even running, confirmed by manually invoking the compiled logger via
+  a container PHP script and observing no file appeared at all.
+  Genuinely fixed by giving both `NullHandler` instances an explicit
+  `level` of 601 (one above `Logger::EMERGENCY`, the highest real
+  level) so `isHandling()` is always false for anything this channel
+  will ever log — confirmed via the same container script showing the
+  real file handler in the stack and, immediately after, a real HTTP
+  chat request producing a correct entry in the dedicated file with
+  nothing new in `system.log`.
+- **Verification:** full suite 1319 → 1341 unit tests (+22), 3197 →
+  3245 assertions, 0 failures, run before this task's changes and
+  again after every fix round (including both debug-log isolation
+  fixes). `php -l` on every changed/new PHP file, `setup:upgrade`,
+  `setup:di:compile`, `cache:flush` all clean (the one `setup:upgrade`
+  warning seen — `Magento_CatalogSampleData`'s own data patch failing
+  with "Rolled back transaction has not been completed correctly" —
+  reproduced identically on a second, unmodified re-run, confirming
+  it's a pre-existing environment characteristic unrelated to this
+  task's changes, not something introduced here). Live verification,
+  all against the real running store: the index-coverage command run
+  both with no arguments (all active stores) and with `--store-id=1`,
+  plus a deliberately invalid `--store-id=999` (correctly rejected,
+  non-zero exit, no exception page); a real "show me jackets under
+  $40" request and a real out-of-scope "what is the capital of France"
+  request, each checked against the actual resulting debug-log file
+  content and a `grep` of `system.log` for leakage, both before and
+  after each isolation fix round.
+- **Known gaps / TODOs left for later tasks:** the debug trace does
+  not cover a mid-conversation `search_products` tool call's own
+  retrieval (see Part B above) — only the turn's own up-front
+  retrieval/revalidation, which `ChatEntryPipeline` always runs
+  regardless of what the model does afterward. The index-coverage
+  command is a snapshot diagnostic with no repair action of its own
+  (by the task's own "keep it simple" instruction) — a merchant would
+  still need to run a real reindex separately to close any gap it
+  finds. `IndexedSkuProvider`'s 10000-document scan cap is untested
+  against a catalogue that large in this environment (181 real
+  products here) — a store past that size would need a scroll/
+  `search_after`-based rewrite, out of this task's scope. Unrelated,
+  live-observed while verifying Part B: a couple of `reason` fields in
+  a real response still read as a bare price comparison ("Jacket above
+  budget at $72") despite Task 23 Part C's prompt fix — consistent
+  with that task's own honestly-reported finding that prompting alone
+  doesn't reach 100% compliance from this local model; not touched by
+  this task, since it wasn't this task's ask.
+- **Skill files updated:** `references/progress-log.md` — status rows
+  4 and 6 updated; header summary updated; this Task 24 history entry
+  added.
+- **Not done / blocked:** nothing blocked.
+
+### Task 25 — Fix silent product loss between retrieval and final response (DONE)
+- **Files:** New — `Model/Chat/PriceConstraint.php`,
+  `Model/Chat/PriceConstraintDetector.php`,
+  `Model/Chat/PriceConstraintReconciler.php`,
+  `Model/Chat/PriceConstraintReconciliationResult.php`, plus
+  `Test/Unit/Model/Chat/{PriceConstraintTest,
+  PriceConstraintDetectorTest,PriceConstraintReconcilerTest}.php` (9 +
+  11 + 8 tests). Modified — `Model/Chat/ChatEntryPipeline.php` (two new
+  constructor dependencies, constraint detected once right after scope
+  classification, reconciliation applied once after the retry loop
+  resolves a valid response, before persistence/return) +
+  `Test/Unit/Model/Chat/ChatEntryPipelineTest.php` (factory updated,
+  net +3 new end-to-end tests); `Model/Chat/Debug/ChatDebugTrace.php`
+  (3 new fields: `priceConstraint`, `priceConstraintAddedSkus`,
+  `priceConstraintRemovedSkus`) + `Model/Chat/Debug/
+  ChatDebugLogger.php` (new `price_constraint` log section) +
+  `Test/Unit/Model/Chat/Debug/ChatDebugLoggerTest.php` (updated for
+  the new fields, no new test count). 31 net new tests (1341 → 1372
+  unit, 3245 → 3318 assertions).
+- **The bug, confirmed via the real debug log built in Task 24:** "find
+  me jackets below $60" produced `availability_filter: {"before_count":
+  8, "after_count": 8, "dropped_skus": []}` — retrieval and live
+  revalidation both worked perfectly, all 8 real candidates survived —
+  yet `final_product_skus` only had 4 entries. Cross-checked against
+  each candidate's real, live price (Jade Yoga Jacket $32, Beaumont
+  Summit Kit $42, Proteus Fitness Jackshirt $45, Adrienne Trek Jacket
+  $57, Inez Full Zip Jacket $59 all genuinely qualify for "below $60";
+  Riona Full Zip Jacket at exactly $60, Taurus Elements Shell $65, and
+  Orion Two-Tone Fitted Jacket $72 correctly don't): 5 real products
+  should have qualified, and the model's own `product_skus` selection
+  silently dropped one of them (Proteus Fitness Jackshirt, $45) with
+  nothing anywhere telling the customer a real match was missing. Not a
+  retrieval bug, not a revalidation bug, not an `OutputValidator`
+  rejection — purely the model's own final selection under-counting
+  against a candidate list it had complete, correct access to.
+- **Approach chosen — (b), deterministic code-side reconciliation, not
+  (a) pre-filtering candidates before the model sees them:** pre-
+  filtering the candidate set handed to the model (option a) was
+  rejected for two concrete reasons found by tracing how the existing
+  pipeline actually uses its candidate/verified-product sets: first, it
+  would remove the model's ability to mention real, priced alternatives
+  in its own text ("all other jackets are priced above $60: ...", a
+  documented, desirable pattern since Task 22/23) without also
+  breaking `OutputValidator::containsFabricatedPrice()`'s "exempt a
+  real, matching mention" check for exactly those alternatives, since
+  that check validates against the same verified-product set retrieval
+  would now be silently shrinking. Second, and more fundamentally,
+  pre-filtering candidates doesn't actually *guarantee* correctness at
+  all — `OutputValidator` validates `product_skus` against the full
+  verified set, not against "what the model was shown," so a smaller
+  candidate list only reduces the model's noise; it does nothing to
+  structurally prevent the exact under-selection bug this task exists
+  to fix. Option (b) — reconcile the validated response against a
+  code-computed correct set — closes the bug with certainty rather
+  than probability, reuses this pipeline's existing "verify strictly,
+  never trust the model for a fact code can compute" philosophy
+  (`OutputValidator`'s own price/URL/SKU checks, `RevalidatedProduct`
+  being the only source of truth for price), and — unlike Task 23's
+  `ProductMentionCompletenessChecker` retry, which asks the model to
+  self-correct — needs no second model round-trip at all, since the
+  correct answer is already fully computable from data already in
+  hand. Given Task 23's own documented finding that extra round-trips
+  measurably raise real request latency for no guaranteed benefit, a
+  same-turn, zero-extra-call fix was the clearly better fit here.
+- **Detection:** `PriceConstraintDetector::detect()` — simple,
+  regex-based (per this task's own instruction, mirroring
+  `OutputValidator::extractMentionedPrices()`'s existing currency-
+  number pattern rather than sharing it, since the two solve different
+  problems), distinguishing an exclusive bound ("under", "below",
+  "less than", "cheaper than", "over", "above", "more than" — strictly
+  less/greater) from an inclusive one ("up to", "no more than", "at
+  least", "$60 or less" — less/greater-or-equal), plus a direct
+  "between $X and $Y" pattern for a two-sided range. Only the query
+  text is inspected — never the model's own reply, which is a
+  separate, pre-existing concern `OutputValidator` already owns.
+- **Reconciliation:** `PriceConstraintReconciler::reconcile()` runs
+  once, in `ChatEntryPipeline::handle()`, immediately after the retry
+  loop settles on a valid response and before conversation persistence
+  — using the identical merged verified-product set (`mergeVerifiedProducts()`)
+  `OutputValidator` already validated the response against, so
+  reconciliation can never add a SKU the customer's own turn didn't
+  actually have live, verified data for. Any qualifying candidate
+  missing from `product_skus` is appended with an honest, code-
+  generated `reason` ("Priced at $X, matching your requested price
+  range.") — never a claim invented on the model's behalf; any
+  selected product that fails the constraint is removed, and any
+  `AssistantAction` left referencing a removed SKU is pruned (the
+  whole action dropped if every one of its SKUs was removed) rather
+  than left dangling. A response needing no correction is returned as
+  the exact same object instance, not rebuilt.
+- **Live verification, three different real thresholds, cross-checked
+  against real data, not eyeballed:** "find me jackets below $60" —
+  the model again selected only 4 (Jade Yoga Jacket $32, Beaumont
+  Summit Kit $42, Adrienne Trek Jacket $57, Inez Full Zip Jacket $59),
+  reconciliation added Proteus Fitness Jackshirt ($45) with the
+  generated reason "Priced at $45.00, matching your requested price
+  range.", landing on the exact correct 5-product set; the debug
+  trace's `price_constraint.added_skus` recorded `["MJ12"]`. A repeat
+  run where the model separately called `search_products` mid-
+  conversation (discovering two more real candidates beyond the
+  up-front retrieval set) still reconciled correctly against the full
+  merged verified set, both adding a genuine match and removing one
+  priced at exactly $60 (correctly excluded from an exclusive "below"
+  bound) — confirming reconciliation isn't limited to the up-front
+  retrieval path. "find me jackets below $50" — the model got all 3
+  real qualifying products right unaided; `added_skus`/`removed_skus`
+  both empty, response object unchanged, confirming reconciliation is
+  a true no-op when nothing needs correcting. "show me jackets over
+  $60" — a min-bound (not max-bound) constraint, correctly detected as
+  `min: 60, exclusive`; the model again got it right unaided (Orion
+  Two-Tone Fitted Jacket $72, Taurus Elements Shell $65; a candidate
+  priced at exactly $60 correctly excluded), reconciliation again a
+  no-op. All four runs' `system.log` checked for the same debug-log
+  leakage class of bug Task 24 fixed — none found.
+- **Verification:** full suite 1341 → 1372 unit tests (+31), 3245 →
+  3318 assertions, 0 failures, run before this task's changes and
+  again after. `php -l` on every changed/new PHP file,
+  `setup:di:compile`, `cache:flush` clean (no schema change, no
+  console command added this task, `setup:upgrade` not needed).
+- **Known gaps / TODOs left for later tasks:** the constraint detector
+  only recognizes price thresholds (max/min/range) stated in the
+  customer's own query text — a constraint stated only implicitly, or
+  introduced only later in a multi-turn conversation without being
+  restated, is not detected or enforced. Reconciliation only corrects
+  `products[]`; an added product is not retroactively woven into the
+  response's own `message` text, so a customer may see a product card
+  with no matching narrative sentence — an accepted, disclosed trade-
+  off (a card with no text mention is a smaller problem than a real
+  match silently missing). Non-price constraints (color, size, brand,
+  category) are entirely out of this task's scope, per its own "keep
+  it simple, price is the concrete case" framing.
+- **Skill files updated:** `references/progress-log.md` — status row 6
+  updated; header summary updated; this Task 25 history entry added.
+- **Not done / blocked:** nothing blocked.
+
+### Task 26 — Fix multi-turn follow-up handling (DONE)
+- **Files:** New — `Model/Chat/PriorTurnProductCarryOver.php` +
+  `Test/Unit/Model/Chat/PriorTurnProductCarryOverTest.php` (5 tests).
+  Modified — `Model/Chat/ChatEntryPipeline.php` (new constructor
+  dependency; after conversation history is loaded, the prior turn's
+  SKUs are fetched, live-revalidated, and merged into this turn's
+  verified set) + `Test/Unit/Model/Chat/ChatEntryPipelineTest.php`
+  (factory updated, net +3 new end-to-end tests); `Model/Chat/
+  ProductContextFormatter.php` (prompt wording relaxed to permit a
+  product already named earlier in the conversation) + `Test/Unit/
+  Model/Chat/ProductContextFormatterTest.php` (+1 test); `Model/Chat/
+  Debug/ChatDebugTrace.php` (new `carriedOverSkus` field) +
+  `Model/Chat/Debug/ChatDebugLogger.php` (new `carried_over_skus` log
+  field) + `Test/Unit/Model/Chat/Debug/ChatDebugLoggerTest.php`
+  (updated for the new field). 9 net new tests (1372 → 1381 unit, 3318
+  → 3332 assertions).
+- **Step 1, reproduction — confirmed via the real debug log, not
+  assumed:** sent a real two-turn conversation (shared session cookie)
+  through the actual pipeline. Turn 1, "show me jogging pants",
+  succeeded with real products. Turn 2, "the cheaper one", fell all
+  the way back to the generic message (`reason_code: fabricated_sku`).
+  The trace for turn 2 showed `scope: {in_scope: true}` (the
+  classifier never rejected it) and `retrieval.candidates`: eight real
+  but completely unrelated SKUs (gift cards, bags) — `availability_
+  filter: 8 → 8`, all eight survived revalidation, none of them
+  jogging pants. The model then selected something that failed
+  `OutputValidator`'s fabricated_sku check, and the whole turn was
+  discarded. A repeat of the same scenario with "i need it in medium
+  size" instead succeeded on one run — the response included
+  `actions: [{"type": "check_inventory", "skus": [...5 prior SKUs...]}]`,
+  meaning the model recognized the prior products from conversation-
+  history text and independently called a tool to re-verify them,
+  recovering on its own. Two live runs of near-identical follow-ups,
+  one succeeding only through unreliable model-initiated recovery and
+  one failing outright, is exactly the "sometimes works" symptom the
+  task described — not a deterministic bug with one single trigger.
+- **Step 2, root cause — ruled out (a) and (c), confirmed (b) plus a
+  second, prompt-level contributor:** (a) conversation history *was*
+  genuinely threaded into the LLM call every turn (Task 8 working
+  exactly as designed — confirmed by the model correctly recalling
+  prior SKUs by name/price in its own text on every run, and by
+  `ChatEntryPipeline` unconditionally loading `recentMessages()`
+  whenever a `conversationId` is given, unchanged since Task 8). (c)
+  `CommerceScopeClassifier` is default-allow, keyword/pattern-based
+  against a fixed off-topic/injection/code-gen/external-url list —
+  read directly, confirmed neither "medium size" nor "the cheaper one"
+  could ever match any of its patterns, and every real trace showed
+  `in_scope: true`. (b) confirmed as the real, structural cause:
+  `ProductContextResolver::resolve()`/`HybridRetrievalService::
+  retrieve()` are called with the current turn's raw message text
+  alone — no conversation history, no product-type carry-over of any
+  kind — so a short, context-dependent follow-up with no product-type
+  signal reliably retrieves irrelevant candidates. A second,
+  compounding contributor found while designing the fix, not
+  originally hypothesized in the task's own candidate list:
+  `ProductContextFormatter`'s system message told the model this
+  turn's candidate list was *"the complete and only set of products
+  you may mention"* — actively instructing it not to reference
+  anything else, including a real product it had already named with
+  its real SKU one turn earlier. This explains why the model's own
+  recovery (calling a tool) sometimes worked (a tool result is new,
+  legitimate data, not "mentioning" something outside the list) while
+  directly selecting a remembered SKU into `product_skus` without a
+  tool call was exactly what the prompt discouraged.
+- **The fix, addressing both parts of the confirmed cause:**
+  `PriorTurnProductCarryOver::skus()` reads
+  `recentMessagesWithResponsePayloads()` (Task 20's structured UI-
+  restore read path — the only one that carries real SKUs, not just
+  message text) and returns the SKUs from the most recent assistant
+  message that actually had products, scanning past any more recent
+  product-less turn. Only ever reads from an already-*persisted*
+  assistant message, which — per `ChatEntryPipeline`'s own existing
+  persistence rule — only ever happens for a turn that already passed
+  `OutputValidator`, so there is no path for a hallucinated SKU to be
+  carried forward. `ChatEntryPipeline` now calls this after loading
+  conversation history whenever a `conversationId` is present, live-
+  revalidates every returned SKU (`LiveRevalidationServiceInterface::
+  revalidate()` — never trusts the stored snapshot; a product shown
+  two turns ago may have sold out since), and merges the result into
+  this turn's verified set via the same `mergeVerifiedProducts()`
+  helper tool-call-verified products already use. Separately,
+  `ProductContextFormatter`'s instructions were reworded to explicitly
+  permit "a product you already named with its real SKU earlier in
+  this same conversation," alongside this turn's own candidate list
+  and any tool result — safe to relax precisely because
+  `OutputValidator`'s fabricated_sku check, not the prompt wording, is
+  the actual security boundary; the wording change can only make the
+  model more willing to reference something already legitimately
+  available in the verified set, never able to smuggle in something
+  that wasn't. `ChatDebugTrace` gained a `carriedOverSkus` field so the
+  carry-over itself is directly visible in the same debug log that
+  surfaced the bug.
+- **Live verification — two different follow-up phrasings, both via
+  the real debug log:** "i need it in medium size" after a real
+  "show me jogging pants" — `retrieval.candidates` still the same
+  class of unrelated SKUs as before the fix (confirming this turn's
+  own retrieval quality is genuinely unchanged, as intended — the fix
+  doesn't try to improve retrieval itself), `carried_over_skus:
+  ["MP03","WP04","MP01"]` (the exact three real products from turn 1),
+  `final_product_skus: ["MP03","WP04","MP01","MP12","MP02"]` — a real,
+  relevant, correct answer, not the fallback. A second, fresh
+  conversation with a differently-worded follow-up, "the cheaper one"
+  — `carried_over_skus` again carried all five of turn 1's real
+  products forward, and the model correctly picked the genuinely
+  cheapest one (Caesar Warm-Up Pant, $28 special) by comparing their
+  real, live-revalidated prices — confirming the fix isn't overfit to
+  one exact wording. Both runs' `system.log` checked for the debug-log
+  leakage class of bug Task 24 fixed — none found.
+- **Verification:** full suite 1372 → 1381 unit tests (+9), 3318 →
+  3332 assertions, 0 failures, run before this task's changes and
+  again after. `php -l` on every changed/new PHP file,
+  `setup:di:compile`, `cache:flush` clean (no schema change, no
+  console command, `setup:upgrade` not needed).
+- **Known gaps / TODOs left for later tasks:** carry-over reaches back
+  to the single most recent assistant turn with products, not an
+  arbitrary number of turns back — a follow-up referring to a turn two
+  or more messages earlier ("actually, what about the first jacket you
+  showed me yesterday's conversation") is not covered. This turn's own
+  retrieval quality for a weak query is unchanged by this task — the
+  fix works around it by making prior context available rather than
+  improving retrieval's own handling of short/ambiguous text, which
+  remains a real, separate limitation. The relaxed
+  `ProductContextFormatter` wording is a prompt-level nudge, not a
+  hard guarantee the model will actually reference a carried-over
+  product when it should — `OutputValidator`/`PriorTurnProductCarryOver`
+  together guarantee *safety* (never a fabricated SKU) but not that the
+  model always chooses to use what's now available to it.
+- **Skill files updated:** `references/progress-log.md` — status row 6
+  updated; header summary updated; this Task 26 history entry added.
+- **Not done / blocked:** nothing blocked.
+
+### Task 27 — System prompt refinement and price-detector coverage (DONE)
+- **Files:** Modified — `Model/Chat/ResponseContractFormatter.php`
+  (new leading persona + strict-grounding paragraph; every existing
+  paragraph kept verbatim) + `Test/Unit/Model/Chat/
+  ResponseContractFormatterTest.php` (+3 tests); `Model/Chat/
+  PriceConstraintDetector.php` ("within" added to
+  `INCLUSIVE_MAX_PHRASES`; new "around $X" range handling +
+  `AROUND_TOLERANCE` constant) + `Test/Unit/Model/Chat/
+  PriceConstraintDetectorTest.php` (+7 tests). No files touched in
+  `ProductContextFormatter.php` or `PriceConstraint.php` — the former's
+  own grounding sentence (Task 26) was deliberately left as-is (see
+  Part A below), the latter's `isSatisfiedBy()` logic already supported
+  everything the detector change needed. 10 net new tests (1381 → 1391
+  unit, 3332 → 3357 assertions).
+- **Part A — auditing the real system-message assembly, not assuming
+  it was empty:** read both `ResponseContractFormatter` (always
+  included, every turn) and `ProductContextFormatter` (included only
+  when this turn has candidates) in full before writing anything.
+  Neither carried a persona statement ("you are a shopping assistant")
+  anywhere, and neither had a rule against inventing a fact absent
+  from this turn's data that was guaranteed to reach the model on
+  *every* turn — `ProductContextFormatter`'s own "never invent a SKU/
+  price/stock/URL" sentence (from Task 26) only ever sends when
+  `$candidates !== []`, so a turn where retrieval genuinely found
+  nothing had no such reinforcement at all beyond the response
+  contract's narrower "only SKUs you were actually shown" line. Added
+  a new leading paragraph to `ResponseContractFormatter::INSTRUCTIONS`:
+  "You are a shopping assistant for this store... using only the
+  retrieved candidates, live tool results, and any product carried
+  over from earlier in this conversation... Never invent a product,
+  price, SKU, URL, stock status, or attribute that is not present in
+  that data... If nothing provided to you for this turn actually
+  matches what the customer is asking for, say so plainly instead of
+  describing something that merely sounds right." Placed in
+  `ResponseContractFormatter` rather than `ProductContextFormatter`
+  specifically because it is the one message present unconditionally.
+  Deliberately overlaps with `ProductContextFormatter`'s own sentence
+  rather than replacing it — the same redundant-validation philosophy
+  this codebase already uses elsewhere (e.g. `AbstractEmbeddingProvider`
+  re-checking fields its own DTO already guarantees): two independent
+  reinforcements of the same rule, one general and one per-turn-data-
+  scoped, are cheaper insurance than one. Every existing paragraph in
+  `ResponseContractFormatter` (JSON shape, product_skus completeness,
+  the "not a tool" warning, reason authenticity) was kept character-
+  for-character unchanged — this was strictly additive.
+  `OutputValidator`'s fabricated_sku/fabricated_price/fabricated_url
+  checks are entirely unchanged and remain the actual enforcement
+  boundary; this prompt change can only reduce how often a response
+  needs rejecting or reconciling in the first place, never substitute
+  for those checks.
+- **Part B — "within $X", a real, confirmed gap:** live-reproduced
+  "show me price within $50" detecting no constraint at all before
+  this fix. Root cause: `OutputValidator`'s own, separately-maintained
+  threshold-phrase list has included `'within'` since Task 22, but
+  `PriceConstraintDetector` (a new, independent detector built in Task
+  25 specifically because sharing regex machinery between the two
+  different concerns — response-text fabrication checking vs. query-
+  text constraint detection — wasn't judged worth the coupling) never
+  had it added to its own list. Fixed by adding `'within'` to
+  `INCLUSIVE_MAX_PHRASES`, matching "up to"/"no more than"'s existing
+  inclusive-bound semantics.
+- **Part B — "around $X", a genuinely new pattern, deliberately not a
+  single max bound:** "around"/"about" mean "somewhere near this
+  figure," not "up to this figure" — a customer asking for something
+  around $50 would still reasonably expect a genuinely close $55 item
+  to surface, which folding "around" into `INCLUSIVE_MAX_PHRASES`
+  would have incorrectly excluded. Modeled instead as a symmetric
+  ±20% band (`AROUND_TOLERANCE`) producing both a min and a max —
+  "around $50" detects as $40-$60, inclusive both ends — a simple,
+  easily-explained figure, not one derived from UX testing.
+  Deliberately "around" only, not also "about": "about" collides with
+  its far more common non-price sense ("tell me about $50 gift
+  cards" means the $50 gift card product line specifically, not
+  "somewhere near $50"), and treating that as a fuzzy range would be a
+  real regression, not a coverage improvement — confirmed with a test
+  asserting "tell me about $50 gift cards" detects no constraint.
+- **Part B — already covered, confirmed rather than assumed:** "budget
+  of $X" (backward phrase), "$X budget" (bare "budget" checked in both
+  backward and forward context already), and "$X or under" (already
+  in `INCLUSIVE_MAX_PHRASES`) were all checked against the existing
+  code before touching anything — all three already worked, so no
+  change was needed for them; each got a new test instead, to convert
+  "should already work" into "verified to work."
+- **Live verification:** "show me price within $50" — a first run hit
+  a genuine, unrelated `assistant_unavailable` provider hiccup (an
+  already-documented local-model flakiness class, not caused by this
+  task), but the debug trace still showed `price_constraint.detected:
+  {"max":50,"max_inclusive":true,"min":null,"min_inclusive":true}` —
+  detection happens before the provider call and is independent of
+  whether that call itself succeeds. A retry produced a full real
+  response: every one of the 12 real products returned priced at $50
+  or under, several added by the existing `PriceConstraintReconciler`
+  (Task 25) with its own "Priced at $X.00, matching your requested
+  price range" reason — direct proof the "within" fix and the earlier
+  reconciler now chain together correctly. Several other varied real
+  queries confirmed the persona/grounding change introduces no
+  fabrication: "do you sell snowboards" (a product this store
+  genuinely doesn't carry) correctly answered "does not carry
+  snowboards... I didn't find any snowboard products" with an empty
+  products array, rather than inventing one; "what are your yoga pants
+  made of" returned a rich, fully real-attribute-grounded answer (8
+  named products, 8 matching product_skus entries, real material
+  attributes); a fresh two-turn "show me jogging pants" /
+  "the cheaper one" conversation confirmed Task 26's carry-over still
+  works correctly under the new prompt wording, with no regression.
+  `system.log` checked for the Task 24 leakage class of bug across
+  every live query this task ran — none found.
+- **Verification:** full suite 1381 → 1391 unit tests (+10), 3332 →
+  3357 assertions, 0 failures, run before this task's changes and
+  again after. `php -l` on every changed file, `setup:di:compile`,
+  `cache:flush` clean (no schema change, no new DI-wired class, no
+  console command, `setup:upgrade` not needed).
+- **Known gaps / TODOs left for later tasks:** the persona/grounding
+  paragraph is a prompt-level nudge, exactly like every other
+  instruction in this file — it measurably reduces how often the
+  model states something ungrounded, per this task's own live
+  testing, but cannot *guarantee* it the way `OutputValidator` does;
+  a genuinely convincing hallucination could still slip past a purely
+  textual instruction and would still need `OutputValidator` to catch
+  it, unchanged. `AROUND_TOLERANCE`'s ±20% figure is a simple,
+  reasoned choice, not one validated against real customer query logs
+  or A/B data — a later task with real usage data could tune it.
+  "about $X" remains deliberately undetected, a disclosed trade-off,
+  not an oversight.
+- **Skill files updated:** `references/progress-log.md` — status rows
+  6 and 8 updated; header summary updated; this Task 27 history entry
+  added.
+- **Not done / blocked:** nothing blocked.
+
+### Task 28 — Fix follow-up-chip voice (customer, not assistant) (DONE)
+- **Files:** Modified — `Model/Chat/ResponseContractFormatter.php`
+  (new paragraph instructing customer-voice follow_up_questions;
+  every existing paragraph kept verbatim) + `Test/Unit/Model/Chat/
+  ResponseContractFormatterTest.php` (+1 test); `Model/Chat/Response/
+  LlmResponseSchema.php` (new `description` on the
+  `follow_up_questions` property — the first this schema has ever
+  had) + `Test/Unit/Model/Chat/Response/LlmResponseSchemaTest.php`
+  (+1 test). No frontend files changed — see Part A below. 2 net new
+  tests (1391 → 1393 unit, 3357 → 3363 assertions).
+- **Part A — where follow_up_questions is generated/instructed, and
+  whether the widget does anything voice-specific with it, checked
+  before changing anything:** `ResponseContractFormatter` is the only
+  place instructing the model on this field's content — before this
+  task, exactly `"follow_up_questions" (array of strings)`, no
+  guidance on phrasing/voice at all. `LlmResponseSchema` mirrors that
+  emptiness at the schema level (`type: array, items: {type: string}`,
+  no `description`). On the frontend, both themes' click handlers —
+  `chat-widget-luma.js`'s `submitMessage(question)` and
+  `chat-widget-hyva.js`'s `askFollowUp(question)` — do nothing
+  voice-specific at all: a clicked chip's exact text is sent back as
+  the next real customer message through the identical code path a
+  typed message uses, with no separate "this came from a suggestion
+  chip" signal reaching the backend. Confirmed no frontend change was
+  needed, exactly as the task anticipated, rather than assumed.
+- **The fix:** a new paragraph in `ResponseContractFormatter::
+  INSTRUCTIONS` tells the model to write every follow_up_questions
+  entry "in the CUSTOMER's own voice, never the assistant's" — a
+  short, natural thing the customer might actually say next ("add the
+  Tiberius Gym Tank to my cart", "show me other tank tops under $20",
+  "what's it made of"), never a question addressed TO the customer
+  ("Would you like to add this to your cart?", "Which of these
+  interests you most?") — and explains the mechanical reason why:
+  each one is sent back verbatim as though the customer had typed it
+  themselves, so an assistant-voice suggestion puts the assistant's
+  own words in the customer's mouth and confuses the next turn.
+  `LlmResponseSchema`'s `follow_up_questions` property also gained a
+  matching `description` — added specifically because a real
+  OpenAI-compatible provider's structured-output mode does read and
+  follow JSON Schema `description` text, giving this one instruction
+  a second, provider-native reinforcement alongside the plain-language
+  paragraph, mirroring this module's existing redundant-reinforcement
+  style (e.g. Task 27's persona paragraph deliberately overlapping
+  `ProductContextFormatter`'s own grounding sentence). Not retrofitted
+  onto every other schema property — only this one field had a live-
+  reproduced voice bug worth the extra guidance. This is a prompt-only
+  fix: the response contract's shape, `LlmResponseParser`, and
+  `OutputValidator` are all unchanged.
+- **Live verification:** reproduced the reported bug first — a real
+  "show me gym tank tops" query, before this task's change would have
+  produced chips like "Which of these catches your eye? Want to see
+  details, compare options, or add something to your cart?" (the
+  assistant's own in-message question is a separate, correctly-
+  unchanged concern; the bug was specifically the *chip* text). After
+  the fix, the same query's real chips were
+  `["add MT10 to my cart", "add MT11 to my cart", "add MT08 to my
+  cart", ...]` — customer voice. Clicking through one for real (sending
+  `"add MT10 to my cart"` as the actual next message) produced "The
+  Tiberius Gym Tank (MT10) was added to your cart." with a real
+  `add_to_cart` action and a real product card — not the assistant
+  getting confused by its own words, and the *next* turn's chips
+  (`"add the Sparta Gym Tank to my cart"`, `"what is this made of"`)
+  were customer-voice too. Repeated with "show me running shoes"
+  across two separate real runs — chips like `"see the Erika Running
+  Short"`, `"compare the Erika and Sybil Running Shorts"`, `"is the
+  Apollo Running Short in stock"` — consistently customer-voice.
+  `system.log` checked for the Task 24 debug-log-leakage class of bug
+  across every live query this task ran — none found.
+- **Honestly reported, not concealed: the fix does not reach 100%
+  compliance for every query shape.** A purely informational query,
+  "what are yoga pants made of", produced assistant-voice chips
+  ("Are you looking for breathable material for warm weather...",
+  "Would you like to see which of these options is currently in
+  stock?") in 3 out of 3 repeated real attempts — the model's own
+  reliability gap this module has documented as a genuine, unresolved
+  limitation in every prior prompt-only fix (Tasks 18, 23, 25, 27),
+  not something this task claims to have solved universally. The fix
+  is real and live-confirmed for product-search and cart-action
+  queries, the two shapes the reported bug's own example matched, but
+  is not claimed as a guarantee across every conversational shape.
+- **Verification:** full suite 1391 → 1393 unit tests (+2), 3357 →
+  3363 assertions, 0 failures, run before this task's changes and
+  again after. `php -l` on every changed file, `setup:di:compile`,
+  `cache:flush` clean (no schema/DI-wiring change, no console command,
+  `setup:upgrade` not needed).
+- **Known gaps / TODOs left for later tasks:** the informational-query
+  voice gap above is real and unresolved by this task — a later task
+  with more live-testing budget could investigate whether a more
+  specific instruction, a few-shot example, or a stronger provider
+  (per this module's own standing, not-yet-executed "switch primary
+  provider" option) closes it. No structural enforcement exists for
+  follow_up_questions voice — unlike `OutputValidator`'s fabricated_sku/
+  price/url checks, there is no code-level fallback here; an
+  assistant-voice chip, if the model still writes one, still renders
+  and still sends verbatim on click, exactly as before this task,
+  just less often.
+- **Skill files updated:** `references/progress-log.md` — status rows
+  8 and 12 updated; header summary updated; this Task 28 history entry
+  added.
+- **Not done / blocked:** nothing blocked.
+
+### Task 29 — Fix empty-products[] responses (retry-budget starvation) (DONE)
+- **Files:** Modified — `Model/Chat/ChatEntryPipeline.php` (new
+  `MAX_TOTAL_ATTEMPTS` constant; loop bound raised from
+  `MAX_STRUCTURED_OUTPUT_ATTEMPTS` to `MAX_TOTAL_ATTEMPTS`; the
+  malformed/invalid-response branches now gate on a renamed
+  `$complianceAttemptsRemain`, unchanged in behavior/cap; the
+  completeness branch gates on a new `$completenessRetryUsed` flag
+  instead of the shared attempt counter) + `Test/Unit/Model/Chat/
+  ChatEntryPipelineTest.php` (+3 tests). `Model/Chat/
+  OutputValidator.php` briefly carried temporary, fully-reverted
+  raw-parse diagnostic logging during Step 1 — confirmed clean via
+  `grep -rn "file_put_contents"` returning nothing before this entry
+  was written. 3 net new tests (1393 → 1396 unit, 3363 → 3376
+  assertions).
+- **Step 1 — reproduction, via a direct raw-parse capture, not
+  assumption:** live-sent "show me some hoodies for men" repeatedly;
+  the model's own text reliably named real, verified hoodies, but a
+  purely external check (repeated live curl calls) couldn't reliably
+  force the exact zero-products failure on demand — local-model output
+  is stochastic, and the specific compound sequence this bug requires
+  (a malformed response, *then* a valid-but-incomplete one) is rare
+  enough that ~20 live attempts across several query phrasings never
+  organically produced a fully-empty `product_skus` on their own.
+  Rather than continuing to burn live-call budget hoping for luck,
+  added a temporary `file_put_contents()` capture directly in
+  `OutputValidator::validate()` (this module's established capture-
+  then-revert technique) dumping every raw parsed response before any
+  processing, then ran several real hoodie queries. Captured, real,
+  raw evidence: one turn's attempt produced `product_skus: []` with
+  the message text plainly naming "The Oslo Trek Hoodie (MH08)"; the
+  very next captured call, same conversation, showed `product_skus:
+  ["MH08"]` — the *same* message text, now corrected. This is direct
+  proof `ProductMentionCompletenessChecker`'s own name-matching logic
+  is not broken for an empty array — it caught this 0-of-1 miss and
+  the existing retry corrected it, exactly like a partial miss, when a
+  spare attempt was actually available. This *disproved* the most
+  literal reading of the task's own hypothesis (a matching-logic gap
+  specific to a totally-empty array) rather than confirming it —
+  reported honestly, not glossed over.
+- **Step 1 — the real structural cause, found by re-tracing the retry
+  loop with that finding in hand:** `ChatEntryPipeline`'s single
+  `MAX_STRUCTURED_OUTPUT_ATTEMPTS` (2) budget was shared across three
+  distinct retry purposes (malformed JSON since Task 16, an invalid/
+  empty `ProviderInvalidResponseException` since Task 23, and
+  completeness since Task 23). The completeness branch's own guard —
+  `if ($missingProducts === [] || !$attemptsRemain) { break; }` —
+  unconditionally gave up once `$attempt` reached the shared cap, with
+  no retry sent, *including* on the attempt where a completeness gap
+  is first evaluated *because* an earlier attempt was already spent
+  correcting an unrelated malformed/invalid response. A completeness
+  gap that only surfaces on the final allowed attempt therefore had
+  exactly zero chance of ever being corrected and shipped as-is — a
+  budget-starvation bug, not a matching-logic bug, and one that
+  applies to a partial miss exactly as much as a total one; "total"
+  miss was simply the shape that got reported and reproduced first.
+  Confirmed via `system.log`'s own real notice-level retry logging
+  from earlier live testing this session: every "retrying after a
+  malformed structured-output response" and "retrying to include
+  products" notice captured so far shows `"attempt":1` — meaning the
+  compound (attempt-1-consumed-by-something-else) case is real but
+  genuinely rare in this environment, consistent with why live
+  reproduction alone (Step 1's first approach) wasn't landing it.
+- **Step 2 — the fix:** a new `MAX_TOTAL_ATTEMPTS =
+  MAX_STRUCTURED_OUTPUT_ATTEMPTS + 1` (3) constant, and a
+  completeness-specific `$completenessRetryUsed` flag replacing the
+  shared attempt counter as *its* retry gate. The malformed-response
+  and `ProviderInvalidResponseException` branches keep gating on a
+  renamed `$complianceAttemptsRemain` (`$attempt <
+  MAX_STRUCTURED_OUTPUT_ATTEMPTS`, numerically identical to the old
+  `$attemptsRemain`) — their own cap and behavior are completely
+  unchanged; they can never consume the bonus 3rd attempt. Completeness
+  now retries once whenever `$missingProducts !== []` and it hasn't
+  already used its one guaranteed shot, up to the new `MAX_TOTAL_
+  ATTEMPTS` ceiling — meaning the ordinary case (a completeness gap on
+  attempt 1, no compliance issue) is completely unchanged (still
+  exactly 2 calls total, proven by the untouched, still-passing
+  `testIncompleteProductsAreRetriedOnceAndTheRetryAddsTheMissingSku`),
+  and the extra, 3rd call is paid *only* in the specific compound case
+  this bug requires — not blanket-raised for every turn's worst case,
+  unlike Task 23's own reverted attempt to fix a related latency
+  concern by raising `guardrails.max_tool_calls` across the board.
+- **Live verification:** re-ran "show me some hoodies for men" 5 times
+  post-fix — every one produced real, non-empty, grounded
+  `final_product_skus` (`outcome: "generated"` every time, confirmed
+  via the real debug log). Re-ran the exact two-turn "hoodies" →
+  "cotton materials" sequence from the task's own report 4 times: one
+  run showed the real debug trace with `carried_over_skus:
+  ["MH01","MH08","WH04","MH07","MH12","MH06","MH13","WH06"]` (all 8
+  real turn-1 SKUs, correctly carried forward) and a clean, fully
+  grounded turn-2 answer referencing them directly ("Of the hoodies I
+  showed you, two are cotton..."). The exact malformed-then-empty
+  compound sequence this task fixes did not recur live within this
+  session's remaining test budget (consistent with the `system.log`
+  evidence above that it's genuinely rare) — deterministic unit tests
+  (see Files) instead directly reproduce and prove the fix for that
+  specific sequence, which is the appropriate verification for a
+  compound event this rare to force live on demand.
+- **Honestly reported, not glossed over: a separate, still-present
+  limitation surfaced during the same live testing.** One of the four
+  two-turn re-runs showed turn 1 succeeding with 8 real products
+  (`carried_over_skus` correctly populated with all 8 real SKUs for
+  turn 2) yet turn 2 still failed with `fabricated_sku`. Checked
+  `system.log` for this exact turn: no retry notice fired at all —
+  the model's *first* attempt already selected a SKU outside the
+  verified set (including the 8 real carried-over ones), and
+  `fabricated_sku` is deliberately never retried by this pipeline's
+  own existing design (Task 16: retrying a hallucination risks
+  encouraging another one). This is a genuine, pre-existing local-
+  model reliability limitation, entirely separate from the bug this
+  task fixed — carry-over correctly made real data available, the
+  model simply didn't use it correctly on that attempt. Not claimed as
+  fixed by this task.
+- **Verification:** full suite 1393 → 1396 unit tests (+3), 3363 →
+  3376 assertions, 0 failures, run before this task's changes and
+  again after. `php -l` on every changed file, `setup:di:compile`,
+  `cache:flush` clean (no schema/DI-wiring change, no console command,
+  `setup:upgrade` not needed). Confirmed the temporary raw-parse
+  capture in `OutputValidator.php` was fully reverted before any of
+  this verification ran.
+- **Known gaps / TODOs left for later tasks:** the separate
+  fabricated_sku-on-first-attempt limitation above remains open and is
+  out of this task's scope — it's the same class of "local model
+  invents something despite correct data being available" limitation
+  this module has documented repeatedly (Tasks 18, 23, 25, 27, 28), not
+  something a retry-budget fix can address (retrying a fabrication is
+  deliberately not this pipeline's design). The bonus completeness
+  attempt is still bounded at exactly one — a turn needing *two*
+  separate compliance corrections (e.g. malformed on attempt 1,
+  invalid-response on the completeness-bonus attempt, incomplete on a
+  hypothetical 4th) would still exhaust its budget and ship
+  best-available; judged an acceptably rare compound-of-compound case
+  not worth a further, more open-ended budget increase.
+- **Skill files updated:** `references/progress-log.md` — status row 6
+  updated; header summary updated; this Task 29 history entry added.
+- **Not done / blocked:** nothing blocked.
+
+### Task 30 — Fix inconsistent attribute coverage in the RAG index (DONE)
+- **Files:** Modified — `etc/config.xml` (`indexing/
+  searchable_attribute_codes` default broadened from
+  `manufacturer,color,size,material` to `manufacturer,color,size,
+  material,climate,pattern,style_general,style_bottom,activity,
+  collar,sleeve`). No PHP files changed this task — the diagnosis
+  confirmed both candidate code paths (`ProductAttributePolicy`,
+  `ProductDocumentNormalizer`) already correctly handle whatever
+  attribute list they're given; the gap was purely in what list they
+  were given. This environment's own live, already-stored admin
+  config override was also updated via `bin/magento config:set`
+  (config data, not a code change) and a real `indexer:reindex
+  ai_product_rag` was run. No test count change (1396 unit tests
+  before and after) — a config-value fix with no new branchable
+  logic to unit-test; verification is the real OpenSearch/live-chat
+  evidence below.
+- **Step 1 — diagnosis, via direct SQL and a real OpenSearch query,
+  not assumption:** read `SearchableAttributeValueResolver` first —
+  confirmed it draws its attribute code list *entirely* from
+  `IndexingConfigInterface::searchableAttributeCodes()` (admin
+  config), not a hardcoded set, and correctly handles both scalar and
+  multiselect (option-id) attribute storage. Read
+  `ProductAttributePolicy` next — a denylist (secrets/internal
+  fields), not an allowlist restricted to a fixed set of codes. Read
+  `ProductDocumentNormalizer` last — it normalizes whatever attribute
+  list it's handed, with no hardcoded subset of its own; this
+  directly and completely ruled out the task's third candidate
+  hypothesis ("normalizer/embedding text builder only includes a
+  fixed subset"), by inspection, not assumption. Checked the real
+  configured value: the shipped `etc/config.xml` default was
+  `manufacturer,color,size,material` — only 4 codes. Queried the
+  catalog's real EAV structure directly via SQL: the dominant "Top"
+  (hoodies, 1462 rows) and "Bottom" (pants, 532 rows) attribute sets
+  both define real `climate`/`pattern`/`style_general` or
+  `style_bottom`/`activity`/`collar`/`sleeve` fields, and — critically
+  — an *initial* check against the wrong EAV value table
+  (`catalog_product_entity_int`) wrongly suggested these were all
+  empty; re-checking against the *correct* table for `multiselect`/
+  `backend_type=text` attributes (`catalog_product_entity_text`)
+  found them fully, comprehensively populated: `climate` and
+  `pattern` on all 147 configurable products catalog-wide, `material`
+  likewise, `style_general`/`style_bottom` together covering
+  effectively the whole catalog (split by attribute set). This
+  reversal — catching and correcting my own initial wrong-table
+  conclusion — is recorded here deliberately, not smoothed over.
+  Directly fetched MH08's real, live OpenSearch document before any
+  fix: `attributes` held only `[{"code":"material",...}]` —
+  `climate`/`pattern` were completely absent from both `attributes`
+  and `searchable_text`, despite being just as real and just as
+  populated as `material`. This is the direct, confirmed proof: the
+  gap is the admin config list, not the normalizer, and not
+  inconsistent underlying Magento data (the opposite — comprehensively
+  populated, simply never configured to be captured).
+  Cross-referencing the earlier "Oslo Trek Hoodie made with organic
+  cotton, polyester, and nylon" claim from Task 29's own live testing
+  against this real data confirmed it was **not** a hallucination as
+  briefly suspected mid-investigation — `material=Organic Cotton,
+  Polyester, Nylon` is MH08's genuine, real PDP value, correctly
+  resolved through `SearchableAttributeValueResolver`'s existing
+  multiselect handling once the SQL table mixup above was corrected.
+- **Step 2 — the fix:** broadened `searchable_attribute_codes`'
+  default to include `climate`, `pattern`, `style_general`,
+  `style_bottom`, `activity`, `collar`, `sleeve` alongside the
+  existing four codes — chosen specifically because each is a
+  genuinely descriptive PDP attribute (matching the task's own
+  "Style/Material/Pattern/Climate" framing) with real, broad
+  population, not a marketing/merchandising boolean flag. Deliberately
+  did **not** add `new`/`sale`/`eco_collection`/`erin_recommends`/
+  `performance_fabric` (real but only ~20-30% populated toggle flags,
+  a different *kind* of attribute than a descriptive PDP fact) or
+  `category_gear`/`features_bags`/`strap_bags`/`style_bags`/`gender`/
+  `format`/`country_of_manufacture` (checked and found genuinely 0%
+  populated catalog-wide, or niche accessory-only fields) — a
+  deliberate, disclosed scope boundary, not an oversight.
+  `max_attribute_values_per_product`'s default (100) has ample
+  headroom for the added codes; a typical product now resolves
+  roughly 8-10 total attribute values, nowhere near the cap.
+- **Step 3 — reindex and verify:** discovered, via direct SQL against
+  `core_config_data`, that this environment already had an explicit,
+  previously-saved admin override at the *old* 4-code value —
+  updating only the module's shipped `etc/config.xml` default had
+  zero effect on this live environment's actual behavior until this
+  was found and fixed too, via the standard `bin/magento config:set`
+  (the proper, sanctioned way to change a live admin config value,
+  not a direct SQL edit). Confirmed the change actually took effect
+  (`readIndexing(1)->searchableAttributeCodes()` returning all 11
+  codes) and that it correctly marked the indexer "Reindex required"
+  before running a real `indexer:reindex ai_product_rag` (completed in
+  6 seconds). Re-fetched MH08's real OpenSearch document post-reindex:
+  now carries `climate` (Windy, Cool), `material` (Organic Cotton,
+  Polyester, Nylon), and `pattern` (Solid) — `style_general` correctly
+  absent for this specific SKU, matching its own real, individually-
+  sparse (85/98) coverage rather than a bug. Re-ran the Task 24
+  index-coverage command to confirm the full reindex didn't disturb
+  overall catalog/index parity: still 181/181, fully covered.
+- **Live verification through the real chat pipeline:** a genuinely
+  single-turn "what climate are the mens hoodies suited for" returned
+  a rich, fully grounded answer directly using real Climate option
+  values (All-Weather, Cool, Spring, Windy, Mild, Indoor, Cold,
+  Wintry) — a clean, unambiguous success. A two-turn "hoodies" →
+  "which ones are cotton" re-run (after recreating this task's own
+  scratchpad directory, found missing mid-task and silently breaking
+  an earlier cookie-jar-based two-turn attempt — caught and fixed,
+  not glossed over) produced turn 1 text now rich with real material/
+  pattern/climate facts ("made of wool, polyester, and nylon with
+  solid pattern... all-weather and wind-resistant"), and a turn 2
+  that honestly, correctly concluded none of those specific hoodies
+  are cotton — grounded and accurate, not a hallucination and not a
+  blanket data-unavailability decline. Spot-checked OpenSearch
+  documents for a yoga pant SKU (`climate,material,pattern,
+  style_bottom` — full coverage) and two Gear/Bag-category SKUs
+  (`activity,material` — real data reached even outside the two
+  dominant attribute sets), confirming the fix generalizes, not just
+  the one reported hoodie case.
+- **Verification:** full suite unchanged at 1396 unit tests, 3376
+  assertions, 0 failures, run before and after (a config-value fix
+  introduces no new branchable PHP logic to test). `php -l` not
+  applicable (no PHP changed); `etc/config.xml` validated as
+  well-formed XML. `setup:di:compile` not needed (no DI wiring
+  changed). A real `cache:flush` and real `indexer:reindex
+  ai_product_rag` were run as this task's actual container
+  verification.
+- **Known gaps / TODOs left for later tasks:** `style_general`'s own
+  15/98 real gap on the "Top" set (some hoodies genuinely have no
+  Style value set in Magento) is real, ordinary catalog data
+  sparsity, not a bug — correctly reflected as absent per-product,
+  not indexed as a blank/placeholder. The excluded merchandising
+  boolean flags and niche Gear/Bag-only fields remain out of the
+  indexed set, a deliberate, disclosed scope boundary rather than an
+  oversight; a later task with a clearer signal that shoppers actually
+  ask about "is this on sale"/"is this eco-friendly" could reconsider
+  that boundary. The model's own choice not to always draw on
+  available carry-over/context data (seen once mid-verification, a
+  turn calling `search_products` fresh instead of using genuinely
+  available prior-turn hoodie context) remains the same, already-
+  documented local-model reliability class this module has reported
+  repeatedly (Tasks 18, 23, 25, 27, 28, 29) — not something an
+  indexing-coverage fix can address.
+- **Skill files updated:** `references/progress-log.md` — status row 4
+  updated; header summary updated; this Task 30 history entry added.
+- **Not done / blocked:** nothing blocked.
 
 ## Next up
 

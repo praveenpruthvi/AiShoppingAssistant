@@ -16,6 +16,18 @@ namespace Aavirbhava\AiShoppingAssistant\Model\Chat\Response;
  * this schema, so the model has no field to fabricate them into. Output
  * Validator still checks the free-text `message` for a leaked URL as
  * defense in depth.
+ *
+ * `follow_up_questions` carries a `description` (Task 28) — the only
+ * property in this schema that does, added specifically because a real
+ * OpenAI-compatible provider's structured-output mode does read and
+ * follow JSON Schema `description` text as model guidance, giving this
+ * one instruction a second, provider-native reinforcement alongside
+ * ResponseContractFormatter's plain-language paragraph (the two
+ * formatters agree deliberately; neither replaces the other, matching
+ * this module's existing redundant-reinforcement style). Not added to
+ * every other property here — this schema otherwise stays exactly as
+ * minimal as it always has, and only this one field had a live-
+ * reproduced voice bug worth the extra guidance.
  */
 final class LlmResponseSchema
 {
@@ -43,6 +55,10 @@ final class LlmResponseSchema
                 'follow_up_questions' => [
                     'type' => 'array',
                     'items' => ['type' => 'string'],
+                    'description' => 'Suggested next messages written in the CUSTOMER\'s own voice '
+                        . '(e.g. "add the Tiberius Gym Tank to my cart"), never a question addressed '
+                        . 'to the customer (e.g. "Would you like to add this to your cart?") — each '
+                        . 'one is sent back verbatim as the customer\'s own next message when clicked.',
                 ],
                 'actions' => [
                     'type' => 'array',

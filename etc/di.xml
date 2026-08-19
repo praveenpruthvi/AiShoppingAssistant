@@ -239,4 +239,76 @@
             <argument name="storage" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Session\ChatSession\Storage</argument>
         </arguments>
     </type>
+    <!--
+        A dedicated var/log/aavirbhava_ai_shopping_assistant_chat.log
+        channel for ChatDebugLogger (Task 23), fully isolated from
+        system.log/debug.log/syslog — mirrors Magento core's own
+        established pattern for a module-owned debug log file (see e.g.
+        Magento_Cron's VirtualLogger/VirtualLoggerHandler in
+        vendor/magento/module-cron/etc/di.xml): a
+        Magento\Framework\Logger\Handler\Base virtualType naming the
+        file, wrapped in a Magento\Framework\Logger\Monolog virtualType.
+
+        Magento\Framework\Logger\Monolog's real type already carries 3
+        default handlers keyed system/debug/syslog (app/etc/di.xml), and
+        Magento's DI merges a virtualType's array argument with its base
+        type's by item key rather than replacing it outright — so
+        overriding only the "debug" key still leaves "system"
+        (Handler\System, threshold Logger::INFO) and "syslog"
+        (Handler\Syslog, threshold Logger::DEBUG — the actual OS
+        syslog) attached. Live-verified this the hard way: an
+        info()-level call on a virtualType that only overrode "debug"
+        showed up in system.log too. All three keys are overridden here
+        — "system" and "syslog" pointed at Monolog\Handler\NullHandler,
+        each given a "level" of 601 (one above Logger::EMERGENCY, the
+        highest real level) so isHandling() is always false for
+        anything this channel ever logs: Monolog\Logger::addRecord()
+        stops passing a record to further handlers the moment ANY
+        handler's handle() returns true (Logger.php's `if (true ===
+        $handler->handle($record)) { break; }`), and NullHandler's own
+        handle() returns true whenever the record's level meets its
+        threshold — a NullHandler constructed with the default
+        threshold (DEBUG) was live-verified to swallow every record
+        before the real file handler after it in the array ever ran,
+        silently writing nothing at all. A NullHandler that can never
+        match dodges that entirely: it neither writes anywhere nor
+        blocks the real handler that follows it.
+    -->
+    <virtualType name="Aavirbhava\AiShoppingAssistant\Model\Chat\Debug\LogHandler"
+                 type="Magento\Framework\Logger\Handler\Base">
+        <arguments>
+            <argument name="fileName" xsi:type="string">/var/log/aavirbhava_ai_shopping_assistant_chat.log</argument>
+        </arguments>
+    </virtualType>
+    <virtualType name="Aavirbhava\AiShoppingAssistant\Model\Chat\Debug\InertHandler"
+                 type="Monolog\Handler\NullHandler">
+        <arguments>
+            <argument name="level" xsi:type="number">601</argument>
+        </arguments>
+    </virtualType>
+    <virtualType name="Aavirbhava\AiShoppingAssistant\Model\Chat\Debug\Logger"
+                 type="Magento\Framework\Logger\Monolog">
+        <arguments>
+            <argument name="handlers" xsi:type="array">
+                <item name="system" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Chat\Debug\InertHandler</item>
+                <item name="debug" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Chat\Debug\LogHandler</item>
+                <item name="syslog" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Chat\Debug\InertHandler</item>
+            </argument>
+        </arguments>
+    </virtualType>
+    <type name="Aavirbhava\AiShoppingAssistant\Model\Chat\Debug\ChatDebugLogger">
+        <arguments>
+            <argument name="logger" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Chat\Debug\Logger</argument>
+        </arguments>
+    </type>
+    <!-- Task 23: diagnostic CLI comparing real catalog counts to the assistant OpenSearch index. -->
+    <type name="Magento\Framework\Console\CommandListInterface">
+        <arguments>
+            <argument name="commands" xsi:type="array">
+                <item name="aavirbhava_ai_shopping_assistant_index_coverage" xsi:type="object">
+                    Aavirbhava\AiShoppingAssistant\Console\Command\IndexCoverageCommand
+                </item>
+            </argument>
+        </arguments>
+    </type>
 </config>

@@ -12,6 +12,8 @@ use Aavirbhava\AiShoppingAssistant\Api\Chat\ToolCallingChatServiceInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\ConfigurationReaderInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Revalidation\LiveRevalidationServiceInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Store\StoreScopeProviderInterface;
+use Aavirbhava\AiShoppingAssistant\Model\Chat\Debug\ChatDebugLogger;
+use Aavirbhava\AiShoppingAssistant\Model\Chat\Debug\ChatDebugTrace;
 use Aavirbhava\AiShoppingAssistant\Model\Chat\Response\LlmResponseSchema;
 use Aavirbhava\AiShoppingAssistant\Model\Dto\ChatMessage;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexingException;
@@ -70,6 +72,92 @@ use Psr\Log\LoggerInterface;
  * later restore (Controller\Chat\History) can render a past turn's
  * product cards using the same rendering code a live turn uses, not just
  * its message text.
+ *
+ * **Every call also always logs one compact trace entry to a dedicated
+ * debug log file (Task 23)**, via ChatDebugLogger — the whole method body
+ * runs inside a try/finally so the trace is recorded no matter which
+ * branch returns (disabled, out-of-scope, retrieval failure, provider
+ * failure, or a fully generated response), reflecting exactly how far
+ * this request actually got. The trace covers: the incoming message, the
+ * scope classifier's decision, the retrieval query and every candidate's
+ * BM25/vector/rank scores, live revalidation's before/after counts and
+ * dropped SKUs (the one real "filter" step this pipeline has), and the
+ * final product SKUs actually returned. This is a request-tracing aid
+ * separate from system.log, not an error log — it logs every real
+ * request, not just failures.
+ *
+ * **Once a response has passed the Output Validator, it is also
+ * deterministically reconciled against any explicit price constraint the
+ * customer's own query stated (Task 25)**, via PriceConstraintDetector +
+ * PriceConstraintReconciler — a real, debug-log-proven bug where the LLM
+ * correctly retrieved every matching candidate yet still silently dropped
+ * some of them from its own product_skus selection (an availability
+ * filter trace of 8-in/8-out next to only 4 final product SKUs, for a
+ * plain "jackets below $60" query). Rather than trusting the model to
+ * apply a numeric threshold correctly across the whole candidate list,
+ * the constraint is parsed from the query text (simple regex, mirroring
+ * OutputValidator's own currency-shaped-number matching) and applied in
+ * code against the same live-revalidated prices OutputValidator already
+ * validated the response's SKUs against: any qualifying candidate the
+ * model missed is added, and any selected product that doesn't actually
+ * satisfy the constraint is removed — before persistence and before the
+ * response is returned, so both the customer and the debug trace always
+ * see the corrected set.
+ *
+ * **A short, context-dependent follow-up now reliably works (Task 26)**:
+ * live-reproduced "the cheaper one"/"medium size" right after a
+ * successful product query falling all the way back to the generic
+ * message (`fabricated_sku`) — the debug trace showed conversation
+ * history genuinely threaded into the LLM call (Task 8 working as
+ * designed) but this turn's own retrieval, run on the follow-up text
+ * alone, returning candidates completely unrelated to the prior turn
+ * (no product-type signal in "the cheaper one"). Whether the model could
+ * still answer depended entirely on it independently choosing to call a
+ * tool with a SKU it merely remembered from history text — unreliable,
+ * confirmed live (worked once, failed once with the same phrasing
+ * pattern). `PriorTurnProductCarryOver` now recovers the immediately
+ * preceding assistant turn's real product SKUs (only ever from an
+ * already-persisted, already-validated turn) and this turn re-
+ * revalidates them live before merging them into the verified set every
+ * time conversation history exists — regardless of what this turn's own
+ * retrieval finds. `ProductContextFormatter`'s prompt was also relaxed:
+ * it previously told the model this turn's candidate list was "the
+ * complete and only set of products you may mention," actively
+ * discouraging it from referencing a real product it already named
+ * earlier in the same conversation, even once the code-level merge above
+ * made that safe.
+ *
+ * **A real, silent "zero product cards despite the text naming real
+ * products" bug is now fixed (Task 29)**, and — per PriorTurnProductCarryOver's
+ * own "skip a product-less turn" rule (Task 26) — this bug had a genuine
+ * cascading effect: the next turn lost access to carry-over context it
+ * should have had, live-confirmed causing a subsequent fabricated_sku
+ * rejection. Root-caused via a temporary, immediately-reverted raw-parse
+ * capture (this module's established capture-then-revert technique):
+ * ProductMentionCompletenessChecker's own name-matching logic never
+ * distinguished an empty product_skus from a partial one — proven
+ * directly, a captured 0-of-1 miss was found and corrected via the
+ * existing retry exactly like Task 23's partial-miss case, when a spare
+ * attempt was actually available. The real cause was the *shared*
+ * MAX_STRUCTURED_OUTPUT_ATTEMPTS budget itself: `if ($missingProducts
+ * === [] || !$attemptsRemain) { break; }` unconditionally gave up once
+ * `$attempt` reached the cap, with no retry sent — including on the
+ * *last* attempt, which is exactly the attempt a completeness gap
+ * surfaces on whenever an *earlier* attempt was already spent correcting
+ * a malformed response or a ProviderInvalidResponseException. A
+ * completeness gap that first appears on the final allowed attempt
+ * therefore had zero chance of ever being corrected and shipped as-is —
+ * not a matching-logic gap, a budget-starvation gap, and one that
+ * applies to a partial miss exactly as much as a total one; "total"
+ * miss just happened to be the case that got reported first. Fixed by
+ * giving completeness one *guaranteed* extra attempt
+ * (MAX_TOTAL_ATTEMPTS), reserved specifically for it and never
+ * consumable by a malformed/invalid-response retry — so it's still only
+ * ever spent in the specific compound case this bug requires (an
+ * earlier compliance correction *and* a completeness gap in the same
+ * turn), not on every turn's worst case, unlike Task 23's own reverted
+ * attempt to fix a related latency concern by raising a *different*
+ * budget (guardrails.max_tool_calls) across the board.
  */
 final class ChatEntryPipeline implements ChatEntryPipelineInterface
 {
@@ -106,6 +194,17 @@ final class ChatEntryPipeline implements ChatEntryPipelineInterface
      * *other* attempt was worse — see $bestValidValidation below.
      */
     private const MAX_STRUCTURED_OUTPUT_ATTEMPTS = 2;
+
+    /**
+     * One extra attempt reserved specifically for a completeness
+     * correction (Task 29) — never consumable by a malformed-response or
+     * ProviderInvalidResponseException retry, both of which stay capped
+     * at MAX_STRUCTURED_OUTPUT_ATTEMPTS exactly as before. Guarantees
+     * completeness always gets its one shot at correction even when an
+     * earlier attempt was already spent on an unrelated compliance
+     * problem — see the class docblock for the real bug this closes.
+     */
+    private const MAX_TOTAL_ATTEMPTS = self::MAX_STRUCTURED_OUTPUT_ATTEMPTS + 1;
 
     private const STRUCTURED_OUTPUT_CORRECTION_MESSAGE = <<<'TEXT'
 Your previous response was not valid — it must be a single JSON object
@@ -145,6 +244,10 @@ TEXT;
         private readonly ConversationHistoryStoreInterface $conversationHistoryStore,
         private readonly ChatResponseSerializer $responseSerializer,
         private readonly ProductMentionCompletenessChecker $completenessChecker,
+        private readonly PriceConstraintDetector $priceConstraintDetector,
+        private readonly PriceConstraintReconciler $priceConstraintReconciler,
+        private readonly PriorTurnProductCarryOver $priorTurnProductCarryOver,
+        private readonly ChatDebugLogger $debugLogger,
         private readonly LoggerInterface $logger
     ) {
     }
@@ -160,175 +263,306 @@ TEXT;
 
         $guardrails = $this->configurationReader->readGuardrails($storeId);
 
-        if (!$this->configurationReader->readGeneral($storeId)->isEnabled()) {
-            return ChatPipelineResult::shortCircuit(
-                new SafeResponse($guardrails->outOfScopeMessage(), self::REASON_ASSISTANT_DISABLED)
-            );
-        }
-
-        $message = $this->inputValidator->validate($rawMessage, $guardrails);
-
-        $classification = $this->scopeClassifier->classify($storeId, $message);
-
-        if (!$classification->isInScope()) {
-            return ChatPipelineResult::shortCircuit(
-                new SafeResponse($guardrails->outOfScopeMessage(), (string) $classification->reasonCode())
-            );
-        }
+        // Constructed before every branch below (including the very first
+        // one) so it is always available to the finally block regardless
+        // of how early this request is short-circuited — a disabled store
+        // or an out-of-scope message is still a real request the debug
+        // log should record, just with the later fields left null because
+        // the pipeline genuinely never reached that stage.
+        $trace = new ChatDebugTrace($rawMessage);
 
         try {
-            $candidates = $this->productContextResolver->resolve($storeId, $message);
-        } catch (ProductIndexingException | ProviderException $exception) {
-            $this->logRetrievalFailure($storeId, $exception);
+            if (!$this->configurationReader->readGeneral($storeId)->isEnabled()) {
+                $trace->outcome = self::REASON_ASSISTANT_DISABLED;
 
-            return ChatPipelineResult::shortCircuit(
-                new SafeResponse($guardrails->outOfScopeMessage(), self::REASON_RETRIEVAL_UNAVAILABLE)
-            );
-        }
+                return ChatPipelineResult::shortCircuit(
+                    new SafeResponse($guardrails->outOfScopeMessage(), self::REASON_ASSISTANT_DISABLED)
+                );
+            }
 
-        $verifiedProducts = $this->revalidationService->revalidate($storeId, $customerGroupId, $this->skus($candidates));
+            $message = $this->inputValidator->validate($rawMessage, $guardrails);
 
-        $maxConversationMessages = $this->configurationReader->readGeneral($storeId)->maxConversationMessages();
-        $priorMessages = $conversationId !== null
-            ? $this->conversationHistoryStore->recentMessages($conversationId, $storeId, $maxConversationMessages)
-            : [];
+            $classification = $this->scopeClassifier->classify($storeId, $message);
+            $trace->inScope = $classification->isInScope();
+            $trace->scopeReasonCode = $classification->reasonCode();
 
-        $userMessage = new ChatMessage('user', $message);
-        $contextMessage = $this->productContextFormatter->format($candidates);
-        $responseContractMessage = $this->responseContractFormatter->format();
-        $messages = $contextMessage !== null
-            ? [$responseContractMessage, $contextMessage, ...$priorMessages, $userMessage]
-            : [$responseContractMessage, ...$priorMessages, $userMessage];
+            if (!$classification->isInScope()) {
+                $trace->outcome = 'out_of_scope:' . (string) $classification->reasonCode();
 
-        // The best valid response seen across attempts, kept separately
-        // from $validation/$toolResult (which always reflect the *last*
-        // attempt) — a completeness retry (see below) can only ever make
-        // things better or the same by design, but if the model's retry
-        // attempt regresses into something genuinely invalid, the earlier
-        // valid-but-incomplete response is still strictly better than the
-        // generic fallback, so it's what gets used.
-        $bestValidValidation = null;
-        $bestValidToolResult = null;
+                return ChatPipelineResult::shortCircuit(
+                    new SafeResponse($guardrails->outOfScopeMessage(), (string) $classification->reasonCode())
+                );
+            }
 
-        for ($attempt = 1; $attempt <= self::MAX_STRUCTURED_OUTPUT_ATTEMPTS; $attempt++) {
-            $attemptsRemain = $attempt < self::MAX_STRUCTURED_OUTPUT_ATTEMPTS;
+            $trace->retrievalQuery = $message;
+
+            $priceConstraint = $this->priceConstraintDetector->detect($message);
+            $trace->priceConstraint = $priceConstraint === null ? null : [
+                'max' => $priceConstraint->max,
+                'max_inclusive' => $priceConstraint->maxInclusive,
+                'min' => $priceConstraint->min,
+                'min_inclusive' => $priceConstraint->minInclusive,
+            ];
 
             try {
-                $toolResult = $this->toolCallingChatService->converse(
-                    $storeId,
-                    $customerGroupId,
-                    $cartId,
-                    $messages,
-                    LlmResponseSchema::schema()
-                );
-            } catch (ProviderInvalidResponseException $exception) {
-                // Distinct from the broader ProviderException catch below:
-                // an invalid/empty completion is a compliance problem (the
-                // provider answered, just not usefully — live-traced to the
-                // model exhausting its tool-call budget after hallucinating
-                // a call to a nonexistent "product_skus" tool, then being
-                // forced to answer with no tools offered), not a genuine
-                // availability failure. It gets the same one-retry-with-a-
-                // nudge treatment as a malformed response, instead of
-                // failing the turn outright on the first occurrence.
-                $this->logProviderFailure($storeId, $exception, $attempt);
+                $candidates = $this->productContextResolver->resolve($storeId, $message);
+            } catch (ProductIndexingException | ProviderException $exception) {
+                $this->logRetrievalFailure($storeId, $exception);
+                $trace->outcome = self::REASON_RETRIEVAL_UNAVAILABLE;
 
-                if (!$attemptsRemain) {
+                return ChatPipelineResult::shortCircuit(
+                    new SafeResponse($guardrails->outOfScopeMessage(), self::REASON_RETRIEVAL_UNAVAILABLE)
+                );
+            }
+
+            $trace->candidates = $this->traceCandidates($candidates);
+
+            $verifiedProducts = $this->revalidationService->revalidate($storeId, $customerGroupId, $this->skus($candidates));
+
+            $this->recordAvailabilityFilter($trace, $candidates, $verifiedProducts);
+
+            $maxConversationMessages = $this->configurationReader->readGeneral($storeId)->maxConversationMessages();
+            $priorMessages = $conversationId !== null
+                ? $this->conversationHistoryStore->recentMessages($conversationId, $storeId, $maxConversationMessages)
+                : [];
+
+            // A short follow-up ("medium size", "the cheaper one") is,
+            // on its own, a weak retrieval query with no product-type
+            // signal — live-reproduced returning candidates completely
+            // unrelated to the immediately preceding turn's real
+            // products. Carrying those SKUs forward and re-revalidating
+            // them live (never trusting the stored data itself) makes
+            // them available to this turn's Output Validator regardless
+            // of what this turn's own retrieval finds, closing the gap
+            // between "the model happens to recover by calling a tool
+            // with a remembered SKU" (unreliable — worked once, failed
+            // once in live testing) and a guaranteed, structural fix.
+            if ($conversationId !== null) {
+                $carriedOverSkus = $this->priorTurnProductCarryOver->skus($conversationId, $storeId, $maxConversationMessages);
+
+                if ($carriedOverSkus !== []) {
+                    $carriedOverProducts = $this->revalidationService->revalidate($storeId, $customerGroupId, $carriedOverSkus);
+                    $verifiedProducts = $this->mergeVerifiedProducts($verifiedProducts, $carriedOverProducts);
+                    $trace->carriedOverSkus = array_map(
+                        static fn (RevalidatedProduct $product): string => $product->sku,
+                        $carriedOverProducts
+                    );
+                }
+            }
+
+            $userMessage = new ChatMessage('user', $message);
+            $contextMessage = $this->productContextFormatter->format($candidates);
+            $responseContractMessage = $this->responseContractFormatter->format();
+            $messages = $contextMessage !== null
+                ? [$responseContractMessage, $contextMessage, ...$priorMessages, $userMessage]
+                : [$responseContractMessage, ...$priorMessages, $userMessage];
+
+            // The best valid response seen across attempts, kept separately
+            // from $validation/$toolResult (which always reflect the *last*
+            // attempt) — a completeness retry (see below) can only ever make
+            // things better or the same by design, but if the model's retry
+            // attempt regresses into something genuinely invalid, the earlier
+            // valid-but-incomplete response is still strictly better than the
+            // generic fallback, so it's what gets used.
+            $bestValidValidation = null;
+            $bestValidToolResult = null;
+            $completenessRetryUsed = false;
+
+            for ($attempt = 1; $attempt <= self::MAX_TOTAL_ATTEMPTS; $attempt++) {
+                $complianceAttemptsRemain = $attempt < self::MAX_STRUCTURED_OUTPUT_ATTEMPTS;
+
+                try {
+                    $toolResult = $this->toolCallingChatService->converse(
+                        $storeId,
+                        $customerGroupId,
+                        $cartId,
+                        $messages,
+                        LlmResponseSchema::schema()
+                    );
+                } catch (ProviderInvalidResponseException $exception) {
+                    // Distinct from the broader ProviderException catch below:
+                    // an invalid/empty completion is a compliance problem (the
+                    // provider answered, just not usefully — live-traced to the
+                    // model exhausting its tool-call budget after hallucinating
+                    // a call to a nonexistent "product_skus" tool, then being
+                    // forced to answer with no tools offered), not a genuine
+                    // availability failure. It gets the same one-retry-with-a-
+                    // nudge treatment as a malformed response, instead of
+                    // failing the turn outright on the first occurrence.
+                    $this->logProviderFailure($storeId, $exception, $attempt);
+
+                    if (!$complianceAttemptsRemain) {
+                        break;
+                    }
+
+                    $messages = [...$messages, new ChatMessage('user', self::EMPTY_RESPONSE_CORRECTION_MESSAGE)];
+                    continue;
+                } catch (ProviderException $exception) {
+                    $this->logProviderFailure($storeId, $exception, $attempt);
                     break;
                 }
 
-                $messages = [...$messages, new ChatMessage('user', self::EMPTY_RESPONSE_CORRECTION_MESSAGE)];
-                continue;
-            } catch (ProviderException $exception) {
-                $this->logProviderFailure($storeId, $exception, $attempt);
-                break;
-            }
-
-            $validation = $this->outputValidator->validate(
-                $toolResult->response,
-                $this->mergeVerifiedProducts($verifiedProducts, $toolResult->verifiedProducts)
-            );
-
-            if ($validation->isValid()) {
-                $bestValidValidation = $validation;
-                $bestValidToolResult = $toolResult;
-
-                $missingProducts = $this->completenessChecker->findMissingProducts(
-                    $validation->response()->message,
-                    array_map(static fn ($product) => $product->product->sku, $validation->response()->products),
+                $validation = $this->outputValidator->validate(
+                    $toolResult->response,
                     $this->mergeVerifiedProducts($verifiedProducts, $toolResult->verifiedProducts)
                 );
 
-                if ($missingProducts === [] || !$attemptsRemain) {
+                if ($validation->isValid()) {
+                    $bestValidValidation = $validation;
+                    $bestValidToolResult = $toolResult;
+
+                    $missingProducts = $this->completenessChecker->findMissingProducts(
+                        $validation->response()->message,
+                        array_map(static fn ($product) => $product->product->sku, $validation->response()->products),
+                        $this->mergeVerifiedProducts($verifiedProducts, $toolResult->verifiedProducts)
+                    );
+
+                    if ($missingProducts === [] || $completenessRetryUsed || $attempt >= self::MAX_TOTAL_ATTEMPTS) {
+                        break;
+                    }
+
+                    $completenessRetryUsed = true;
+
+                    $this->logger->notice(
+                        'AI shopping assistant: retrying to include products the response text named but omitted from product_skus.',
+                        [
+                            'store_id' => $storeId,
+                            'attempt' => $attempt,
+                            'missing_skus' => array_map(static fn ($product) => $product->sku, $missingProducts),
+                        ]
+                    );
+
+                    $messages = [
+                        ...$messages,
+                        ...$toolResult->toolRoundTripMessages,
+                        new ChatMessage('assistant', $toolResult->response->text),
+                        new ChatMessage('user', $this->missingProductsCorrectionMessage($missingProducts)),
+                    ];
+                    continue;
+                }
+
+                if ($validation->reasonCode() !== OutputValidator::REASON_MALFORMED_RESPONSE || !$complianceAttemptsRemain) {
                     break;
                 }
 
-                $this->logger->notice(
-                    'AI shopping assistant: retrying to include products the response text named but omitted from product_skus.',
-                    [
-                        'store_id' => $storeId,
-                        'attempt' => $attempt,
-                        'missing_skus' => array_map(static fn ($product) => $product->sku, $missingProducts),
-                    ]
-                );
+                $this->logger->notice('AI shopping assistant: retrying after a malformed structured-output response.', [
+                    'store_id' => $storeId,
+                    'attempt' => $attempt,
+                ]);
 
                 $messages = [
                     ...$messages,
                     ...$toolResult->toolRoundTripMessages,
                     new ChatMessage('assistant', $toolResult->response->text),
-                    new ChatMessage('user', $this->missingProductsCorrectionMessage($missingProducts)),
+                    new ChatMessage('user', self::STRUCTURED_OUTPUT_CORRECTION_MESSAGE),
                 ];
-                continue;
             }
 
-            if ($validation->reasonCode() !== OutputValidator::REASON_MALFORMED_RESPONSE || !$attemptsRemain) {
-                break;
+            if ($bestValidValidation !== null) {
+                $validation = $bestValidValidation;
+                $toolResult = $bestValidToolResult;
+            } elseif (isset($validation) && !$validation->isValid()) {
+                $trace->outcome = 'invalid:' . (string) $validation->reasonCode();
+
+                return ChatPipelineResult::shortCircuit(
+                    new SafeResponse($guardrails->outOfScopeMessage(), (string) $validation->reasonCode())
+                );
+            } else {
+                $trace->outcome = self::REASON_ASSISTANT_UNAVAILABLE;
+
+                return ChatPipelineResult::shortCircuit(
+                    new SafeResponse($guardrails->outOfScopeMessage(), self::REASON_ASSISTANT_UNAVAILABLE)
+                );
             }
 
-            $this->logger->notice('AI shopping assistant: retrying after a malformed structured-output response.', [
-                'store_id' => $storeId,
-                'attempt' => $attempt,
-            ]);
-
-            $messages = [
-                ...$messages,
-                ...$toolResult->toolRoundTripMessages,
-                new ChatMessage('assistant', $toolResult->response->text),
-                new ChatMessage('user', self::STRUCTURED_OUTPUT_CORRECTION_MESSAGE),
-            ];
-        }
-
-        if ($bestValidValidation !== null) {
-            $validation = $bestValidValidation;
-            $toolResult = $bestValidToolResult;
-        } elseif (isset($validation) && !$validation->isValid()) {
-            return ChatPipelineResult::shortCircuit(
-                new SafeResponse($guardrails->outOfScopeMessage(), (string) $validation->reasonCode())
+            // Deterministic, code-only correction (Task 25): a real,
+            // live-reproduced bug showed retrieval correctly surfacing
+            // every matching candidate (the availability_filter trace
+            // above proves it) while the model's own product_skus
+            // selection still silently dropped some of them, even when
+            // an explicit price constraint in the customer's own query
+            // made the correct answer fully computable. Reconciling
+            // here, once, against the same verified set OutputValidator
+            // already checked $validation against, both adds any real
+            // qualifying candidate the model missed and removes any
+            // selected product that doesn't actually satisfy the
+            // constraint — never another model round-trip.
+            $reconciliation = $this->priceConstraintReconciler->reconcile(
+                $priceConstraint,
+                $validation->response(),
+                $this->mergeVerifiedProducts($verifiedProducts, $toolResult->verifiedProducts)
             );
-        } else {
-            return ChatPipelineResult::shortCircuit(
-                new SafeResponse($guardrails->outOfScopeMessage(), self::REASON_ASSISTANT_UNAVAILABLE)
-            );
-        }
+            $finalResponse = $reconciliation->response;
+            $trace->priceConstraintAddedSkus = $reconciliation->addedSkus;
+            $trace->priceConstraintRemovedSkus = $reconciliation->removedSkus;
 
-        if ($conversationId !== null) {
-            $this->conversationHistoryStore->appendTurn(
-                $conversationId,
-                $storeId,
-                [
-                    $userMessage,
-                    ...$toolResult->toolRoundTripMessages,
-                    new ChatMessage('assistant', $validation->response()->message),
-                ],
-                $maxConversationMessages,
-                $this->responseSerializer->serializeDisplayPayload($validation->response())
-            );
-        }
+            if ($conversationId !== null) {
+                $this->conversationHistoryStore->appendTurn(
+                    $conversationId,
+                    $storeId,
+                    [
+                        $userMessage,
+                        ...$toolResult->toolRoundTripMessages,
+                        new ChatMessage('assistant', $finalResponse->message),
+                    ],
+                    $maxConversationMessages,
+                    $this->responseSerializer->serializeDisplayPayload($finalResponse)
+                );
+            }
 
-        return ChatPipelineResult::generated(
-            $validation->response(),
-            $this->isAwaitingConfirmation($toolResult->toolRoundTripMessages)
+            $trace->finalProductSkus = array_map(
+                static fn ($product) => $product->product->sku,
+                $finalResponse->products
+            );
+            $trace->outcome = 'generated';
+
+            return ChatPipelineResult::generated(
+                $finalResponse,
+                $this->isAwaitingConfirmation($toolResult->toolRoundTripMessages)
+            );
+        } finally {
+            $this->debugLogger->record($storeId, $conversationId, $trace);
+        }
+    }
+
+    /**
+     * @param list<SearchCandidate> $candidates
+     *
+     * @return list<array{sku: string, bm25_score: float, vector_score: float, rank_score: float}>
+     */
+    private function traceCandidates(array $candidates): array
+    {
+        return array_map(
+            static fn (SearchCandidate $candidate): array => [
+                'sku' => $candidate->sku,
+                'bm25_score' => $candidate->bm25Score,
+                'vector_score' => $candidate->vectorScore,
+                'rank_score' => $candidate->score,
+            ],
+            $candidates
         );
+    }
+
+    /**
+     * The one real "filter" step in this pipeline (Task 23): live
+     * revalidation against Magento itself drops any retrieved candidate
+     * that turns out disabled/not visible/off-website/out of stock by the
+     * time this turn actually runs, even though it looked eligible when
+     * the index was last written. Records the before/after counts and
+     * exactly which SKUs were dropped, purely for the debug trace — makes
+     * no decision of its own.
+     *
+     * @param list<SearchCandidate> $candidates
+     * @param list<RevalidatedProduct> $verifiedProducts
+     */
+    private function recordAvailabilityFilter(ChatDebugTrace $trace, array $candidates, array $verifiedProducts): void
+    {
+        $candidateSkus = array_values(array_unique($this->skus($candidates)));
+        $verifiedSkus = array_map(static fn (RevalidatedProduct $product): string => $product->sku, $verifiedProducts);
+
+        $trace->availabilityFilterBeforeCount = count($candidateSkus);
+        $trace->availabilityFilterAfterCount = count($verifiedSkus);
+        $trace->availabilityFilterDroppedSkus = array_values(array_diff($candidateSkus, $verifiedSkus));
     }
 
     /**
