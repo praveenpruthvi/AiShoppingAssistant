@@ -134,4 +134,24 @@ interface ProductDocumentInterface
      * Optional catalog updated-at timestamp forwarded from the snapshot.
      */
     public function updatedAt(): ?string;
+
+    /**
+     * This product's own average rating (0-5 scale), forwarded from the
+     * snapshot. Never used directly for ranking or shown to the shopper —
+     * RatingSignal blends it with reviewCount() and catalogRatingAverage()
+     * into a Bayesian-weighted score at ranking time.
+     */
+    public function ratingAverage(): float;
+
+    /**
+     * Number of approved reviews backing ratingAverage(), forwarded from
+     * the snapshot.
+     */
+    public function reviewCount(): int;
+
+    /**
+     * The store-wide mean rating (0-5 scale) at the time this document was
+     * indexed, forwarded from the snapshot.
+     */
+    public function catalogRatingAverage(): float;
 }

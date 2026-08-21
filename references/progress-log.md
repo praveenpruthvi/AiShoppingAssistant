@@ -1,6 +1,6 @@
 # Progress Log — Aavirbhava_AiShoppingAssistant
 
-Last updated from: Attribute indexing coverage task status report (2026-08-19) — fixed a real, confirmed gap: the admin `indexing/searchable_attribute_codes` config's shipped default (`manufacturer,color,size,material`) never included `climate`/`pattern`/`style_general`/`style_bottom`/`activity`/`collar`/`sleeve` — real, comprehensively-populated PDP attributes confirmed via direct SQL against the catalog's own EAV tables (climate/pattern/material each populated on all 147 configurable products catalog-wide; style attributes together cover effectively the whole catalog, split by attribute set) and confirmed missing from a real OpenSearch document fetched directly for MH08 (Oslo Trek Hoodie) before the fix — only `material` was indexed even though `climate`/`pattern` were just as real and just as populated. Root-caused to the admin config list specifically, not the normalizer (read directly — it has no hardcoded attribute subset, it normalizes whatever the config-driven resolver hands it) and not inconsistent underlying Magento data (confirmed the opposite: comprehensively populated, just never configured to be captured). Fixed by broadening both the module's shipped default and this environment's own already-stored config override (found via direct SQL — a real value in `core_config_data` was silently taking precedence over the XML default) to the full attribute list, then running a real `indexer:reindex ai_product_rag`. Live-confirmed via a direct post-reindex OpenSearch query and via the real chat pipeline: "what climate are the mens hoodies suited for" now returns a rich, fully grounded answer using real Climate option values, and coverage was spot-checked generalizing to yoga pants and Gear/Bag-category SKUs too, not just the one reported hoodie case. Empty-products fix (Task 29) and follow-up-chip voice (Task 28) remain in place and unaffected. Phase 1 (per architecture.md's roadmap table) remains functionally complete as of Task 11.
+Last updated from: adding Anthropic (Claude), xAI (Grok), and Google (Gemini) as selectable LLM providers (2026-08-21) — 3 new `LlmProviderInterface` adapters registered in the existing DI provider registry, so both the Primary LLM and Fallback LLM admin dropdowns list all 5 providers automatically with no `system.xml` change (they already derive their options from that registry). xAI's API is genuinely OpenAI-compatible, so it extends the existing `AbstractChatProvider` unchanged; Claude's Messages API and Gemini's `generateContent` API are both load-bearingly different from OpenAI's wire shape (different roles, different tool-call/tool-result representation, system prompt as a separate field, Gemini addressing a tool result by function name with no call-id concept at all) and each got its own request/response mapping implementing `LlmProviderInterface` directly, sharing a new `HttpStatusMapper` for the one piece of logic that genuinely is identical (HTTP-status-to-exception mapping) without touching the existing, already-tested `AbstractChatProvider`/`OpenAiProvider` at all. Built to spec against each provider's real documented API; no live API key was available in this session to exercise a real call against any of the three, an explicit, user-confirmed scope choice — real, DI-resolved verification confirmed all 5 providers resolve correctly through the compiled container and the real admin dropdown lists all 5 with correct labels, but that is disclosed as wiring verification, not a live provider call. Full suite 1596 tests / 3868 assertions / 0 failures (up from 1549/3735).
 Environment: local Magento via docker-magento (markshust/docker-magento).
 
 ## Status by architecture area
@@ -9,16 +9,16 @@ Environment: local Magento via docker-magento (markshust/docker-magento).
 |---|---|---|
 | 1 | Module structure | Partially implemented — **`Controller/Adminhtml/Playground/{Index,TestConnection}.php`, `Block/Adminhtml/Playground/Index.php`, `etc/adminhtml/{routes.xml,menu.xml}`, `view/adminhtml/{layout,templates}` now exist (Task 9), the module's first admin Controller/Block/layout/template files**; storefront `Controller/Chat/Send.php` + `etc/frontend/routes.xml` (Task 8) plus **`Block/Frontend/ChatWidget.php` + `view/frontend/{layout,templates,web/js}` (Task 11), the module's first frontend Block/layout/template/static-asset files**. **A second storefront Controller now exists, `Controller/Chat/History.php` (Task 19)** — a read-only `GET /aichat/chat/history`, the module's first GET-only (no CSRF interface needed) storefront action. Still no Cron/Ui top-level dirs; cron/observer/plugin classes live under Model/Indexing/* instead (layout deviation, not functional) |
 | 2 | Provider abstraction | Embedding: done (OpenAI, Voyage, local-compatible — 3 real adapters). LLM: **OpenAI adapter (Task 1) plus, as of Task 13, `OpenAiCompatibleProvider`** — a generic local-server adapter (Ollama, vLLM, llama.cpp, LM Studio, per architecture.md's original scope) speaking the same OpenAI chat/completions wire format, configurable base URL, optional API key, selectable as either the primary or fallback LLM provider through the existing shared `Model\Config\Source\Provider` dropdown. `Model\Provider\Llm\AbstractChatProvider`/`ChatEndpointPolicy` now exist too (extracted from `OpenAiProvider`, mirroring the embedding side's `AbstractEmbeddingProvider`/`ProviderEndpointPolicy` split, deferred since Task 1 specifically until a second chat adapter existed to justify it) — both providers now share request/response handling, differing only in endpoint-resolution policy, header-building, and the max-output-tokens field name (`max_completion_tokens` vs. Ollama's `max_tokens`). **The admin dropdown label is now "Local / Ollama (OpenAI-Compatible)" (Task 14)**, clearer than Task 13's plain "OpenAI-Compatible" — the underlying `openai_compatible` identifier is unchanged. **A real "Fetch Ollama Models" admin action now exists (Task 14)** — `Controller/Adminhtml/System/Config/FetchOllamaModels.php` + `Model/Provider/Llm/OllamaModelListService.php` call Ollama's own native `GET /api/tags` and populate an HTML5 `<datalist>` bound to the Model field via a small `frontend_model` block (`Block/Adminhtml/System/Config/OllamaModelField`), live-verified against real pulled models. Anthropic/xAI still not implemented |
-| 3 | Admin config sections | Partially implemented — system.xml has general/llm/fallback/embedding/retrieval/guardrails/capabilities/indexing. The "Assistant Capabilities" group (Task 6) gates the 5 read-only tools **plus, as of Task 10, `policy_search_enabled` gating search_store_content**; `guardrails` (Task 7) has `require_cart_confirmation` alongside `cart_mutations_enabled`, gating all 3 cart tools. **`general` (Task 8) now also has `max_conversation_messages`** (default 40, bounds 2-200) — architecture.md's "max turns" field, implemented as a message count rather than a turn count since a single customer-visible turn can span several persisted messages via the tool-call round-trip. **Test Connection is now wired (Task 9)** — `Controller/Adminhtml/Playground/TestConnection.php`, a small AJAX action reusing the exact `ConfiguredProviderResolverInterface`/`ConfigurationReaderInterface`/`SecretReaderInterface` path a real chat call uses, calling `LlmProviderInterface::testConnection()` (built Task 1, never wired until now). **An `appearance` group was added in Task 21 (window/header + message-bubble colors); Task 22 upgraded all 3 fields from plain text to a real color-picker (`frontend_model`, Magento's own shipped `jquery/colorpicker/js/colorpicker`)** and made every field's effective value auto-compute a readable pairing when left unset rather than falling back to a fixed default. Still no Marketing/Recommendations Phase-2 stub |
-| 4 | Custom OpenSearch index | Done — **the Task 3 `space_type` bug is now fixed and live-verified (Task 4)**: `Model/Indexing/Mapping/ProductIndexMapping.php` no longer sets a field-level `space_type` alongside `method.space_type`; a real index was created against the live OpenSearch 2.12 cluster using the actual production `createBody()` output and confirmed successful. Naming (alias + run-token) fine; `ai_product_rag` indexer registered, standard bin/magento indexer commands work. **A second, real bulk-write-blocking bug is now fixed (Task 15)**: `ProductDocumentNormalizer` passed `ProductSnapshotInterface::updatedAt()` — Magento's raw MySQL `Y-m-d H:i:s` string — straight through into the `updated_at` field, which `ProductIndexMapping` declares as OpenSearch `date` type requiring strict ISO-8601; every real bulk write failed (`mapper_parsing_exception`) the moment a real embedding provider and real catalog data were present to reach that code path, which no prior task's environment ever had at the same time. A real `indexer:reindex ai_product_rag` against this store's actual catalog now succeeds and produces real, queryable OpenSearch documents with real 768-dimension embeddings. **A new `aavirbhava:ai-shopping-assistant:index-coverage` console command (Task 24)** diagnoses index/catalog drift directly: `Model/Diagnostics/CatalogSkuProvider` (real salable/visible/enabled catalog SKUs, via the standard `CatalogInventory\Helper\Stock::addIsInStockFilterToCollection()` listing filters) vs. `Model/Diagnostics/IndexedSkuProvider` (a plain match-all query, capped at 10000 documents, against the store's live read alias — not is_enabled-filtered, since every indexed document already passed `ProductIndexEligibilityPolicy`'s gate at index time), composed by `IndexCoverageChecker` into a two-way SKU diff the command prints per store (or `--store-id=<id>` for one). Deliberately simple/fast — a diagnostic, not a reconciliation tool, and it takes no repair action of its own. Live-run against this store's real catalog: 181 salable/visible/enabled products, 181 indexed documents, 0 missing either direction — fully covered, no drift found. **A real attribute-indexing coverage gap is now fixed (Task 30)**: `indexing/searchable_attribute_codes`' shipped default (`manufacturer,color,size,material`) never included `climate`/`pattern`/`style_general`/`style_bottom`/`activity`/`collar`/`sleeve` — real, genuinely populated PDP attributes confirmed via direct SQL against the catalog's EAV tables (climate/pattern/material each on 98/98 "Top"-set and 147/147 catalog-wide configurable products; style_general/style_bottom together cover effectively the whole catalog, split by attribute set) and confirmed absent from a real OpenSearch document for MH08 (Oslo Trek Hoodie) fetched directly before the fix — only `material` was indexed, `climate`/`pattern` were not, despite both being 100%-populated real data. Root-caused to the admin config list alone, not the normalizer (read directly, confirmed it has no hardcoded attribute subset of its own — it normalizes whatever the resolver, driven entirely by config, hands it) and not inconsistent underlying Magento data (the opposite: comprehensively populated, just never configured to be captured). Fixed by broadening both the module's shipped default (`etc/config.xml`) and this environment's own already-stored `core_config_data` override (found via direct SQL — the live effective value, taking precedence over the XML default) to the full attribute list, via the standard `bin/magento config:set`, then a real `indexer:reindex ai_product_rag`. Live-confirmed via a direct post-reindex OpenSearch query that MH08's document now carries `climate`/`material`/`pattern`, and via the real chat pipeline that a genuinely single-turn "what climate are the mens hoodies suited for" now returns a rich, fully grounded answer using real Climate option values (All-Weather, Cool, Spring, Windy, Mild, Indoor, Cold, Wintry) — plus spot-checked coverage generalizing to yoga pants (Bottom set) and even Gear/Bag-category SKUs, not just the one reported hoodie case |
+| 3 | Admin config sections | Partially implemented — system.xml has general/llm/fallback/embedding/retrieval/guardrails/capabilities/indexing. The "Assistant Capabilities" group (Task 6) gates the 5 read-only tools **plus, as of Task 10, `policy_search_enabled` gating search_store_content**; `guardrails` (Task 7) has `require_cart_confirmation` alongside `cart_mutations_enabled`, gating all 3 cart tools. **`general` (Task 8) now also has `max_conversation_messages`** (default 40, bounds 2-200) — architecture.md's "max turns" field, implemented as a message count rather than a turn count since a single customer-visible turn can span several persisted messages via the tool-call round-trip. **Test Connection is now wired (Task 9)** — `Controller/Adminhtml/Playground/TestConnection.php`, a small AJAX action reusing the exact `ConfiguredProviderResolverInterface`/`ConfigurationReaderInterface`/`SecretReaderInterface` path a real chat call uses, calling `LlmProviderInterface::testConnection()` (built Task 1, never wired until now). **An `appearance` group was added in Task 21 (window/header + message-bubble colors); Task 22 upgraded all 3 fields from plain text to a real color-picker (`frontend_model`, Magento's own shipped `jquery/colorpicker/js/colorpicker`)** and made every field's effective value auto-compute a readable pairing when left unset rather than falling back to a fixed default. **`capabilities` (Task 34) gained `promotion_awareness_enabled`** (default on), gating both the new `get_active_promotions` tool and the proactive discount system message the same way the other capability flags gate their own tool. **Two new groups, `cost_cap` and `provider_cost` (Task 35)**: `cost_cap` has the spend cap amount (0 = disabled, the default), cap period (daily/weekly/monthly), warning threshold %, an "Allow Cost Override" Yes/No, and a comma-separated notification-email-addresses field; `provider_cost` has price-per-1k-input/output-tokens fields for each of the 2 currently-registered LLM providers (`openai`, `openai_compatible`/Local-Ollama, the latter defaulting to 0/0). Still no Marketing/Recommendations Phase-2 stub |
+| 4 | Custom OpenSearch index | Done — **the Task 3 `space_type` bug is now fixed and live-verified (Task 4)**: `Model/Indexing/Mapping/ProductIndexMapping.php` no longer sets a field-level `space_type` alongside `method.space_type`; a real index was created against the live OpenSearch 2.12 cluster using the actual production `createBody()` output and confirmed successful. Naming (alias + run-token) fine; `ai_product_rag` indexer registered, standard bin/magento indexer commands work. **A second, real bulk-write-blocking bug is now fixed (Task 15)**: `ProductDocumentNormalizer` passed `ProductSnapshotInterface::updatedAt()` — Magento's raw MySQL `Y-m-d H:i:s` string — straight through into the `updated_at` field, which `ProductIndexMapping` declares as OpenSearch `date` type requiring strict ISO-8601; every real bulk write failed (`mapper_parsing_exception`) the moment a real embedding provider and real catalog data were present to reach that code path, which no prior task's environment ever had at the same time. A real `indexer:reindex ai_product_rag` against this store's actual catalog now succeeds and produces real, queryable OpenSearch documents with real 768-dimension embeddings. **A new `aavirbhava:ai-shopping-assistant:index-coverage` console command (Task 24)** diagnoses index/catalog drift directly: `Model/Diagnostics/CatalogSkuProvider` (real salable/visible/enabled catalog SKUs, via the standard `CatalogInventory\Helper\Stock::addIsInStockFilterToCollection()` listing filters) vs. `Model/Diagnostics/IndexedSkuProvider` (a plain match-all query, capped at 10000 documents, against the store's live read alias — not is_enabled-filtered, since every indexed document already passed `ProductIndexEligibilityPolicy`'s gate at index time), composed by `IndexCoverageChecker` into a two-way SKU diff the command prints per store (or `--store-id=<id>` for one). Deliberately simple/fast — a diagnostic, not a reconciliation tool, and it takes no repair action of its own. Live-run against this store's real catalog: 181 salable/visible/enabled products, 181 indexed documents, 0 missing either direction — fully covered, no drift found. **A real attribute-indexing coverage gap is now fixed (Task 30)**: `indexing/searchable_attribute_codes`' shipped default (`manufacturer,color,size,material`) never included `climate`/`pattern`/`style_general`/`style_bottom`/`activity`/`collar`/`sleeve` — real, genuinely populated PDP attributes confirmed via direct SQL against the catalog's EAV tables (climate/pattern/material each on 98/98 "Top"-set and 147/147 catalog-wide configurable products; style_general/style_bottom together cover effectively the whole catalog, split by attribute set) and confirmed absent from a real OpenSearch document for MH08 (Oslo Trek Hoodie) fetched directly before the fix — only `material` was indexed, `climate`/`pattern` were not, despite both being 100%-populated real data. Root-caused to the admin config list alone, not the normalizer (read directly, confirmed it has no hardcoded attribute subset of its own — it normalizes whatever the resolver, driven entirely by config, hands it) and not inconsistent underlying Magento data (the opposite: comprehensively populated, just never configured to be captured). Fixed by broadening both the module's shipped default (`etc/config.xml`) and this environment's own already-stored `core_config_data` override (found via direct SQL — the live effective value, taking precedence over the XML default) to the full attribute list, via the standard `bin/magento config:set`, then a real `indexer:reindex ai_product_rag`. Live-confirmed via a direct post-reindex OpenSearch query that MH08's document now carries `climate`/`material`/`pattern`, and via the real chat pipeline that a genuinely single-turn "what climate are the mens hoodies suited for" now returns a rich, fully grounded answer using real Climate option values (All-Weather, Cool, Spring, Windy, Mild, Indoor, Cold, Wintry) — plus spot-checked coverage generalizing to yoga pants (Bottom set) and even Gear/Bag-category SKUs, not just the one reported hoodie case. **Rating data now indexed too (Task 31)**: `rating_average`/`review_count`/`catalog_rating_average` (`float`/`integer`/`float`), sourced from Magento's native review system (`Magento_Review`) via `ProductRatingResolver`, on the existing batch/cron indexer only, `MAPPING_VERSION` bumped 2→3 to force old physical indices to a real full reindex — live-confirmed real, correctly-converted (0-100%→0-5 stars) data and a consistent denormalized catalogue average across all 181 documents |
 | 5 | Async indexing | Done, exceeds spec — durable DB ledger + queue + content-hash re-embed, no sync embedding on save, full-rebuild fenced against concurrent incremental writes |
-| 6 | Runtime request pipeline | Full pipeline wired end-to-end: input validation → scope classifier → general.enabled/store-scope gates → hybrid retrieval + ranking → live revalidation of ranked candidates → **prior conversation history loaded and threaded in (Task 8)** → `ToolCallingChatService` (offers the store's allowlisted, capability-enabled tools, runs the tool-call round-trip up to `guardrails.max_tool_calls` rounds, now with a real `cartId`) → Output Validator against the revalidated set merged with whatever tools verified mid-conversation → structured response contract or safe fallback → **on success only, this turn's exchange is persisted for the next turn (Task 8)**. A provider failure (primary and fallback both exhausted) does not propagate uncaught. All 8 tools from architecture.md's original list are built — search_products, get_product_details, compare_products, check_price, check_inventory, get_cart, add_to_cart, remove_from_cart — **plus a 9th, `search_store_content` (Task 10)**, a keyword-only unified CMS/blog/product search distinct from search_products' semantic retrieval. **A real Controller endpoint now exists (`POST /aichat/chat/send`) resolving real session-backed identity (conversation id, customer group, cart) — the cart-id/session gap flagged since Task 3/7 is now closed**; all 9 tools, including the Task 7 cart-mutation confirmation gate, are reachable end-to-end by a genuine multi-turn customer conversation, not just direct construction. Order-assistance tools from architecture.md's broader "Assistant Capabilities" sketch remain unbuilt — architecture.md's own Phase roadmap table lists "Order assistance, returns, support escalation, voice/image-based search" under Phase 4, resolving the ambiguity Task 9's report flagged; this was never truly undecided Phase-1 scope. **A real storefront widget now calls this endpoint (Task 11)** — the pipeline is no longer only reachable by a real customer conversation in principle (Task 8), but by an actual clickable UI a shopper uses. **A retrieval/ranking failure (a `ProductIndexingException`/`ProviderException` from `HybridRetrievalService`/its query-embedding step) now also short-circuits to the same safe-response shape instead of propagating raw (Task 12)** — closing the one gap Task 11's own live check surfaced (an unconfigured-OpenSearch environment previously produced a raw PHP error page through the real endpoint); reason code `retrieval_unavailable`, kept distinct from `assistant_unavailable` so ops can tell the two backends' outages apart in logs. **`add_to_cart` now handles configurable products (Task 16)**: a call with no `option_selection` returns `needs_options` listing the real required attributes (Size/Color/etc.) and their real available values; a call with free-text `option_selection` (e.g. "M, gray", tolerant of extra words like "pink one") is matched case-insensitively against the product's real attribute/value labels, resolved to the one real, salable child variant, and only then added — via the real Magento cart-item `configurable_item_options` mechanism (parent SKU + attribute-id/value-index pairs, not the child SKU directly, since a configurable child is legitimately not individually visible and `LiveRevalidationServiceInterface`'s visibility gate would incorrectly reject it). An unmatched or ambiguous phrase, an incomplete selection, or a real combination that isn't currently salable never mutates the cart — each returns a distinct, honest status instead of guessing. **A real, live-confirmed bug in `get_cart`'s tool schema is now fixed (Task 17)**: `'properties' => []` json_encode()s as a JSON array, invalid for JSON Schema's `properties` keyword (must be an object, even empty) — OpenAI's real API tolerates it, a real Ollama instance does not, rejecting the *entire* chat request with HTTP 400 the moment `get_cart` is offered as a tool (i.e. whenever `cart_mutations_enabled` is on), which surfaced as every real chat message silently falling back to `assistant_unavailable`. Fixed by returning `new \stdClass()` instead (always encodes as `{}`), plus the same fix in `AbstractChatProvider::buildTool()`'s own empty-parameters fallback default for consistency. **A conversation's visible transcript now survives a page reload or a new tab (Task 19)**: a new `Model/Chat/ConversationHistoryViewBuilder` filters `ConversationHistoryStoreInterface::recentMessages()`'s raw, LLM-context-shaped list (which also carries intermediate tool-call-request/tool-result plumbing) down to exactly what a customer actually saw — their own messages plus the final assistant text of each turn — for `Controller/Chat/History.php` to serve. Deliberately reads `ChatSession::getConversationId()` directly rather than through `ChatIdentityResolverInterface::resolve()` (Task 8), since resolve() allocates a fresh conversation id and may auto-vivify a guest quote as a side effect — neither of which a passive per-page-load "anything to restore" check should ever trigger for a visitor who has never opened the widget. Does not restore structured product cards/follow-ups/confirmation state for past turns — only the final response text is persisted per turn, not the full `AssistantResponse` those were built from. **A restored turn now DOES include real product cards too (Task 20)**, closing that exact gap from Task 19: `ChatEntryPipeline` now persists `ChatResponseSerializer::serializeDisplayPayload()`'s output (products/follow_up_questions/actions, the identical shape a live turn's response carries) alongside the turn's final message via a new `response_payload` column and `ConversationHistoryStoreInterface::appendTurn()`'s new optional 5th param; a new `recentMessagesWithResponsePayloads()` method (backed by a new `StoredConversationMessage` DTO, kept deliberately separate from `ChatMessage`/`recentMessages()` since that one still only feeds LLM context and has no use for UI-only display data) reads it back for `ConversationHistoryViewBuilder`/`Controller/Chat/History` to serve. `awaiting_confirmation` is deliberately never restored — a stale confirmation token from a past page load is short-lived server-side, and re-offering that affordance would just invite a confusing, already-expired confirm attempt. **`ChatEntryPipeline::handle()` now always logs one compact trace per real request to its own dedicated log file (Task 24)**: the whole method body runs inside a try/finally around a mutable `Model/Chat/Debug/ChatDebugTrace` accumulator, so `Model/Chat/Debug/ChatDebugLogger` records the trace no matter which branch returns — the incoming message, the scope classifier's decision, the retrieval query and every candidate's real BM25/vector/rank scores, live revalidation's before/after counts and dropped SKUs (the one real "filter" step this pipeline has — no structured price/attribute filter exists anywhere in retrieval, confirmed again by this task's own code search, unchanged since Task 22/23's findings), and the final product SKUs actually returned; fields for a stage never reached (e.g. retrieval on a disabled-store or out-of-scope short-circuit) stay null rather than guessed. Scoped to the up-front retrieval/revalidation `ChatEntryPipeline` always runs itself — a mid-conversation `search_products` tool call the model makes on its own isn't separately traced in this pass, a disclosed scope boundary, not a silent gap. Getting the new `var/log/aavirbhava_ai_shopping_assistant_chat.log` channel genuinely isolated from `system.log`/`debug.log`/syslog took two live-verified rounds — see Task 24's history entry below for the full root cause (Magento's DI array-merge-by-key behavior for `Magento\Framework\Logger\Monolog`'s default handlers, and a `NullHandler`'s default threshold silently swallowing every record before a real handler after it in the array ever ran). **A real, silent product-loss bug is now fixed (Task 25)**: the Task 24 debug trace itself proved retrieval and live revalidation were never the problem (`availability_filter` 8→8) — the LLM's own `product_skus` selection was silently dropping real, qualifying matches (a plain "jackets below $60" landed on only 4 of the 5 real matches). A new `Model/Chat/PriceConstraintDetector` parses an explicit price threshold straight from the customer's own query text (regex-based, exclusive vs. inclusive bounds, plus a "between $X and $Y" range), and a new `Model/Chat/PriceConstraintReconciler` deterministically corrects the validated response's `products[]` against it — once, after `OutputValidator` has already passed the response, never as another model round-trip: any real, live-revalidated candidate that qualifies but was dropped is added (with an honest, code-generated reason), and any selected product that doesn't actually qualify is removed, with any now-dangling `AssistantAction` SKU reference pruned too. `ChatDebugTrace` gained matching `price_constraint`/`added_skus`/`removed_skus` fields so the correction itself is directly visible in the same debug log that surfaced the bug. Live-confirmed for three different real thresholds against this store's real catalog, not just the one reported example — see Task 25's history entry below. **A real multi-turn follow-up bug is now fixed (Task 26)**: the debug log (Task 24) proved conversation history was genuinely threaded into the LLM call for a short follow-up ("medium size"/"the cheaper one") right after a successful product query, but this turn's own retrieval — run on the follow-up text alone, with no product-type signal — returned candidates completely unrelated to the prior turn, and whether the model recovered depended entirely on it independently calling a tool with a remembered SKU (worked once, failed once live). A new `Model/Chat/PriorTurnProductCarryOver` recovers the immediately preceding, already-validated assistant turn's real product SKUs (via `recentMessagesWithResponsePayloads()`, Task 20's UI-restore read path) and `ChatEntryPipeline` re-revalidates them live before merging into this turn's verified set whenever conversation history exists, regardless of this turn's own retrieval quality; `ProductContextFormatter`'s prompt was also relaxed from "this list is the complete and only set of products you may mention" to explicitly permit a product already named earlier in the same conversation, since `OutputValidator`'s fabricated_sku check (not the prompt wording) is the actual security boundary. Live-confirmed for two differently-worded follow-ups, both via the debug log's new `carried_over_skus` field — see Task 26's history entry below. **`PriceConstraintDetector` gained "within $X" and "around $X" (Task 27)**: "within" was a real, confirmed gap — present in `OutputValidator`'s own, separately-maintained threshold-phrase list since Task 22 but never carried over when this detector was built in Task 25, live-reproduced as "show me price within $50" detecting no constraint at all — now an inclusive max bound like "up to"/"no more than". "around $X" is deliberately a symmetric ±20% range, not a single max bound — "around" doesn't mean "at most," so a customer asking for something around $50 would still expect a genuinely close $55 item to surface, which a max-bound-only reading would incorrectly exclude; "about" was deliberately left uncovered since it collides with its far more common non-price sense ("tell me about $50 gift cards"). "budget of $X"/"$X budget"/"$X or under" were checked against the existing phrase lists and found already covered — confirmed by new tests, not assumed. **A real "zero product cards despite naming real products in text" bug is now fixed (Task 29)**: `ProductMentionCompletenessChecker`'s matching logic itself was proven correct for both an empty and a partial mismatch (a direct raw-parse capture caught a real 0-of-1 miss corrected by the existing retry) — the real cause was `MAX_STRUCTURED_OUTPUT_ATTEMPTS`'s single shared 2-attempt budget covering three different retry purposes (malformed JSON, invalid/empty provider response, completeness): a completeness gap first surfacing on the *last* allowed attempt, because an earlier attempt was already spent on an unrelated compliance correction, previously had zero chance of ever being corrected. Fixed with a new `MAX_TOTAL_ATTEMPTS` (3) — one bonus attempt reserved specifically for completeness, never consumable by a malformed/invalid-response retry, so the extra cost only applies in the rare compound case, not every turn. This closes a real cascading effect Task 26's `PriorTurnProductCarryOver` correctly exposed rather than caused: skipping a genuinely product-less turn is correct behavior, but this bug meant a turn that *should* have had products sometimes didn't, costing the *next* turn its rightful carry-over context — live-confirmed the two-turn "hoodies" → "cotton materials" sequence now succeeds end-to-end with real carry-over data |
-| 7 | Fallback chain | **Done (Task 5)** — `FallbackChatGenerationService` decorates `ChatGenerationServiceInterface`: bounded retry (3 attempts, ~200-800ms backoff) against transient failures only, a cache-backed circuit breaker per store/provider-role (`failure_threshold`/`cooldown_seconds` from existing config), then the configured fallback provider, then propagation that `ChatEntryPipeline` turns into a safe non-AI response. Only `FallbackEligibilityPolicy`-eligible (transient availability) failures are retried or trigger fallback at all — safety/config/auth failures propagate immediately, matching the policy's "never bypass a safety boundary" contract. `ResponseMetadata.fallbackUsed` is now populated accurately (was hardcoded false) |
-| 8 | Response contract | Done — `AssistantResponse` (message, products[] with sku/reason/recommendation_type/verified_at + live price/url, follow_up_questions, actions, metadata). LLM asked for structured JSON via `ChatRequest::responseSchema` (never a price/URL/stock field in the schema); every non-`reason` product fact comes from `RevalidatedProduct`, never the LLM. `recommendation_type` always `"organic"` today; Phase 2 values (`recommended`/`promoted`) are accepted by the DTO but nothing produces them yet. **The Output Validator now also catches a fabricated price mentioned in free text (Task 5), not just SKUs/URLs** — see area 8 note in Task 5 history below for the regex approach and its known limits. **`ChatResponseSerializer`'s JSON now also carries `awaiting_confirmation` (Task 11)** — a boolean `ChatEntryPipeline` derives by scanning this turn's tool round-trip for a `confirmation_required` status a mutating cart tool already returned; it surfaces an already-computed fact for the frontend, it does not decide anything new, and the confirmation token itself never leaves the backend/LLM conversation context. **Structured-output compliance from local/Ollama-served models is now measurably more reliable (Task 16)**: `ChatRequest::responseSchema`'s `response_format: json_schema` mechanism alone (sufficient for OpenAI's real API, which enforces schema at the sampling level) was live-confirmed to not reliably hold for a local model once a tool-call round-trip is in the conversation — the identical request produces compliant JSON for a trivial single-turn prompt but free-form prose, or JSON in a wrapping code fence with an invented shape, once real product context and a real tool result are present. A new always-included `ResponseContractFormatter` system message spells out the exact required JSON shape in plain language (reinforcing, not replacing, `response_format`), `LlmResponseParser` now tolerates a wrapping markdown code fence before giving up, and `ChatEntryPipeline` now retries once (2 attempts total) specifically on a `malformed_response` validation failure, appending the model's own bad output plus a corrective instruction before asking again — never retried for `fabricated_sku`/`fabricated_url`/`fabricated_price`, since those are content problems the model already got right structurally, not format problems, and retrying a hallucination risks encouraging another one. **`product_skus` is now explicitly instructed to cover descriptive/informational answers too, not only recommendations (Task 18)**: live-reproduced that a purely informational query ("what are yoga pants made of") named several real products by name in the free-text message but left `product_skus` (and therefore `products[]`/rendered cards) partially or entirely empty — the existing instruction only described the field's *format*, never *when* to populate it, leaving the model to infer "recommendation only" on its own. `ResponseContractFormatter` now explicitly states any product the message names/describes/discusses belongs in `product_skus` regardless of answer type — a prompting change only, `OutputValidator`'s `fabricated_sku` fail-closed check is unchanged. Live-verified this measurably improves consistency (repeated real runs of the same query went from mostly-empty to a full, correct product set in the majority of runs) but, consistent with this local model's other documented compliance gaps, does not reach 100% — an honestly-reported residual limitation, not something believed fixable by further prompting alone. **A real false-positive in the price-fabrication check is now fixed (Task 22)**: every price-constrained search ("jackets less than $40") was failing outright, live-diagnosed to `reason_code: fabricated_price` — the model's own reply correctly found a real $32 product but also echoed the customer's stated "$40" budget back in the same sentence ("...under $40"), and that echoed number, checked as if it were a claimed product price, matched no real product within tolerance, rejecting the entire otherwise-correct response. `containsFabricatedPrice()` now recognizes threshold-qualifying words ("under", "over", "less than", "between", etc.) immediately before a mentioned price and exempts that mention from the real-price match check entirely, since it's a restated constraint, not a price claim. This also incidentally fixes a second, previously-documented-as-accepted false positive from Task 5 ("free shipping on orders over $75") — that test was rewritten, not deleted, to assert the corrected behavior. A price mentioned with no qualifying word (a bare discount amount like "$5 off") is unaffected and can still false-positive exactly as before — a new, narrower, explicitly documented instance of the same known regex-based limitation. **A second, identical-shaped false positive in the URL check is now fixed (Task 23)**: `containsUrl()` rejected ANY url the model mentioned at all — live-caught rejecting a genuinely accurate product url the model had retrieved via `get_product_details` and repeated back in a "compare these two products" answer. Renamed to `containsFabricatedUrl()` and given the exact same "exempt a real, matching mention" shape `containsFabricatedPrice()` already used — a url now only fails the check if it doesn't match any revalidated product's real url. **A new `ProductMentionCompletenessChecker` (Task 23) catches "here are 2 jackets" rendering only 1 card**: live-reproduced that despite Task 18's own instruction, the model sometimes still names a second real, verified product in its message text without selecting its SKU into `product_skus`. Mechanical, not fuzzy NLP — flags a candidate only when its exact, real product name appears as a literal substring of the message — and `ChatEntryPipeline` retries once with a message naming exactly which SKU(s) were missing; if the retry doesn't fully resolve it, the latest valid (even if still incomplete) response is used rather than falling back to the generic message, since a partial result is always better than none. **`ChatEntryPipeline`'s retry budget now also covers a genuinely empty/invalid provider response (Task 23)**: live-traced a real, previously-silent `assistant_unavailable` cause — the model occasionally hallucinates a tool call literally named "product_skus" (confusing the response-schema field with a real callable tool), which always fails as `unknown_tool` and burns a round of `guardrails.max_tool_calls`; once forced to answer with no tools offered, it sometimes returns nothing at all. `ResponseContractFormatter` now explicitly warns against calling a "product_skus" tool, and a `ProviderInvalidResponseException` (as opposed to a genuine availability failure, which is unchanged and still short-circuits immediately) now gets the same one-retry-with-a-nudge treatment a malformed response already had. The catch block that used to silently discard this exception entirely (`catch (ProviderException)`, no variable bound, nothing logged) now logs it, closing a real diagnosability gap. **A same-task attempt to also raise `guardrails.max_tool_calls`'s default from 4 to 6 was tried and reverted**: the reasoning (more slack to recover from a wasted round) seemed sound, but broad live testing showed it mostly just made already-difficult ambiguous queries ("something for the gym", "gift for my mom") take longer without becoming successes — worst-case real provider calls per turn roughly doubled (up to 14 at the 20s default LLM timeout, ~280s), and this environment's nginx has a real, unoverridden ~60s default `fastcgi_read_timeout` that a meaningful fraction of the broad test's calls hit. Reverted to 4; a confirmation re-test of the same previously-timing-out queries all completed well under that ceiling afterward. **`ResponseContractFormatter` now leads with an explicit persona + strict-grounding paragraph (Task 27)**: auditing both system-message-assembling classes found neither carried a "you are a shopping assistant" role statement nor a rule against inventing a fact absent from this turn's data that applied on *every* turn — `ProductContextFormatter`'s own similar sentence only ever sends when candidates exist. The new paragraph ("You are a shopping assistant for this store... never invent a product, price, SKU, URL, stock status, or attribute... say so plainly instead of describing something that merely sounds right") sits in `ResponseContractFormatter` specifically because that message is always included, so the "say so plainly" instruction reaches the model even on a turn where retrieval found nothing at all. Every existing instruction (JSON shape, product_skus completeness, the "not a tool" warning, reason authenticity) was kept verbatim — this was an addition, not a rewrite. `OutputValidator`'s fabricated_sku/fabricated_price/fabricated_url checks are unchanged and remain the actual enforcement boundary; live-confirmed across several varied real queries (including one with genuinely no matching products, correctly declined rather than invented) that responses stayed fully grounded with no new fabrication. **`follow_up_questions` must now be written in the customer's own voice, not the assistant's (Task 28)**: live-reproduced the storefront widget rendering a chip like "Would you like to add this to your cart?" and, on click, sending that exact text back as the customer's own next message — nothing in the instructions had ever said which voice to use. A new paragraph instructs the model to phrase every entry as a short, natural thing the customer might actually say next ("add the Tiberius Gym Tank to my cart", "what's it made of"), never a question addressed to them; `LlmResponseSchema` also gained a matching `description` on that one field (the first this schema has ever had) as a second, provider-native reinforcement. Live-confirmed reliable for product-search/cart-action queries across repeated real runs; honestly, a purely informational query ("what are yoga pants made of") still produced assistant-voice chips in 3/3 repeated attempts — a disclosed, not-fully-solved local-model-compliance gap, consistent with every other prompt-only fix in this module |
+| 6 | Runtime request pipeline | Full pipeline wired end-to-end: input validation → scope classifier → general.enabled/store-scope gates → hybrid retrieval + ranking → live revalidation of ranked candidates → **prior conversation history loaded and threaded in (Task 8)** → `ToolCallingChatService` (offers the store's allowlisted, capability-enabled tools, runs the tool-call round-trip up to `guardrails.max_tool_calls` rounds, now with a real `cartId`) → Output Validator against the revalidated set merged with whatever tools verified mid-conversation → structured response contract or safe fallback → **on success only, this turn's exchange is persisted for the next turn (Task 8)**. A provider failure (primary and fallback both exhausted) does not propagate uncaught. All 8 tools from architecture.md's original list are built — search_products, get_product_details, compare_products, check_price, check_inventory, get_cart, add_to_cart, remove_from_cart — **plus a 9th, `search_store_content` (Task 10)**, a keyword-only unified CMS/blog/product search distinct from search_products' semantic retrieval. **A real Controller endpoint now exists (`POST /aichat/chat/send`) resolving real session-backed identity (conversation id, customer group, cart) — the cart-id/session gap flagged since Task 3/7 is now closed**; all 9 tools, including the Task 7 cart-mutation confirmation gate, are reachable end-to-end by a genuine multi-turn customer conversation, not just direct construction. Order-assistance tools from architecture.md's broader "Assistant Capabilities" sketch remain unbuilt — architecture.md's own Phase roadmap table lists "Order assistance, returns, support escalation, voice/image-based search" under Phase 4, resolving the ambiguity Task 9's report flagged; this was never truly undecided Phase-1 scope. **A real storefront widget now calls this endpoint (Task 11)** — the pipeline is no longer only reachable by a real customer conversation in principle (Task 8), but by an actual clickable UI a shopper uses. **A retrieval/ranking failure (a `ProductIndexingException`/`ProviderException` from `HybridRetrievalService`/its query-embedding step) now also short-circuits to the same safe-response shape instead of propagating raw (Task 12)** — closing the one gap Task 11's own live check surfaced (an unconfigured-OpenSearch environment previously produced a raw PHP error page through the real endpoint); reason code `retrieval_unavailable`, kept distinct from `assistant_unavailable` so ops can tell the two backends' outages apart in logs. **`add_to_cart` now handles configurable products (Task 16)**: a call with no `option_selection` returns `needs_options` listing the real required attributes (Size/Color/etc.) and their real available values; a call with free-text `option_selection` (e.g. "M, gray", tolerant of extra words like "pink one") is matched case-insensitively against the product's real attribute/value labels, resolved to the one real, salable child variant, and only then added — via the real Magento cart-item `configurable_item_options` mechanism (parent SKU + attribute-id/value-index pairs, not the child SKU directly, since a configurable child is legitimately not individually visible and `LiveRevalidationServiceInterface`'s visibility gate would incorrectly reject it). An unmatched or ambiguous phrase, an incomplete selection, or a real combination that isn't currently salable never mutates the cart — each returns a distinct, honest status instead of guessing. **A real, live-confirmed bug in `get_cart`'s tool schema is now fixed (Task 17)**: `'properties' => []` json_encode()s as a JSON array, invalid for JSON Schema's `properties` keyword (must be an object, even empty) — OpenAI's real API tolerates it, a real Ollama instance does not, rejecting the *entire* chat request with HTTP 400 the moment `get_cart` is offered as a tool (i.e. whenever `cart_mutations_enabled` is on), which surfaced as every real chat message silently falling back to `assistant_unavailable`. Fixed by returning `new \stdClass()` instead (always encodes as `{}`), plus the same fix in `AbstractChatProvider::buildTool()`'s own empty-parameters fallback default for consistency. **A conversation's visible transcript now survives a page reload or a new tab (Task 19)**: a new `Model/Chat/ConversationHistoryViewBuilder` filters `ConversationHistoryStoreInterface::recentMessages()`'s raw, LLM-context-shaped list (which also carries intermediate tool-call-request/tool-result plumbing) down to exactly what a customer actually saw — their own messages plus the final assistant text of each turn — for `Controller/Chat/History.php` to serve. Deliberately reads `ChatSession::getConversationId()` directly rather than through `ChatIdentityResolverInterface::resolve()` (Task 8), since resolve() allocates a fresh conversation id and may auto-vivify a guest quote as a side effect — neither of which a passive per-page-load "anything to restore" check should ever trigger for a visitor who has never opened the widget. Does not restore structured product cards/follow-ups/confirmation state for past turns — only the final response text is persisted per turn, not the full `AssistantResponse` those were built from. **A restored turn now DOES include real product cards too (Task 20)**, closing that exact gap from Task 19: `ChatEntryPipeline` now persists `ChatResponseSerializer::serializeDisplayPayload()`'s output (products/follow_up_questions/actions, the identical shape a live turn's response carries) alongside the turn's final message via a new `response_payload` column and `ConversationHistoryStoreInterface::appendTurn()`'s new optional 5th param; a new `recentMessagesWithResponsePayloads()` method (backed by a new `StoredConversationMessage` DTO, kept deliberately separate from `ChatMessage`/`recentMessages()` since that one still only feeds LLM context and has no use for UI-only display data) reads it back for `ConversationHistoryViewBuilder`/`Controller/Chat/History` to serve. `awaiting_confirmation` is deliberately never restored — a stale confirmation token from a past page load is short-lived server-side, and re-offering that affordance would just invite a confusing, already-expired confirm attempt. **`ChatEntryPipeline::handle()` now always logs one compact trace per real request to its own dedicated log file (Task 24)**: the whole method body runs inside a try/finally around a mutable `Model/Chat/Debug/ChatDebugTrace` accumulator, so `Model/Chat/Debug/ChatDebugLogger` records the trace no matter which branch returns — the incoming message, the scope classifier's decision, the retrieval query and every candidate's real BM25/vector/rank scores, live revalidation's before/after counts and dropped SKUs (the one real "filter" step this pipeline has — no structured price/attribute filter exists anywhere in retrieval, confirmed again by this task's own code search, unchanged since Task 22/23's findings), and the final product SKUs actually returned; fields for a stage never reached (e.g. retrieval on a disabled-store or out-of-scope short-circuit) stay null rather than guessed. Scoped to the up-front retrieval/revalidation `ChatEntryPipeline` always runs itself — a mid-conversation `search_products` tool call the model makes on its own isn't separately traced in this pass, a disclosed scope boundary, not a silent gap. Getting the new `var/log/aavirbhava_ai_shopping_assistant_chat.log` channel genuinely isolated from `system.log`/`debug.log`/syslog took two live-verified rounds — see Task 24's history entry below for the full root cause (Magento's DI array-merge-by-key behavior for `Magento\Framework\Logger\Monolog`'s default handlers, and a `NullHandler`'s default threshold silently swallowing every record before a real handler after it in the array ever ran). **A real, silent product-loss bug is now fixed (Task 25)**: the Task 24 debug trace itself proved retrieval and live revalidation were never the problem (`availability_filter` 8→8) — the LLM's own `product_skus` selection was silently dropping real, qualifying matches (a plain "jackets below $60" landed on only 4 of the 5 real matches). A new `Model/Chat/PriceConstraintDetector` parses an explicit price threshold straight from the customer's own query text (regex-based, exclusive vs. inclusive bounds, plus a "between $X and $Y" range), and a new `Model/Chat/PriceConstraintReconciler` deterministically corrects the validated response's `products[]` against it — once, after `OutputValidator` has already passed the response, never as another model round-trip: any real, live-revalidated candidate that qualifies but was dropped is added (with an honest, code-generated reason), and any selected product that doesn't actually qualify is removed, with any now-dangling `AssistantAction` SKU reference pruned too. `ChatDebugTrace` gained matching `price_constraint`/`added_skus`/`removed_skus` fields so the correction itself is directly visible in the same debug log that surfaced the bug. Live-confirmed for three different real thresholds against this store's real catalog, not just the one reported example — see Task 25's history entry below. **A real multi-turn follow-up bug is now fixed (Task 26)**: the debug log (Task 24) proved conversation history was genuinely threaded into the LLM call for a short follow-up ("medium size"/"the cheaper one") right after a successful product query, but this turn's own retrieval — run on the follow-up text alone, with no product-type signal — returned candidates completely unrelated to the prior turn, and whether the model recovered depended entirely on it independently calling a tool with a remembered SKU (worked once, failed once live). A new `Model/Chat/PriorTurnProductCarryOver` recovers the immediately preceding, already-validated assistant turn's real product SKUs (via `recentMessagesWithResponsePayloads()`, Task 20's UI-restore read path) and `ChatEntryPipeline` re-revalidates them live before merging into this turn's verified set whenever conversation history exists, regardless of this turn's own retrieval quality; `ProductContextFormatter`'s prompt was also relaxed from "this list is the complete and only set of products you may mention" to explicitly permit a product already named earlier in the same conversation, since `OutputValidator`'s fabricated_sku check (not the prompt wording) is the actual security boundary. Live-confirmed for two differently-worded follow-ups, both via the debug log's new `carried_over_skus` field — see Task 26's history entry below. **`PriceConstraintDetector` gained "within $X" and "around $X" (Task 27)**: "within" was a real, confirmed gap — present in `OutputValidator`'s own, separately-maintained threshold-phrase list since Task 22 but never carried over when this detector was built in Task 25, live-reproduced as "show me price within $50" detecting no constraint at all — now an inclusive max bound like "up to"/"no more than". "around $X" is deliberately a symmetric ±20% range, not a single max bound — "around" doesn't mean "at most," so a customer asking for something around $50 would still expect a genuinely close $55 item to surface, which a max-bound-only reading would incorrectly exclude; "about" was deliberately left uncovered since it collides with its far more common non-price sense ("tell me about $50 gift cards"). "budget of $X"/"$X budget"/"$X or under" were checked against the existing phrase lists and found already covered — confirmed by new tests, not assumed. **A real "zero product cards despite naming real products in text" bug is now fixed (Task 29)**: `ProductMentionCompletenessChecker`'s matching logic itself was proven correct for both an empty and a partial mismatch (a direct raw-parse capture caught a real 0-of-1 miss corrected by the existing retry) — the real cause was `MAX_STRUCTURED_OUTPUT_ATTEMPTS`'s single shared 2-attempt budget covering three different retry purposes (malformed JSON, invalid/empty provider response, completeness): a completeness gap first surfacing on the *last* allowed attempt, because an earlier attempt was already spent on an unrelated compliance correction, previously had zero chance of ever being corrected. Fixed with a new `MAX_TOTAL_ATTEMPTS` (3) — one bonus attempt reserved specifically for completeness, never consumable by a malformed/invalid-response retry, so the extra cost only applies in the rare compound case, not every turn. This closes a real cascading effect Task 26's `PriorTurnProductCarryOver` correctly exposed rather than caused: skipping a genuinely product-less turn is correct behavior, but this bug meant a turn that *should* have had products sometimes didn't, costing the *next* turn its rightful carry-over context — live-confirmed the two-turn "hoodies" → "cotton materials" sequence now succeeds end-to-end with real carry-over data. **A 10th tool, `get_active_promotions` (Task 34), reads real, currently-active Catalog Price Rules and Cart Price Rules live at request time** — catalog rules via `Magento\CatalogRule\Model\ResourceModel\Rule::getRulePrices()` (Magento's own precomputed-price API, scoped to only the candidate product IDs already revalidated, never every active rule), cart rules via `Magento\SalesRule\Model\ResourceModel\Rule\Collection::addWebsiteGroupDateFilter()` (Magento's own real active/in-range/website/group filter), with an explicit auto-applied-vs-coupon-required distinction (`CartPromotionInterface::requiresCoupon()`/`couponCode()`) rather than one collapsed "discount available" flag. `ChatEntryPipeline` also resolves catalog-rule discounts for the current turn's candidates proactively (not only on explicit tool call) into a new `PromotionContextFormatter` system message, gated by the same new `capabilities.promotion_awareness_enabled` flag that gates the tool. Live-verified end-to-end through the real chat pipeline against this store's real, pre-existing "20% off all Women's and Men's Pants" catalog rule and its 4 real active cart rules (one genuinely requiring a real coupon code) — see Task 34's history entry below |
+| 7 | Fallback chain | **Done (Task 5)** — `FallbackChatGenerationService` decorates `ChatGenerationServiceInterface`: bounded retry (3 attempts, ~200-800ms backoff) against transient failures only, a cache-backed circuit breaker per store/provider-role (`failure_threshold`/`cooldown_seconds` from existing config), then the configured fallback provider, then propagation that `ChatEntryPipeline` turns into a safe non-AI response. Only `FallbackEligibilityPolicy`-eligible (transient availability) failures are retried or trigger fallback at all — safety/config/auth failures propagate immediately, matching the policy's "never bypass a safety boundary" contract. `ResponseMetadata.fallbackUsed` is now populated accurately (was hardcoded false). **A second decorator, `Model\Chat\CostTrackingChatGenerationService` (Task 35), now sits on top of `FallbackChatGenerationService`** (the same concrete-class-dependency technique, avoiding a DI cycle) and is what `ChatGenerationServiceInterface` actually resolves to — every real provider call, successful or not, still goes through retry/circuit-breaker/fallback exactly as before; only a genuinely successful call also gets its real token usage recorded for the LLM cost cap (see row 12 and Task 35's own history entry) |
+| 8 | Response contract | Done — `AssistantResponse` (message, products[] with sku/reason/recommendation_type/verified_at + live price/url, follow_up_questions, actions, metadata). LLM asked for structured JSON via `ChatRequest::responseSchema` (never a price/URL/stock field in the schema); every non-`reason` product fact comes from `RevalidatedProduct`, never the LLM. `recommendation_type` always `"organic"` today; Phase 2 values (`recommended`/`promoted`) are accepted by the DTO but nothing produces them yet. **The Output Validator now also catches a fabricated price mentioned in free text (Task 5), not just SKUs/URLs** — see area 8 note in Task 5 history below for the regex approach and its known limits. **`ChatResponseSerializer`'s JSON now also carries `awaiting_confirmation` (Task 11)** — a boolean `ChatEntryPipeline` derives by scanning this turn's tool round-trip for a `confirmation_required` status a mutating cart tool already returned; it surfaces an already-computed fact for the frontend, it does not decide anything new, and the confirmation token itself never leaves the backend/LLM conversation context. **Structured-output compliance from local/Ollama-served models is now measurably more reliable (Task 16)**: `ChatRequest::responseSchema`'s `response_format: json_schema` mechanism alone (sufficient for OpenAI's real API, which enforces schema at the sampling level) was live-confirmed to not reliably hold for a local model once a tool-call round-trip is in the conversation — the identical request produces compliant JSON for a trivial single-turn prompt but free-form prose, or JSON in a wrapping code fence with an invented shape, once real product context and a real tool result are present. A new always-included `ResponseContractFormatter` system message spells out the exact required JSON shape in plain language (reinforcing, not replacing, `response_format`), `LlmResponseParser` now tolerates a wrapping markdown code fence before giving up, and `ChatEntryPipeline` now retries once (2 attempts total) specifically on a `malformed_response` validation failure, appending the model's own bad output plus a corrective instruction before asking again — never retried for `fabricated_sku`/`fabricated_url`/`fabricated_price`, since those are content problems the model already got right structurally, not format problems, and retrying a hallucination risks encouraging another one. **`product_skus` is now explicitly instructed to cover descriptive/informational answers too, not only recommendations (Task 18)**: live-reproduced that a purely informational query ("what are yoga pants made of") named several real products by name in the free-text message but left `product_skus` (and therefore `products[]`/rendered cards) partially or entirely empty — the existing instruction only described the field's *format*, never *when* to populate it, leaving the model to infer "recommendation only" on its own. `ResponseContractFormatter` now explicitly states any product the message names/describes/discusses belongs in `product_skus` regardless of answer type — a prompting change only, `OutputValidator`'s `fabricated_sku` fail-closed check is unchanged. Live-verified this measurably improves consistency (repeated real runs of the same query went from mostly-empty to a full, correct product set in the majority of runs) but, consistent with this local model's other documented compliance gaps, does not reach 100% — an honestly-reported residual limitation, not something believed fixable by further prompting alone. **A real false-positive in the price-fabrication check is now fixed (Task 22)**: every price-constrained search ("jackets less than $40") was failing outright, live-diagnosed to `reason_code: fabricated_price` — the model's own reply correctly found a real $32 product but also echoed the customer's stated "$40" budget back in the same sentence ("...under $40"), and that echoed number, checked as if it were a claimed product price, matched no real product within tolerance, rejecting the entire otherwise-correct response. `containsFabricatedPrice()` now recognizes threshold-qualifying words ("under", "over", "less than", "between", etc.) immediately before a mentioned price and exempts that mention from the real-price match check entirely, since it's a restated constraint, not a price claim. This also incidentally fixes a second, previously-documented-as-accepted false positive from Task 5 ("free shipping on orders over $75") — that test was rewritten, not deleted, to assert the corrected behavior. A price mentioned with no qualifying word (a bare discount amount like "$5 off") is unaffected and can still false-positive exactly as before — a new, narrower, explicitly documented instance of the same known regex-based limitation. **A second, identical-shaped false positive in the URL check is now fixed (Task 23)**: `containsUrl()` rejected ANY url the model mentioned at all — live-caught rejecting a genuinely accurate product url the model had retrieved via `get_product_details` and repeated back in a "compare these two products" answer. Renamed to `containsFabricatedUrl()` and given the exact same "exempt a real, matching mention" shape `containsFabricatedPrice()` already used — a url now only fails the check if it doesn't match any revalidated product's real url. **A new `ProductMentionCompletenessChecker` (Task 23) catches "here are 2 jackets" rendering only 1 card**: live-reproduced that despite Task 18's own instruction, the model sometimes still names a second real, verified product in its message text without selecting its SKU into `product_skus`. Mechanical, not fuzzy NLP — flags a candidate only when its exact, real product name appears as a literal substring of the message — and `ChatEntryPipeline` retries once with a message naming exactly which SKU(s) were missing; if the retry doesn't fully resolve it, the latest valid (even if still incomplete) response is used rather than falling back to the generic message, since a partial result is always better than none. **`ChatEntryPipeline`'s retry budget now also covers a genuinely empty/invalid provider response (Task 23)**: live-traced a real, previously-silent `assistant_unavailable` cause — the model occasionally hallucinates a tool call literally named "product_skus" (confusing the response-schema field with a real callable tool), which always fails as `unknown_tool` and burns a round of `guardrails.max_tool_calls`; once forced to answer with no tools offered, it sometimes returns nothing at all. `ResponseContractFormatter` now explicitly warns against calling a "product_skus" tool, and a `ProviderInvalidResponseException` (as opposed to a genuine availability failure, which is unchanged and still short-circuits immediately) now gets the same one-retry-with-a-nudge treatment a malformed response already had. The catch block that used to silently discard this exception entirely (`catch (ProviderException)`, no variable bound, nothing logged) now logs it, closing a real diagnosability gap. **A same-task attempt to also raise `guardrails.max_tool_calls`'s default from 4 to 6 was tried and reverted**: the reasoning (more slack to recover from a wasted round) seemed sound, but broad live testing showed it mostly just made already-difficult ambiguous queries ("something for the gym", "gift for my mom") take longer without becoming successes — worst-case real provider calls per turn roughly doubled (up to 14 at the 20s default LLM timeout, ~280s), and this environment's nginx has a real, unoverridden ~60s default `fastcgi_read_timeout` that a meaningful fraction of the broad test's calls hit. Reverted to 4; a confirmation re-test of the same previously-timing-out queries all completed well under that ceiling afterward. **`ResponseContractFormatter` now leads with an explicit persona + strict-grounding paragraph (Task 27)**: auditing both system-message-assembling classes found neither carried a "you are a shopping assistant" role statement nor a rule against inventing a fact absent from this turn's data that applied on *every* turn — `ProductContextFormatter`'s own similar sentence only ever sends when candidates exist. The new paragraph ("You are a shopping assistant for this store... never invent a product, price, SKU, URL, stock status, or attribute... say so plainly instead of describing something that merely sounds right") sits in `ResponseContractFormatter` specifically because that message is always included, so the "say so plainly" instruction reaches the model even on a turn where retrieval found nothing at all. Every existing instruction (JSON shape, product_skus completeness, the "not a tool" warning, reason authenticity) was kept verbatim — this was an addition, not a rewrite. `OutputValidator`'s fabricated_sku/fabricated_price/fabricated_url checks are unchanged and remain the actual enforcement boundary; live-confirmed across several varied real queries (including one with genuinely no matching products, correctly declined rather than invented) that responses stayed fully grounded with no new fabrication. **`follow_up_questions` must now be written in the customer's own voice, not the assistant's (Task 28)**: live-reproduced the storefront widget rendering a chip like "Would you like to add this to your cart?" and, on click, sending that exact text back as the customer's own next message — nothing in the instructions had ever said which voice to use. A new paragraph instructs the model to phrase every entry as a short, natural thing the customer might actually say next ("add the Tiberius Gym Tank to my cart", "what's it made of"), never a question addressed to them; `LlmResponseSchema` also gained a matching `description` on that one field (the first this schema has ever had) as a second, provider-native reinforcement. Live-confirmed reliable for product-search/cart-action queries across repeated real runs; honestly, a purely informational query ("what are yoga pants made of") still produced assistant-voice chips in 3/3 repeated attempts — a disclosed, not-fully-solved local-model-compliance gap, consistent with every other prompt-only fix in this module. **The Output Validator gained a 5th check, `fabricated_discount` (Task 34)**, mirroring `containsFabricatedPrice()`'s exact fail-closed shape: a mentioned percentage is checked against real `ProductPromotionInterface::percentOff()`/cart-rule discount-description values, and a mentioned coupon code (text immediately following the literal word "code") is checked against real `CartPromotionInterface::couponCode()` values — either mismatch invalidates the whole response, same as every other fabrication check. A new `PromotionContextFormatter` system message (mirroring `ProductContextFormatter`'s shape, sent as an additional message rather than a new field on it, since that formatter's own instructions already forbid price-adjacent facts) carries this turn's real, live catalog-rule discounts into the grounded context whenever any exist |
 | 9 | Live revalidation | **Done (Task 4)** — `LiveRevalidationService`: store-scoped, customer-group-aware (defaults to NOT_LOGGED_IN when no group is known), checks status/visibility/website assignment/stock/salability/price directly against `ProductRepositoryInterface`/`StockRegistryInterface`; failing products are dropped, never flagged-but-shown. Index still correctly omits price/stock/visibility fields, per design. **`Controller\Chat\Send` (Task 8) now supplies a real customer group id from `Magento\Customer\Model\Session` on every real request** — the NOT_LOGGED_IN default is exercised only by guests and by callers with no session (tests, CLI), no longer the permanent state of every request. **Configurable-product pricing is now correct (Task 16)**: `Product::getPrice()`/`getFinalPrice()` return the parent's own raw `price` attribute, which is 0/unset for a configurable product — only its children carry a real price — so every configurable product was reporting `price: 0`. Replaced with `Product::getPriceInfo()->getPrice(RegularPrice::PRICE_CODE|FinalPrice::PRICE_CODE)->getAmount()->getValue()`, which dispatches through the type-specific pricing model (`ConfigurablePriceResolver` for configurable, resolving the minimum salable child's price — the same "As low as" value Magento's own PDP/catalog listing show) and resolves to the identical value for a simple product, so this is a strict generalization, not a configurable-specific branch. **`RevalidatedProduct` now also carries a live-resolved `imageUrl` (Task 21)** — a new optional trailing constructor parameter (never breaking the 19 existing call sites), resolved via `Magento\Catalog\Block\Product\ImageFactory` (the same non-deprecated, lazy URL-building path Luma's own PDP/category templates use), never the older `Helper\Image::init()->getUrl()`, which was tried first and live-confirmed to return a broken placeholder URL outside a full block/layout render |
-| 10 | Extensible ranking | Done (Task 3) — RankingSignalInterface + four Phase-1 signals, RankingPipeline orchestrator, di.xml array registration mirroring the provider-registry extensibility pattern. Reranker flag read but intentionally not invoked. Phase 2 signals not built, by design |
-| 11 | Admin diagnostic pages | **Done (Task 9)** — `Marketing > AI Shopping Assistant > Playground`: query box + 10 debug panels (parsed intent, BM25, vector, combined ranking with per-signal stages, reranker status, live-data validation, product context sent to the LLM, tool calls, final response, tokens/cost/latency) run against the real, already-DI-wired pipeline via a new `PlaygroundQueryRunnerInterface`/`PlaygroundQueryRunner`. Read-only by construction: cart-mutating tools are structurally excluded from the tools array offered to the model and `cartId` is always `null`, not merely "offered but never confirmed" |
-| 12 | Storefront chat widget | **Done (Task 11)** — a persistent, real chat UI on every storefront page (`before.body.end`), gated on `general.enabled`: not rendered at all when the assistant is disabled. `Block/Frontend/ChatWidget.php` selects between two presentation layers at construction time based on whether `Hyva_Theme` is an installed module: default/Luma (vanilla JS, no jQuery/Knockout/RequireJS dependency) or Hyva (Alpine.js + Tailwind utility classes). Both share one dependency-free core JS module (network call + response normalization only — the two presentation layers differ too much in paradigm, imperative DOM vs. declarative Alpine reactivity, to share rendering code itself). Product cards render only fields `ChatResponseSerializer` already sends (sku/name/price/special_price/url/reason/recommendation_type, all from `RevalidatedProduct`) — no fabricated price/URL, and deliberately no product images (no safe data source for one without a new fetch path, out of this task's scope). **No Hyva theme is installed in this dev environment** — the Hyva template/JS were built to Hyva's own documented Alpine.js/Tailwind conventions but could not be rendered against a real Hyva theme; see the Task 11 status report for exactly what was and wasn't live-verified. **Task 14 diagnosed a real "widget not appearing despite general.enabled=Yes" report and confirmed it was a config-scope data-state issue, not a code defect**: `ChatWidget`/`ConfigurationReader::readGeneral()` correctly reads the store-view-scoped effective value (Magento's own standard store > website > default fallback), but a stale `general/enabled=0` override left at store-view scope (from this session's own repeated Task 9/11/12 test-and-revert config toggles at that same scope) silently took precedence over a `default`-scope value of `1` — the classic "I set it but it doesn't apply" scope mismatch. No code changed for this; the effective config was corrected and the fix was left in place (not reverted, unlike every prior task's temporary test toggle). **The widget panel is now resizable (Task 16)**: a larger default size (400×600px, was 320×480px) with CSS `resize: both`/Tailwind `resize` plus `min-width`/`min-height`/`max-width`/`max-height` bounds on both the Luma (`<style>` block) and Hyva (Tailwind arbitrary-value classes) templates — a pure CSS change, no JS involved, since neither JS file ever manipulated panel width/height. **`chat-widget-core.js` now logs every request/response cycle to `console.debug` (Task 17)** — the outgoing message, and on response the HTTP status/ok, `reason_code`, `metadata`, `awaiting_confirmation`, and the full raw response body, plus a distinct log line if the fetch itself fails; always on (no `general.debug_logging` admin toggle exists in this module to gate behind, confirmed by inspection, and unlike customer-visible UI text, console output carries no customer-facing harm). Centralized in the one shared `sendMessage()` function both Luma and Hyva presentation layers already funnel through, so neither theme's own JS needed changes; live-confirmed in a real headless-Chrome session. **Assistant messages now render real markdown formatting instead of showing raw syntax (Task 18)**: a new, small, dependency-free `renderMarkdown()` in `chat-widget-core.js` handles the patterns actually seen in real responses — `**bold**`, bullet/numbered lists, paragraph breaks — shared by both presentation layers exactly like every other core function. Safety: the raw LLM-sourced text is HTML-escaped first (same untrusted-by-default discipline as every other LLM string in this module), and every tag the formatter injects afterward is a fixed literal (`<strong>`/`<ul>`/`<li>`/`<p>`/`<br>`), never text captured from a regex group used as a tag/attribute — live-confirmed both that real markdown renders correctly (real `<strong>`/`<ul>` tags, no raw `**` left in the DOM) and that a raw `<script>`/`<img onerror>` payload is neutralized to inert escaped text. Luma swaps directly to the new HTML string; Hyva's user-message binding stays `x-text` (unchanged, no markdown for what the customer typed) while assistant messages get a new `x-html`-bound field alongside the existing `x-text` one. **Product card links now open in a new tab (Task 19)** — `target="_blank" rel="noopener noreferrer"` on both Luma's and Hyva's product-title anchor, live-confirmed via a real browser's actual DOM. **The visible chat transcript now survives a page reload and appears identically in a brand new tab (Task 19)** — `chat-widget-core.js` gained `fetchHistory()` (GET `Controller/Chat/History`, always resolves, never rejects — a restore failure degrades to "nothing to restore," never a broken widget), called from both presentation layers' init so the log is repopulated before the customer ever reopens the panel. Works with zero new client-side coordination (no localStorage/BroadcastChannel) because Magento's own session cookie (already backing `ChatSession`'s conversationId since Task 8) is shared by every tab of the same browser already — live-confirmed in one real browser session: the same two-message transcript appeared identically after a real page reload in the original tab AND in a brand new tab opened in the same browser context. **Product names in cards are now real links with the SKU de-emphasized alongside them (Task 20)** — `target="_blank" rel="noopener noreferrer"` on the name itself was already in place since Task 19; added a small, muted `.aavirbhava-chat-product-sku` span (Luma) / `text-xs text-gray-400` span (Hyva) next to it, since neither theme actually rendered the SKU anywhere before this task despite `product.sku` already being available client-side. **`*italic*` markdown now renders correctly (Task 20)** — `renderMarkdown()` only handled `**bold**` before; added a second regex pass for single-asterisk emphasis, deliberately run AFTER the bold pass specifically to avoid the classic trap of a single-asterisk regex matching inside an already-valid `**bold**` pair — by the time the italic regex runs, every `**...**` sequence has already become a real `<strong>` tag with no asterisks left in it, so bold and italic in the same message both render correctly, live-confirmed via the real, deployed script in a real browser (not a simulation). **Widget UI/UX overhaul (Task 21):** both templates restyled (gradient header/toggle, refined box-shadow, spacing/typography polish on bubbles and cards); two new admin "Appearance" color fields (window/header, message bubble background + text) threaded through as `--aavirbhava-*` CSS custom properties, defaulting to the existing blue/gray when unset; product cards now show a real, live-resolved catalog image (new `RevalidatedProduct::imageUrl`, sourced via `Magento\Catalog\Block\Product\ImageFactory`, same live-data-only discipline as price/URL); the resize handle moved to the top-left via a custom pointer-drag implementation (native CSS `resize` only supports bottom-right, and the panel's own right/bottom anchoring means growing width/height from a top-left handle naturally keeps the bottom-right corner fixed); a minimize/maximize toggle collapses the panel to just its header bar, with open/minimized state persisted per-session via `sessionStorage`. **A real, previously undiagnosed bug is now fixed**: the floating toggle button's click handler correctly flipped the panel's `hidden` DOM property the whole time, but Luma's own `.aavirbhava-chat-panel { display: flex }` rule (author-origin CSS) unconditionally overrode the browser's `[hidden] { display: none }` default (user-agent-origin CSS, which always loses the cascade regardless of selector specificity) — the panel was visually open on every page load no matter what was clicked. Fixed by switching to a class-based `--open` toggle instead of the `hidden` attribute. Hyva's existing `x-show` mechanism was never affected by this bug (it toggles an inline `style`, which always outranks a class rule). **A real color-clash bug in product cards is now fixed (Task 22)**: `.aavirbhava-chat-price-now`/the recommendation badge/an un-linked product title had no explicit text color of their own, so they inherited the enclosing assistant bubble's admin-configurable `--aavirbhava-message-text-color` — a merchant picking a light text color (meant for a dark bubble) made those elements invisible against the product card's own fixed-white background. Fixed by giving the card container an explicit, fixed base text color independent of the bubble's theme (both templates), so the card reads correctly regardless of what the surrounding bubble's colors are set to. **The three Appearance color fields are now real color-picker inputs, not plain text (Task 22)** — a new `Block\Adminhtml\System\Config\ColorPickerField` wires each one to Magento's own shipped `jquery/colorpicker/js/colorpicker` widget (the same one `Magento_Swatches`' admin "Visual Swatch" editor already uses), following the exact `frontend_model` + inline-`<script>` convention `OllamaModelField` (Task 14) already established for this module's other admin-JS field — not a custom-built picker. **Any color left unset now auto-computes to a readable pairing instead of a fixed default that might clash (Task 22)**: `ConfigurationReader::readAppearance()` never returns null for any color — if only one half of the message-bubble background/text pair is explicitly set, the other is computed via a new `ColorContrast` helper (a standard YIQ perceived-brightness heuristic) to stay readable against it; the header/toggle text color is always auto-computed against whatever the primary color resolves to (there's no separate field for it); and manual values, when both halves of a pair are set, are always used exactly as configured, never second-guessed. **Product card images now fill their frame consistently (Task 23)**: `.aavirbhava-chat-product-image`/Hyva's equivalent `<img>` switched from `object-fit: contain` (Luma) / `object-contain` (Hyva) to `cover`, so every card's image area is filled the same way regardless of the source photo's own aspect ratio, live-confirmed. **Confirmed (Task 28), no frontend change needed**: both themes' follow-up-chip click handlers (`chat-widget-luma.js`'s `submitMessage(question)`, `chat-widget-hyva.js`'s `askFollowUp(question)`) already just send the chip's exact text back as the next real customer message, with no voice-specific handling of any kind — the follow_up_questions voice bug (see row 8) was entirely a backend prompting problem |
+| 10 | Extensible ranking | Done (Task 3) — RankingSignalInterface + four Phase-1 signals, RankingPipeline orchestrator, di.xml array registration mirroring the provider-registry extensibility pattern. Reranker flag read but intentionally not invoked. **A first Phase 2 signal is now built (Task 31): `RatingSignal`**, registered between `attribute_match` and `availability` (so availability stays the authoritative last gate), scoring via a Bayesian-weighted blend of a candidate's own rating and the catalogue-wide mean (weighted by review count) rather than a raw average, admin-configurable weight (`retrieval/rating_signal_weight`, default 0.1) — added purely via a new class + di.xml `<item>`, with zero changes to the 4 existing signals or `RankingPipeline` itself, proving out this area's own extensibility design for the first time with a real signal rather than only a test double. **A second Phase 2 signal is now built (Task 32): `MerchandisingBoostSignal`**, registered between `rating` and `availability`, admin-configurable per-product via a real mass action on the product grid plus a standalone review grid, read LIVE from a new MySQL table (never indexed into OpenSearch, unlike rating) so a save takes effect immediately with no reindex — live-verified across separate PHP processes. Boost weight is capped (1.0) so the required guardrail (a maximally-boosted-but-irrelevant candidate must not outrank a genuinely relevant unboosted one) provably holds, proven by a dedicated `RankingPipelineTest` case wiring all 6 real signals together |
+| 11 | Admin diagnostic pages | **Done (Task 9)** — `Marketing > AI Shopping Assistant > Playground`: query box + 10 debug panels (parsed intent, BM25, vector, combined ranking with per-signal stages, reranker status, live-data validation, product context sent to the LLM, tool calls, final response, tokens/cost/latency) run against the real, already-DI-wired pipeline via a new `PlaygroundQueryRunnerInterface`/`PlaygroundQueryRunner`. Read-only by construction: cart-mutating tools are structurally excluded from the tools array offered to the model and `cartId` is always `null`, not merely "offered but never confirmed". **Visually redesigned (Task 33, presentation-only)**: all 10 panels now collapse via Magento's own native `mage/collapsible` widget (collapsed by default except Final Response), color-coded status badges for scope/OutputValidator-checks/fallback state, and vanilla-JS JSON syntax highlighting for the genuinely-JSON panels — no data or pipeline logic changed |
+| 12 | Storefront chat widget | **Done (Task 11)** — a persistent, real chat UI on every storefront page (`before.body.end`), gated on `general.enabled`: not rendered at all when the assistant is disabled. `Block/Frontend/ChatWidget.php` selects between two presentation layers at construction time based on whether `Hyva_Theme` is an installed module: default/Luma (vanilla JS, no jQuery/Knockout/RequireJS dependency) or Hyva (Alpine.js + Tailwind utility classes). Both share one dependency-free core JS module (network call + response normalization only — the two presentation layers differ too much in paradigm, imperative DOM vs. declarative Alpine reactivity, to share rendering code itself). Product cards render only fields `ChatResponseSerializer` already sends (sku/name/price/special_price/url/reason/recommendation_type, all from `RevalidatedProduct`) — no fabricated price/URL, and deliberately no product images (no safe data source for one without a new fetch path, out of this task's scope). **No Hyva theme is installed in this dev environment** — the Hyva template/JS were built to Hyva's own documented Alpine.js/Tailwind conventions but could not be rendered against a real Hyva theme; see the Task 11 status report for exactly what was and wasn't live-verified. **Task 14 diagnosed a real "widget not appearing despite general.enabled=Yes" report and confirmed it was a config-scope data-state issue, not a code defect**: `ChatWidget`/`ConfigurationReader::readGeneral()` correctly reads the store-view-scoped effective value (Magento's own standard store > website > default fallback), but a stale `general/enabled=0` override left at store-view scope (from this session's own repeated Task 9/11/12 test-and-revert config toggles at that same scope) silently took precedence over a `default`-scope value of `1` — the classic "I set it but it doesn't apply" scope mismatch. No code changed for this; the effective config was corrected and the fix was left in place (not reverted, unlike every prior task's temporary test toggle). **The widget panel is now resizable (Task 16)**: a larger default size (400×600px, was 320×480px) with CSS `resize: both`/Tailwind `resize` plus `min-width`/`min-height`/`max-width`/`max-height` bounds on both the Luma (`<style>` block) and Hyva (Tailwind arbitrary-value classes) templates — a pure CSS change, no JS involved, since neither JS file ever manipulated panel width/height. **`chat-widget-core.js` now logs every request/response cycle to `console.debug` (Task 17)** — the outgoing message, and on response the HTTP status/ok, `reason_code`, `metadata`, `awaiting_confirmation`, and the full raw response body, plus a distinct log line if the fetch itself fails; always on (no `general.debug_logging` admin toggle exists in this module to gate behind, confirmed by inspection, and unlike customer-visible UI text, console output carries no customer-facing harm). Centralized in the one shared `sendMessage()` function both Luma and Hyva presentation layers already funnel through, so neither theme's own JS needed changes; live-confirmed in a real headless-Chrome session. **Assistant messages now render real markdown formatting instead of showing raw syntax (Task 18)**: a new, small, dependency-free `renderMarkdown()` in `chat-widget-core.js` handles the patterns actually seen in real responses — `**bold**`, bullet/numbered lists, paragraph breaks — shared by both presentation layers exactly like every other core function. Safety: the raw LLM-sourced text is HTML-escaped first (same untrusted-by-default discipline as every other LLM string in this module), and every tag the formatter injects afterward is a fixed literal (`<strong>`/`<ul>`/`<li>`/`<p>`/`<br>`), never text captured from a regex group used as a tag/attribute — live-confirmed both that real markdown renders correctly (real `<strong>`/`<ul>` tags, no raw `**` left in the DOM) and that a raw `<script>`/`<img onerror>` payload is neutralized to inert escaped text. Luma swaps directly to the new HTML string; Hyva's user-message binding stays `x-text` (unchanged, no markdown for what the customer typed) while assistant messages get a new `x-html`-bound field alongside the existing `x-text` one. **Product card links now open in a new tab (Task 19)** — `target="_blank" rel="noopener noreferrer"` on both Luma's and Hyva's product-title anchor, live-confirmed via a real browser's actual DOM. **The visible chat transcript now survives a page reload and appears identically in a brand new tab (Task 19)** — `chat-widget-core.js` gained `fetchHistory()` (GET `Controller/Chat/History`, always resolves, never rejects — a restore failure degrades to "nothing to restore," never a broken widget), called from both presentation layers' init so the log is repopulated before the customer ever reopens the panel. Works with zero new client-side coordination (no localStorage/BroadcastChannel) because Magento's own session cookie (already backing `ChatSession`'s conversationId since Task 8) is shared by every tab of the same browser already — live-confirmed in one real browser session: the same two-message transcript appeared identically after a real page reload in the original tab AND in a brand new tab opened in the same browser context. **Product names in cards are now real links with the SKU de-emphasized alongside them (Task 20)** — `target="_blank" rel="noopener noreferrer"` on the name itself was already in place since Task 19; added a small, muted `.aavirbhava-chat-product-sku` span (Luma) / `text-xs text-gray-400` span (Hyva) next to it, since neither theme actually rendered the SKU anywhere before this task despite `product.sku` already being available client-side. **`*italic*` markdown now renders correctly (Task 20)** — `renderMarkdown()` only handled `**bold**` before; added a second regex pass for single-asterisk emphasis, deliberately run AFTER the bold pass specifically to avoid the classic trap of a single-asterisk regex matching inside an already-valid `**bold**` pair — by the time the italic regex runs, every `**...**` sequence has already become a real `<strong>` tag with no asterisks left in it, so bold and italic in the same message both render correctly, live-confirmed via the real, deployed script in a real browser (not a simulation). **Widget UI/UX overhaul (Task 21):** both templates restyled (gradient header/toggle, refined box-shadow, spacing/typography polish on bubbles and cards); two new admin "Appearance" color fields (window/header, message bubble background + text) threaded through as `--aavirbhava-*` CSS custom properties, defaulting to the existing blue/gray when unset; product cards now show a real, live-resolved catalog image (new `RevalidatedProduct::imageUrl`, sourced via `Magento\Catalog\Block\Product\ImageFactory`, same live-data-only discipline as price/URL); the resize handle moved to the top-left via a custom pointer-drag implementation (native CSS `resize` only supports bottom-right, and the panel's own right/bottom anchoring means growing width/height from a top-left handle naturally keeps the bottom-right corner fixed); a minimize/maximize toggle collapses the panel to just its header bar, with open/minimized state persisted per-session via `sessionStorage`. **A real, previously undiagnosed bug is now fixed**: the floating toggle button's click handler correctly flipped the panel's `hidden` DOM property the whole time, but Luma's own `.aavirbhava-chat-panel { display: flex }` rule (author-origin CSS) unconditionally overrode the browser's `[hidden] { display: none }` default (user-agent-origin CSS, which always loses the cascade regardless of selector specificity) — the panel was visually open on every page load no matter what was clicked. Fixed by switching to a class-based `--open` toggle instead of the `hidden` attribute. Hyva's existing `x-show` mechanism was never affected by this bug (it toggles an inline `style`, which always outranks a class rule). **A real color-clash bug in product cards is now fixed (Task 22)**: `.aavirbhava-chat-price-now`/the recommendation badge/an un-linked product title had no explicit text color of their own, so they inherited the enclosing assistant bubble's admin-configurable `--aavirbhava-message-text-color` — a merchant picking a light text color (meant for a dark bubble) made those elements invisible against the product card's own fixed-white background. Fixed by giving the card container an explicit, fixed base text color independent of the bubble's theme (both templates), so the card reads correctly regardless of what the surrounding bubble's colors are set to. **The three Appearance color fields are now real color-picker inputs, not plain text (Task 22)** — a new `Block\Adminhtml\System\Config\ColorPickerField` wires each one to Magento's own shipped `jquery/colorpicker/js/colorpicker` widget (the same one `Magento_Swatches`' admin "Visual Swatch" editor already uses), following the exact `frontend_model` + inline-`<script>` convention `OllamaModelField` (Task 14) already established for this module's other admin-JS field — not a custom-built picker. **Any color left unset now auto-computes to a readable pairing instead of a fixed default that might clash (Task 22)**: `ConfigurationReader::readAppearance()` never returns null for any color — if only one half of the message-bubble background/text pair is explicitly set, the other is computed via a new `ColorContrast` helper (a standard YIQ perceived-brightness heuristic) to stay readable against it; the header/toggle text color is always auto-computed against whatever the primary color resolves to (there's no separate field for it); and manual values, when both halves of a pair are set, are always used exactly as configured, never second-guessed. **Product card images now fill their frame consistently (Task 23)**: `.aavirbhava-chat-product-image`/Hyva's equivalent `<img>` switched from `object-fit: contain` (Luma) / `object-contain` (Hyva) to `cover`, so every card's image area is filled the same way regardless of the source photo's own aspect ratio, live-confirmed. **Confirmed (Task 28), no frontend change needed**: both themes' follow-up-chip click handlers (`chat-widget-luma.js`'s `submitMessage(question)`, `chat-widget-hyva.js`'s `askFollowUp(question)`) already just send the chip's exact text back as the next real customer message, with no voice-specific handling of any kind — the follow_up_questions voice bug (see row 8) was entirely a backend prompting problem. **`ChatWidget::_toHtml()` gained a second, independent render-gate (Task 35)**: `!$this->costCapChecker->isBlocking()`, alongside the existing `isAssistantEnabled()` check — either one suppresses the widget entirely (empty string, server-side, same mechanism both checks share). The two checks deliberately fail in OPPOSITE directions on their own internal errors: `isAssistantEnabled()` fails closed (a config-read error hides the widget), `isBlocking()` fails open (a cost-tracking-read error never hides the widget) — a tracking failure must never take down a working, revenue-relevant customer channel the way a real "assistant is disabled" state should. **A real "color picker does nothing" bug in `ColorPickerField` is now fixed (Task 36)**: the JS binding was always correct, but `jquery/colorpicker/css/colorpicker.css` — the same stylesheet `Magento_Swatches`' own layout XML explicitly loads alongside the identical JS widget — was never loaded anywhere on this module's System Configuration page, so the picker's real `position: absolute`/`display: none` rules never applied and its popup rendered as an unstyled block-flow blob, indistinguishable from "nothing happened." Fixed by emitting a `<link>` to the real stylesheet (resolved via this block's own inherited `getViewFileUrl()`) directly in `_getElementHtml()`'s output, deliberately NOT the paired `Magento_Swatches::css/swatches.css` skin file (that one only re-themes an already-functional picker and would add a real Magento_Swatches dependency for no functional benefit). `ColorPickerField`/`OllamaModelField`'s trailing inline elements (the swatch; the "Fetch Ollama Models" button and its status text) also had inconsistent `vertical-align`/spacing between the two classes — unified to an identical, rem-based (Magento admin's real 1rem = 10px, `html { font-size: 62.5% }`) shared style constant in both files |
 
 No classic architecture-violation anti-patterns found as of the last full audit (no sync embedding on save, no unvalidated LLM output shown, no price/stock shown without revalidation, no hardcoded single-vendor provider logic). The Task 3 `space_type` bug (area 4) is fixed as of Task 4 — see history below.
 
@@ -3625,6 +3625,1279 @@ initial 5-task priority order (LLM adapter → pipeline skeleton → retrieval
   updated; header summary updated; this Task 30 history entry added.
 - **Not done / blocked:** nothing blocked.
 
+### Task 31 — RatingSignal: Bayesian-weighted product rating in the ranking pipeline (DONE)
+- **Files (new):** `Api/Catalog/ProductRatingResolverInterface.php`,
+  `Model/Catalog/ProductRatingResolver.php`,
+  `Model/Ranking/Signal/RatingSignal.php`,
+  `Test/Unit/Model/Catalog/ProductRatingResolverTest.php`,
+  `Test/Unit/Model/Ranking/Signal/RatingSignalTest.php`.
+  **Files (modified):** `Api/Catalog/ProductSnapshotInterface.php` +
+  `Model/Catalog/ProductSnapshot.php` (3 new trailing fields:
+  `ratingAverage`/`reviewCount`/`catalogRatingAverage`, validated
+  0-5/0-5/non-negative), `Api/Catalog/ProductDocumentInterface.php` +
+  `Model/Catalog/ProductDocument.php` (same 3 fields, same trailing-
+  optional-param pattern), `Model/Catalog/ProductDocumentNormalizer.php`
+  (passes them into `$completePayload` only — never `$embeddingPayload`
+  or `searchableText`, so a rating change never triggers re-embedding),
+  `Model/Catalog/ProductSnapshotProvider.php` (new
+  `ProductRatingResolverInterface` constructor dependency; calls
+  `appendToCollection()` before the product collection loads and
+  `catalogAverage()` once per batch, converts each product's own raw
+  `rating_summary`/`reviews_count` via `percentToStars()`),
+  `Api/Indexing/ProductIndexMappingInterface.php` (3 new `FIELD_*`
+  constants, `MAPPING_VERSION` 2→3), `Model/Indexing/Mapping/
+  ProductIndexMapping.php` (rating fields as `float`/`integer`/`float`),
+  `Model/Indexing/Document/IndexedDocumentPayloadBuilder.php` (3 new
+  payload keys), `Model/Retrieval/SearchQueryBuilder.php` (3 new
+  `SOURCE_FIELDS`), `Model/Retrieval/SearchHitParser.php` (lenient
+  `?? default` parsing for the 3 new optional fields, matching name/
+  shortDescription's existing leniency, not the fail-closed identity-
+  field pattern), `Model/Retrieval/SearchCandidate.php` (3 new trailing
+  public readonly fields; `withScore()` now threads them through its
+  reconstruction), `etc/config.xml` + `etc/adminhtml/system.xml` +
+  `Model/Config/Path.php` + `Model/Config/ConfigurationReader.php`
+  (new `retrieval/rating_signal_weight`, default 0.1, bounds [0,1], a
+  new `readFloat()` private helper mirroring `readInt()`'s exact
+  validate-clamp-default shape) + `Api/Config/RetrievalConfigInterface.php`
+  + `Model/Config/RetrievalConfig.php` (new `ratingSignalWeight()`),
+  `etc/di.xml` (new `ProductRatingResolverInterface` preference; `rating`
+  signal registered between `attribute_match` and `availability`, so
+  `AvailabilitySignal` stays the authoritative last gate regardless of
+  rating), `composer.json` + `etc/module.xml` (new `magento/module-review`
+  dependency, `Magento_Review` added to the module sequence). Test
+  fixtures updated for the new fields: `CatalogSnapshotFactory`,
+  `FakeProductDocumentFactory`, `ProductSnapshotProviderTest`,
+  `ProductSnapshotTest`, `ProductDocumentTest`,
+  `ProductDocumentNormalizerTest`, `SearchCandidateTest`,
+  `SearchHitParserTest`, `IndexedDocumentPayloadBuilderTest`,
+  `ProductIndexMappingTest`, `ConfigurationReaderTest`,
+  `RankingPipelineTest`.
+- **Key decision — Bayesian formula, not raw average:** `RatingSignal`
+  computes `WR = (v/(v+m))*R + (m/(v+m))*C` — `R`/`v` the candidate's
+  own average rating and review count, `C` the catalogue-wide mean
+  rating, `m` a fixed internal smoothing constant (10, not admin-
+  configurable — only the signal's overall weight is, matching how
+  `AttributeMatchSignal`'s own boost curve is fixed while its place in
+  the pipeline is configurable). Verified on paper before writing any
+  code (R=5.0,v=1 vs R=4.7,v=500, C=3.5,m=10 → WR≈3.636 vs WR≈4.677,
+  correctly ranking the 500-review product higher) and confirmed live
+  against this store's real catalog (see Verification below). A
+  0-review product has v=0, so `WR` reduces to exactly `C` with no
+  special-case branch — satisfying the task's explicit "no separate
+  branch" requirement by construction, not by a guard clause.
+- **Key decision — `C` denormalized at index time, not live-queried at
+  rank time:** `ProductRatingResolver::catalogAverage()` runs one cheap
+  SQL aggregate (`AVG(rating_summary)` over reviewed products only —
+  deliberately excluding 0-review products from the aggregate itself,
+  since including them would drag the prior toward zero and make the
+  Bayesian blend meaningless) once per indexing batch and stamps the
+  result onto every product document. `RatingSignal::apply()` then
+  reads it straight off `SearchCandidate`, staying a pure, zero-
+  dependency-injection-free-of-network-calls function exactly like the
+  4 existing signals — never an OpenSearch aggregation query per
+  ranking pass, which would be the only signal in the pipeline with a
+  live network cost per request.
+- **Key decision — signal ordering:** registered between
+  `attribute_match` and `availability` in `etc/di.xml`, preserving the
+  existing, explicitly-documented "`AvailabilitySignal` runs last so it
+  is the authoritative gate regardless of what upstream signals scored"
+  invariant — a disabled-but-highly-rated candidate must still be
+  zeroed out, confirmed by a dedicated `RankingPipelineTest` case wiring
+  all 5 real signal classes together (not fakes).
+- **`SearchCandidate::withScore()` reconstruction hazard, caught before
+  it could ship:** `withScore()` rebuilds a brand-new immutable instance
+  from scratch rather than mutating one field: had the 3 new rating
+  fields not been threaded through its reconstruction, any signal
+  running after `RatingSignal` (including the real `AvailabilitySignal`
+  it's registered before) would have silently reset them to their
+  zero-defaults on its own `withScore()` call, breaking the signal for
+  most of the pipeline. Fixed and covered by a dedicated
+  `SearchCandidateTest` case (`testWithScorePreservesRatingFieldsAcrossReconstruction`).
+- **OutputValidator / fabricated-fact-check decision (explicit, per
+  CLAUDE.md's "new product-fact-bearing features must add their own
+  OutputValidator check" instruction):** no new OutputValidator check
+  was added, deliberately. Rating data never reaches the LLM's context
+  (not added to `ProductContextFormatter`) and never reaches the
+  customer-facing response schema/`AssistantResponse` — it is a purely
+  internal ranking input read directly off `SearchCandidate` inside
+  `RankingPipeline`, never serialized, never sent to a provider, never
+  shown. There is no path by which the LLM could fabricate a rating
+  claim through this feature, unlike price/URL/SKU, which the LLM's own
+  free-text response can mention and which `OutputValidator` therefore
+  must check. This judgment call is stated here explicitly rather than
+  silently assumed, per that instruction's own "must" phrasing — a
+  future task that *does* expose rating text to the LLM/customer (e.g.
+  "4.5-star product") would need to revisit this and add a check then.
+- **Mapping version bump:** `MAPPING_VERSION` 2→3 (this module's own
+  documented alias-activation compatibility-proof mechanism), forcing
+  a real full reindex rather than an incremental write into an old-
+  shaped physical index — confirmed necessary and sufficient by the
+  live reindex below completing cleanly against the new schema.
+- **Verification — full suite:** 1396 tests / 3357 assertions / 0
+  failures before this task (baseline re-run, confirmed real); 1418
+  tests / 3432 assertions / 0 failures / 0 errors after (net +22 tests,
+  +75 assertions). `php -l` run across every new/changed file in the
+  module (clean) plus a full `find Api Model Test -name '*.php'`
+  sweep (clean); `di.xml`/`config.xml`/`system.xml`/`module.xml`
+  confirmed well-formed XML via `DOMDocument`.
+- **Verification — live, real container:** `setup:upgrade` (new
+  `Magento_Review` dependency), `setup:di:compile` (clean, no errors),
+  `cache:flush`, then a real `indexer:reindex ai_product_rag`
+  (rebuilt in 5s) against this store's actual 181-product catalog.
+  Re-ran the Task 24 index-coverage command post-reindex: still
+  181/181, fully covered. Queried the live OpenSearch alias directly:
+  real documents carry `rating_average`/`review_count` converted
+  correctly from Magento's native 0-100 `rating_summary` (e.g. 90.0%
+  → 4.5 stars), a 0-review product carries `rating_average: 0` with
+  `catalog_rating_average` still populated, and every one of the
+  181 documents carries the identical denormalized
+  `catalog_rating_average` (3.5632) — confirmed via an OpenSearch
+  terms aggregation returning exactly one bucket. Live-ran the actual
+  `HybridRetrievalService`/`RankingPipeline` (bypassing the LLM
+  entirely — no Ollama latency risk) for a real `"shirt"` query at the
+  shipped default weight (0.1): every candidate's rating-stage delta
+  stayed small (~0.06-0.075) against text/vector-relevance scores of
+  ~0.8-1.7, and the final top-8 ranking was still led by the strongest
+  text/vector matches, not the highest-rated candidates — a well-
+  matching product outranking a well-rated-but-less-relevant one,
+  exactly as the conservative-default requirement intends. All 8
+  real zero-review candidates in that query received the identical
+  rating-stage delta (0.0713 = 3.5632/5.0 × 0.1), live-confirming the
+  no-special-case fallback end to end, not just in unit tests.
+- **Pre-existing, unrelated environment issue noted, not caused by
+  this task:** `bin/magento setup:upgrade` reports `Unable to apply
+  data patch
+  Magento\CatalogSampleData\Setup\Patch\Data\InstallCatalogSampleData
+  ... Rolled back transaction has not been completed correctly` on
+  every run, confirmed via `patch_list` to have never successfully
+  applied in this environment (no row for it at all) — a broken
+  `Magento_CatalogSampleData` data patch entirely unrelated to this
+  module or `Magento_Review`, reproduced identically on a clean re-run.
+  Did not block `setup:di:compile`, the reindex, or any live
+  verification above; flagged here rather than silently worked around,
+  since fixing an unrelated core sample-data patch is out of this
+  task's scope.
+- **Skill files updated:** `references/progress-log.md` — status rows 4
+  and 10 updated; header summary updated; this Task 31 history entry
+  added. `CLAUDE.md`'s "Known open issues" list also updated to drop
+  the now-stale attribute-coverage line (fixed in Task 30, left stale
+  in that file until now — CLAUDE.md's own instruction to keep it
+  synced with this log had not yet been acted on).
+- **Not done / blocked:** nothing blocked. `FullProductReindexer`
+  leaving prior run-indices behind in OpenSearch (flagged Task 16,
+  still unaddressed — 17 physical indices observed for one store during
+  this task's own live verification) is unrelated to this task and
+  remains an open, already-documented gap for a future task.
+
+### Task 32 — MerchandisingBoostSignal: admin-configurable, live per-product boost (DONE)
+- **Files (new):** `Api/Merchandising/{MerchandisingBoostInterface,
+  MerchandisingBoostRepositoryInterface,ActiveBoostReaderInterface}.php`;
+  `Model/Merchandising/{MerchandisingBoostRow,MerchandisingBoostRepository,
+  ActiveBoostReader}.php`, `Model/Merchandising/Exception/
+  MerchandisingBoostException.php`; `Model/MerchandisingBoost.php` +
+  `Model/ResourceModel/MerchandisingBoost.php` +
+  `Model/ResourceModel/MerchandisingBoost/Collection.php` (the standard
+  Magento AbstractModel/AbstractDb/AbstractCollection stack, used ONLY by
+  the admin grid — see key decision below); `Model/Ranking/Signal/
+  MerchandisingBoostSignal.php`; `Model/Merchandising/BoostGrid/
+  {DataProvider,BoostActions,IsActiveSource}.php`;
+  `Controller/Adminhtml/Boost/{Index,Edit,Save,Delete}.php`;
+  `Block/Adminhtml/Boost/Edit.php`; `view/adminhtml/layout/
+  aavirbhava_aishoppingassistant_boost_{index,edit}.xml`; `view/adminhtml/
+  templates/boost/edit.phtml`; `view/adminhtml/ui_component/
+  aavirbhava_boost_listing.xml`; `view/adminhtml/ui_component/
+  product_listing.xml` (new file in THIS module — additively merges one
+  new massaction `<action>` into Magento_Catalog's existing product grid,
+  matched by node `name`, without touching or repeating its own delete/
+  status/attributes actions); `Test/Unit/Model/Merchandising/
+  {MerchandisingBoostRowTest,ActiveBoostReaderTest}.php`,
+  `Test/Unit/Model/Ranking/Signal/MerchandisingBoostSignalTest.php`,
+  `Test/Integration/Model/Merchandising/MerchandisingBoostDatabaseTest.php`.
+  **Modified:** `etc/db_schema.xml` (new
+  `aavirbhava_ai_merchandising_boost` table, real FK to
+  `catalog_product_entity.entity_id` with `onDelete="CASCADE"`), `etc/
+  di.xml` (2 new preferences; `merchandising_boost` signal registered
+  between `rating` and `availability`), `etc/acl.xml` + `etc/adminhtml/
+  menu.xml` (new "Merchandising Boosts" admin page under Marketing),
+  `Block/Adminhtml/Playground/Index.php` +
+  `view/adminhtml/templates/playground/index.phtml` (see requirement-7
+  section below), `Test/Unit/Model/Ranking/RankingPipelineTest.php` (new
+  6-signal guardrail integration case).
+- **Key decision — two persistence paths, one table, one repository:**
+  the admin grid/mass-action flow uses Magento's real AbstractModel/
+  AbstractDb/AbstractCollection stack (`Model\MerchandisingBoost` + its
+  ResourceModel + Collection) — a deliberate, disclosed departure from
+  this module's usual "no ORM, raw ResourceConnection" convention (see
+  `DbConversationHistoryStore`), chosen because Magento's own Ui
+  Component grid/DataProvider machinery is specifically built around
+  that stack, and hand-rolling a grid data provider against raw SQL
+  fights the framework for no real benefit. `MerchandisingBoostRepository`
+  is the ONE save/load/delete path both the mass-action's Save
+  controller and the standalone grid's inline actions go through — the
+  task's "reuse the same backing model, don't duplicate logic"
+  requirement, satisfied at the write path. The ranking pipeline's own
+  read path (`ActiveBoostReader`) deliberately bypasses this ORM stack
+  entirely in favor of one lean, scoped raw SQL query — reading the
+  *same table*, just without the collection layer's per-row hydration
+  overhead for what is, every chat turn, a single ~10-30-id SELECT — the
+  established runtime-hot-path convention this module already uses
+  elsewhere, applied consistently here too.
+- **Key decision — live read, no OpenSearch, no cache invalidation
+  logic needed:** unlike rating (Task 31), boost data is never indexed —
+  `ActiveBoostReader` reads MySQL directly, scoped to only the product
+  ids already in the current candidate set (never an unconditional
+  "every active boost" query), evaluating `start_date`/`end_date`
+  against real current time at read (via this module's existing
+  `ClockInterface`, not literal SQL `NOW()`, for testability). A small
+  per-instance memoization array exists purely to avoid a duplicate
+  identical query within one PHP request — it has NO invalidation logic
+  at all, because it *cannot* go stale across requests: it is a plain
+  instance property that does not survive past the PHP-FPM request that
+  created it, and an admin's save always happens in a separate request
+  from any later ranking read. This is not just asserted — see live
+  verification below.
+- **Key decision — boost weight is capped, at both save time and
+  defensively again inside the signal:** `MerchandisingBoostRow::
+  MAX_BOOST_WEIGHT` (1.0, roughly one full relevance signal's own typical
+  contribution) is enforced by the DTO's own constructor (rejects a save
+  above the cap) and re-clamped defensively inside
+  `MerchandisingBoostSignal::apply()` in case anything ever bypasses the
+  DTO. Without this cap, the task's own required guardrail ("a
+  boosted-but-irrelevant product must not outrank a genuinely relevant
+  unboosted one") would not hold for an arbitrarily large admin-entered
+  weight — the cap is what makes that guardrail actually true, not just
+  asserted by a test with conveniently small numbers.
+- **Requirement 5 — the guardrail test:** `RankingPipelineTest::
+  testMerchandisingBoostSignalRunsAlongsideTheFiveExistingSignalsWithoutBreakingThem()`
+  wires all 6 real, production signal classes together (not fakes,
+  mirroring the exact Task 31 precedent) and proves a candidate with
+  zero text/vector/attribute relevance but the maximum possible boost
+  still ranks behind a genuinely relevant, unboosted candidate — and
+  that a disabled-but-maximally-boosted candidate is still demoted to
+  the bottom by `AvailabilitySignal`, which remains the pipeline's last,
+  authoritative gate regardless of any boost.
+- **Requirement 6 — the SearchCandidate immutability re-check:** audited
+  before writing `MerchandisingBoostSignal` and found no new
+  `SearchCandidate` field is needed at all — unlike `RatingSignal`
+  (which needed 3 denormalized OpenSearch-sourced fields), a boost is
+  looked up live by `SearchCandidate::entityId`, a field `withScore()`
+  already correctly threads through in its reconstruction (confirmed by
+  inspection and by the existing
+  `testWithScoreReturnsANewInstanceWithEveryOtherFieldPreserved` case
+  already asserting `entityId` survives). The Task 31 class of bug
+  (a new field silently reset to its zero-default by a later signal's
+  `withScore()` call) simply does not apply here — reported explicitly
+  rather than mechanically adding an unnecessary field just to have
+  something to re-verify.
+- **Requirement 7 — Admin Playground surfacing, made generic rather than
+  boost-specific:** `Block\Adminhtml\Playground\Index::
+  getCandidateTableHtml()` gained an optional `$previousScores` parameter
+  that adds a "Δ this stage" column showing exactly how much the current
+  stage's own signal changed each candidate's score — wired into the
+  existing, already-fully-generic "Combined Ranking" panel (which
+  already iterated every registered signal's own stage by its di.xml
+  identifier with zero boost-specific code needed, since it was built
+  generically back in Task 9). This surfaces boost deltas exactly as the
+  requirement asks, but does the same for every other signal's stage
+  too — a genuinely useful improvement to an existing diagnostic, not a
+  narrow one-off addition, and fully backward compatible (the parameter
+  defaults to null, preserving the BM25/vector panels' existing
+  two-column shape exactly).
+- **Deviation from the literal spec, disclosed:** the task (and this
+  module's own earlier CLAUDE.md draft of the spec) said the mass action
+  should open "a modal." Implemented instead as a real, standard
+  Magento full-page-form flow — `Magento_Ui/js/grid/massactions.js`'s
+  own *default* callback (no custom `type`/`callback` needed) already
+  does a genuine hidden-form POST of `selected[]` to the action's `url`,
+  a full-page browser navigation, mirroring Magento core's own real
+  "Update attributes" mass action exactly
+  (`catalog_product_action_attribute/edit`, verified by reading Magento
+  core's own `product_listing.xml` and `massactions.js` directly). No
+  JS-modal-with-embedded-form precedent exists anywhere in Magento core
+  to safely mirror, and this module's own established admin UI
+  convention (Playground, Task 9) is already a simple hand-rolled
+  server-rendered page rather than Ui-Component-driven forms — building
+  a bespoke modal would have been both less idiomatic and, without any
+  browser-automation tool in this session to verify it, a real risk of
+  shipping untested/broken JS. The resulting UX shape (click mass action
+  → land on a scoped form → save → back to the grid) is materially the
+  same as a modal for the admin, just via a full page rather than an
+  overlay.
+- **Verification — full test suite:** 1418 tests / 3432 assertions / 0
+  failures before this task; **1440 tests / 3467 assertions / 0
+  failures / 0 errors after** (net +22 tests, +35 assertions), run via
+  the module's own `phpunit.xml.dist`. `php -l` run across every
+  new/changed file plus a full `find Api Model Test Block Controller
+  -name '*.php'` sweep — clean. Every new/changed XML file
+  (`db_schema.xml`, `di.xml`, `acl.xml`, `menu.xml`, both new layout
+  files, both new ui_component files) confirmed well-formed via
+  `DOMDocument`; both new/changed `.phtml` templates confirmed via
+  `php -l` (not `DOMDocument`, which doesn't parse PHP+HTML templates
+  correctly — learned mid-task, not assumed). A dedicated real-database
+  `Test/Integration/Model/Merchandising/MerchandisingBoostDatabaseTest.php`
+  (10 tests, 22 assertions, all passing) exercises
+  `MerchandisingBoostRepository`'s real AbstractModel/AbstractDb save/
+  load/delete round-trip and `ActiveBoostReader`'s real date-range SQL
+  (active-in-range, inactive, future start, past end, and multiple-
+  overlapping-boosts-take-the-max cases) against the actual database —
+  mirroring `DbConversationHistoryStoreDatabaseTest`'s own established
+  rationale that this class of logic isn't meaningfully testable against
+  a mocked adapter.
+- **Verification — live, real container:** `setup:upgrade` (new table
+  created — confirmed via a direct `DESCRIBE
+  aavirbhava_ai_merchandising_boost`), `setup:di:compile` (clean, zero
+  errors — a strong signal for the new controllers/blocks/UI-component
+  classes' own wiring, since compilation touches every registered class
+  including these), `cache:flush`. **The core "live, no reindex" claim
+  (requirement 3/9) was proven across genuinely separate PHP processes,
+  not just within one PHPUnit run**: ran the real, un-mocked
+  `HybridRetrievalService`→`RankingPipeline` for a real `"messenger
+  bag"` query against SKU `24-MB06` (real product, no boost) — baseline
+  score 1.7817, ranked 3rd. Saved a real boost (weight 1.0) via
+  `MerchandisingBoostRepositoryInterface::save()` in one separate `bin/
+  cli php` process (simulating an admin save). In a THIRD, entirely
+  separate process — no reindex, no cache flush run in between — the
+  identical query now showed a `merchandising_boost`-stage delta of
+  exactly `+1.0` and SKU `24-MB06` now ranked 1st. Deleted the boost in
+  a fourth separate process and confirmed the ranking reverted exactly
+  to the original baseline. This is the strongest possible proof this
+  session's tooling can offer that a save takes effect immediately with
+  no reindex and no stale cache — real process boundaries, not merely
+  separate PHPUnit test methods sharing one process's memory.
+- **Verification — admin UI, honestly disclosed as partial:**
+  `setup:di:compile`'s success across every new admin class, the real
+  DB schema, and the real Integration test against the actual ORM stack
+  together verify the admin grid/mass-action machinery is *correctly
+  wired* end to end. However, actually rendering the grid/mass-
+  action/save-form through a real authenticated browser session could
+  **not** be completed: this environment enforces a CAPTCHA on admin
+  login (confirmed via a real curl login attempt using this project's
+  own documented dev credentials from `env/magento.env`, which returned
+  "Incorrect CAPTCHA" rather than a session), and no browser-automation
+  tool is available in this session to solve one. Deliberately did not
+  attempt to disable the CAPTCHA to work around this, since that's a
+  real security control this task has no standing to weaken. An
+  unauthenticated reachability check confirmed `boost/index` returns
+  HTTP 200 (redirecting to the real admin login page, not a 404/500),
+  confirming routing/ACL registration doesn't crash even pre-auth. The
+  actual rendered grid table, the mass-action click, and the save-form
+  submission through a real browser remain unverified — disclosed here,
+  not silently assumed to work.
+- **Pre-existing, unrelated environment issue, reproduced again
+  identically:** the same `Magento_CatalogSampleData`
+  `InstallCatalogSampleData` patch failure from Task 31 recurred
+  identically on this task's own `setup:upgrade` run — further
+  confirming it is a stable, pre-existing environment issue unrelated
+  to any of this session's changes, not a new regression. Did not block
+  anything this task needed.
+- **Requirement 8 (no "Sponsored" disclosure label) — confirmed
+  respected:** no customer-facing disclosure text of any kind was
+  added; boost data is never exposed to `ProductContextFormatter`, the
+  LLM, or the response schema — identical reasoning to Task 31's own
+  explicit OutputValidator decision (boost, like rating, is a purely
+  internal ranking input, never a claim shown to or made available to a
+  shopper).
+- **Skill files updated:** `references/progress-log.md` — header
+  summary updated, status row 10 updated (row 3, admin config sections,
+  intentionally left alone — the new "Merchandising Boosts" page is a
+  standalone admin grid, not an addition to the existing system.xml
+  config sections that row describes), this Task 32 history entry
+  added. `CLAUDE.md` — the "Ranking signals implement..." line in
+  "Non-negotiable architectural rules" updated to list all 6 signals;
+  a new "Environment realities" entry added for the admin-login CAPTCHA
+  gate and the recurring CatalogSampleData patch failure (now confirmed
+  twice, worth not rediscovering a third time); the "Ranking signal:
+  merchandising boost" section marked done (was "in progress" from this
+  task's own initial spec injection) with 3 new implementation-decision
+  bullets (mass-action-is-a-full-page-not-a-modal, the boost weight cap,
+  no store_id column) appended additively.
+- **Not done / blocked:** nothing blocked. The admin-UI-through-a-real-
+  browser verification gap above is disclosed, not blocking — every
+  other layer (schema, DI wiring, ORM round-trip, live ranking effect)
+  is genuinely, separately verified. A future task with access to a
+  real browser session (or explicit permission to temporarily adjust
+  the CAPTCHA setting) could close that specific remaining gap.
+
+### Task 33 — Admin Playground visual-only redesign (DONE)
+- **Files (modified only — no new files this task):**
+  `Block/Adminhtml/Playground/Index.php` (7 new view-formatting methods:
+  `getCollapsibleInitJson()`, `getScopeBadge()`, `getFallbackBadge()`,
+  `getValidationCheckBadges()`, `getBadgeHtml()`, `getFinalResponseJson()`,
+  plus a new `ChatResponseSerializer` constructor dependency),
+  `view/adminhtml/templates/playground/index.phtml` (every one of the
+  10 existing numbered panels wrapped in a collapsible block; status
+  badges added; JSON syntax highlighting added; CSS/JS additions),
+  `Test/Unit/Block/Adminhtml/Playground/IndexTest.php` (13 new test
+  cases for the new methods, plus the existing `block()` test helper
+  updated for the new constructor dependency).
+- **Zero data/logic changes, by design:** every one of the 10 panels'
+  existing content, every existing data field, and every existing PHP
+  method on the Block is byte-for-byte unchanged — confirmed by a real,
+  live rendering diff-style check (see Verification below) proving all
+  pre-existing text/values still appear in the rendered output. The 6
+  new Block methods are pure re-presentations of data
+  `PlaygroundResult`/`PlaygroundQueryRunner` already computed before this
+  task (see each method's own docblock for exactly which existing field
+  it reads) — none of them call into the retrieval/ranking/revalidation/
+  chat pipeline again or compute anything new.
+- **Key decision — collapsible panels use Magento's real native
+  `mage/collapsible` widget, not a bespoke accordion:** the exact same
+  declarative `fieldset-wrapper admin__collapsible-block-wrapper` +
+  `data-mage-init='{"collapsible": {...}}'` markup
+  `Magento\Catalog\Block\Adminhtml\Product\Edit\Tab\ChildTab`'s own real
+  template uses for the product-edit page's collapsible sections
+  (verified by reading that core file directly), not the older
+  Prototype.js-based `Fieldset.toggleCollapse()` pattern system config
+  groups use (which requires an AJAX round-trip to persist collapse
+  state server-side — unnecessary complexity this diagnostic tool has
+  no reason to add). Zero custom JavaScript was needed for the
+  accordion behavior itself — it is 100% declarative HTML attributes,
+  arguably more "vanilla" than hand-writing a toggle script would have
+  been. jQuery + `mage/collapsible` are framework-provided on every
+  Magento admin page already (and this exact template already used
+  jQuery for its pre-existing Test Connection button) — not a new
+  dependency introduced by this task.
+- **Key decision — Final Response is the one panel expanded by default,
+  every other panel (including a new nested "Raw JSON" sub-panel — see
+  below) collapsed**, satisfying requirement 2 exactly; live-confirmed
+  via a real rendered-HTML check counting collapsible-init markers:
+  exactly 1 `"active": true` and 10 `"active": false` across the 11
+  total collapsible panels on the page (10 top-level + 1 nested).
+- **Key decision — status badges reuse Magento's own message classes,
+  extended with real Magento admin colors, not invented ones:** Magento's
+  own `.message-success`/`.message-warning`/`.message-notice` share the
+  same pale-yellow background in the shipped admin theme (only
+  `.message-error` has a distinct background) — differentiated only by
+  icon. Since this task explicitly asks for genuinely color-coded
+  badges, a small `.aavirbhava-playground-badge` CSS block adds compact-
+  inline layout plus real background tints, but every tint color is
+  derived directly from Magento's own real admin palette values
+  (`@color-green-apple`/`@color-phoenix`/`@color-blue-pure`/`@color-pink`
+  from `theme-adminhtml-backend`'s own `_colors.less`, confirmed by
+  reading that file directly) — an extension of the native classes'
+  existing color semantics into a compact badge layout, not a new,
+  invented color system.
+- **Key decision — the 4 OutputValidator check badges are honest about
+  what's actually known, not guessed:** `OutputValidator::validate()`
+  fails CLOSED at the *first* violation it finds and does not keep
+  checking after that (confirmed by reading its own code directly) — so
+  for any given turn, only one of two things is genuinely knowable:
+  every check passed (badged all 4 "success"), or exactly one specific
+  check failed (that one badged "error", the SAME `SafeResponse::
+  reasonCode` value this page already rendered as plain text before
+  this task) — the other three were never reached at all, and are
+  badged "notice"/"not run" rather than a guessed "passed", since
+  claiming they passed would assert knowledge this class doesn't have.
+- **Key decision — "fallback-triggered state" badges `ChatResponse::
+  usedFallback` (the LLM-provider fallback, Task 5's `FallbackChatGenerationService`),
+  not `SafeResponse` (the different, adjacent "safe non-AI response"
+  concept):** this module's own established vocabulary since Task 5
+  consistently uses bare "fallback" for the provider-fallback concept
+  and always qualifies the other one as "safe fallback"/"safe response"
+  — `ChatResponse::usedFallback` is real, already-computed data on every
+  LLM round (`PlaygroundResult::llmRounds`) that was never surfaced
+  anywhere in Playground's UI before this task, badged here for the
+  first time (read off the last completed round).
+- **Requirement 4 — JSON highlighting, honestly scoped to what's
+  actually JSON:** re-read `ProductContextFormatter`'s real output before
+  assuming — it is plain natural-language product-bullet text, not JSON,
+  so highlighting was not forced onto it (would have been visually
+  meaningless prose with occasional coincidental token matches, not a
+  real presentation improvement). Applied instead to: (a) the "Tool
+  Calls" panel's 2 existing `jsonPretty()` blocks (genuinely JSON
+  already), and (b) a new, additive "Raw JSON" sub-panel inside "Final
+  Response" — built by reusing `ChatResponseSerializer::
+  serializeDisplayPayload()` (Task 20's own real, already-tested
+  serialization code — the *actual* production JSON shape a real
+  customer-facing response uses, not a hand-rolled mirror of it) against
+  the exact same already-fetched `$result->finalResponse`/`safeResponse`
+  object the existing human-readable view already renders. This is
+  additive, not a replacement — the existing formatted view is
+  byte-for-byte unchanged, the raw JSON is a new, collapsed-by-default
+  alternate presentation of the identical data, deliberately not
+  counted as "new capability" under requirement 5 (no new backend
+  logic, no new field, the exact same object serialized differently).
+  `awaiting_confirmation` is omitted from this JSON (unlike the real
+  production serializer) since that field needs a full
+  `ChatPipelineResult` Playground never constructs — disclosed rather
+  than faked.
+- **The vanilla JSON highlighter itself:** a small, dependency-free
+  regex tokenizer (`TOKEN_PATTERN` matching quoted strings/keys,
+  true/false/null, numbers, and JSON punctuation) that rebuilds each
+  `[data-aavirbhava-json]` element from `document.createTextNode()`/
+  `document.createElement('span')` calls only — every span's text is
+  set via `.textContent`, never `.innerHTML`, so it cannot inject markup
+  regardless of what a real LLM tool result or product name contains,
+  the same "escape first, never trust the content" discipline this
+  module's storefront `renderMarkdown()` (Task 18) already established.
+  Verified in two ways: `node --check` for syntax, and a standalone
+  Node run of the tokenizer against a real sample JSON payload
+  (including a value containing an escaped embedded quote and a
+  negative number) proving the token classification is correct AND
+  that reassembling every token plus every gap between tokens
+  reproduces the original string byte-for-byte — a real, mechanical
+  proof the highlighter cannot drop or corrupt content, not just an eyeball check.
+- **Verification — full test suite:** 1440 tests / 3467 assertions / 0
+  failures before this task; **1453 tests / 3513 assertions / 0
+  failures / 0 errors after** (net +13 tests, +46 assertions).
+  `php -l` run across every changed file plus a full `find Api Model
+  Test Block Controller -name '*.php'` sweep of the whole module —
+  clean.
+- **Verification — this module has no phtml-rendering PHPUnit tests, by
+  established precedent, checked before assuming otherwise:** confirmed
+  via `ChatWidgetTest`'s own docblock (Task 11) that this module
+  deliberately does not attempt real `Template::fetchView()`/template-
+  engine rendering through a bare PHPUnit process ("cannot safely
+  exercise" it, per that test's own reasoning) — the Block's own
+  logic/formatting methods are unit-tested instead (13 new cases, all
+  passing), and actual template rendering is verified live.
+- **Verification — live, real container, actual template rendering
+  (not merely "the code looks right"):** ran the real, un-mocked
+  `Magento\Framework\View\LayoutInterface::createBlock()` → real
+  `Index::setTemplate()` → real `toHtml()` chain (full Magento app
+  bootstrap, not a bare PHPUnit process) against 3 realistic
+  `PlaygroundResult` scenarios (OutputValidator pass, OutputValidator
+  fail with a specific reason code, and a deliberately XSS-payload
+  product name). Confirmed in the real rendered HTML: all 10 section
+  titles present, all 6 real ranking-signal names present (including
+  `merchandising_boost`/`rating` from Tasks 31-32), every pre-existing
+  data value preserved exactly (query text, SKUs, revalidation names,
+  product context text, tool call name, message text, follow-up
+  question, token counts, provider), the native collapsible markup with
+  exactly 1-of-11 panels defaulting open, all badge classes present
+  with the right pass/fail/notice distribution for both the pass and
+  fail scenarios, the JSON-highlighting data attribute/script/CSS
+  classes present, and — critically — the crafted
+  `<img src=x onerror=alert(1)>` product name appeared **only** in its
+  fully HTML-entity-escaped form in the output, never raw, confirming
+  the new badge/JSON-highlighting code introduced no XSS regression.
+- **Verification — admin-UI-through-a-real-browser, honestly still not
+  possible (same gap as Task 32, not re-litigated here):** this
+  environment's admin-login CAPTCHA and the lack of a browser-automation
+  tool in this session are unchanged from Task 32's own disclosure.
+  This task's live-rendering script (above) goes further than Task 32's
+  own verification could for THIS specific task, though, since it
+  exercises the real Layout/Block/template-engine chain directly
+  (bypassing only the HTTP/session/CAPTCHA layer, not the actual
+  rendering logic) — genuinely stronger evidence than "the markup looks
+  correct by inspection," even though a real browser screenshot is
+  still not something this session could produce.
+- **Requirement 5 (no new capability) — confirmed respected:** no
+  filtering/searching, no re-run-without-retype, and no new backend
+  logic of any kind was added; the only two additions beyond pure CSS/
+  JS restyling (the badges and the Raw JSON sub-panel) both re-present
+  data that was already fully computed and available before this task,
+  per the "Zero data/logic changes" note above.
+- **Skill files updated:** `references/progress-log.md` — this Task 33
+  history entry added (no status-table row needed a substantive change
+  — row 11, "Admin diagnostic pages," already covers the Playground
+  page generically; this task didn't change what it diagnoses, only how
+  it's presented). `CLAUDE.md` — a new "Admin Playground UI" section
+  (added by this task's own initial spec injection) is left as-is; no
+  further CLAUDE.md changes were needed since this task introduced no
+  new architectural rule, environment fact, or known issue beyond what
+  that section already states.
+- **Not done / blocked:** nothing blocked.
+- **Follow-up, same task, prompted by a real user screenshot**: the
+  "Run a Query" form (out of this task's original written scope — only
+  the 10 result panels were listed) looked sparse in a real browser —
+  label far left of a near-full-width textarea with a lot of dead
+  space, no card boundary unlike the panels below. Root-caused (not
+  guessed): Magento's own `.admin__field` grid CSS was working exactly
+  as designed, just allocating a wide, mostly-empty label column for a
+  section with only one short label — real native behavior, not a bug.
+  Fixed with Magento's own `admin__field-wide` class (confirmed via
+  `_extends.less`'s `.abs-field-rows` mixin — the real native "label
+  above a full-width control" pattern, used elsewhere in core for
+  textareas) for the layout, plus a light, disclosed custom card
+  treatment (border/radius/shadow/max-width, using Magento's own real
+  `@color-gray80` hex value) applied to both the form and the result
+  panels for visual consistency, since no matching native "simple
+  bordered card" class exists for this exact shape. Caught and fixed a
+  real mistake before it shipped: a first draft accidentally referenced
+  a LESS variable directly inside this plain-CSS (non-LESS-processed)
+  `<style>` block, which would have silently produced no border at all
+  in any real browser — caught by re-reading the diff, not by a browser
+  test, since none is available in this session; this remains a real,
+  disclosed risk for any future edit to this block. Re-verified via the
+  same live-rendering script (all data/markup still correct) and the
+  full suite (unchanged, 1453/3513/0 failures — a markup/CSS-only
+  change). See the Task 33 status report's own Addendum section for the
+  full account; the actual visual result in a real browser is still
+  unconfirmed by this session.
+
+### Task 34 — Discount/promotion tool: real-time Catalog/Cart Price Rule awareness (DONE)
+- **Files:** `Api/Promotion/{ProductPromotionInterface,CartPromotionInterface,
+  ActivePromotionReaderInterface}.php` (new); `Model/Promotion/
+  {ProductPromotion,CartPromotion,ActivePromotionReader}.php`,
+  `Model/Promotion/Exception/PromotionException.php` (new);
+  `Model/Tool/GetActivePromotionsTool.php` (new); `Model/Chat/
+  PromotionContextFormatter.php` (new). Modified: `Model/Tool/ToolResult.php`
+  (2 new optional fields, `verifiedProductPromotions`/`verifiedCartPromotions`),
+  `Model/Chat/ToolCallingResult.php` (same 2 fields), `Model/Chat/
+  ToolCallingChatService.php` (threads both through every `ToolCallingResult`
+  construction site and `executeToolCall()`), `Api/Chat/
+  OutputValidatorInterface.php`/`Model/Chat/OutputValidator.php` (new
+  `fabricated_discount` check + `containsFabricatedPercentage()`/
+  `containsFabricatedCouponCode()`), `Model/Chat/ChatEntryPipeline.php`
+  (resolves catalog-rule discounts for this turn's candidates, adds the new
+  `PromotionContextFormatter` message, threads promotion facts into the
+  `OutputValidator::validate()` call), `Api/Config/
+  CapabilitiesConfigInterface.php`/`Model/Config/CapabilitiesConfig.php`/
+  `Model/Config/ConfigurationReader.php`/`Model/Config/Path.php` (new
+  `isPromotionAwarenessEnabled()` capability), `etc/config.xml`/
+  `etc/adminhtml/system.xml` (new `promotion_awareness_enabled` field),
+  `Model/Chat/ResponseContractFormatter.php` (additive paragraph on when to
+  call the new tool and to only state real discount facts), `etc/di.xml`
+  (new `ActivePromotionReaderInterface` preference + `get_active_promotions`
+  tool-registry entry). Tests: `Test/Unit/Model/Promotion/
+  {ProductPromotionTest,CartPromotionTest,ActivePromotionReaderTest}.php`,
+  `Test/Unit/Model/Tool/GetActivePromotionsToolTest.php`, `Test/Unit/Model/
+  Chat/PromotionContextFormatterTest.php` (all new); `Test/Unit/Model/Chat/
+  {OutputValidatorTest,ChatEntryPipelineTest,ToolCallingChatServiceTest}.php`,
+  `Test/Unit/Model/Config/{CapabilitiesConfigTest,ConfigurationReaderTest}.php`
+  (extended); `Test/Integration/Model/Promotion/
+  ActiveCartPromotionDatabaseTest.php` (new, real database).
+- **Key decision — CatalogRule API, not the already-blended FinalPrice:**
+  `RevalidatedProduct::specialPrice` already incorporates catalog rules
+  automatically (via `Magento\CatalogRule\Observer\
+  ProcessFrontFinalPriceObserver`, part of Magento's own pricing framework),
+  but the task's own explicit instruction was to read Catalog Price Rules
+  directly, to correctly attribute a discount's source rather than
+  conflating it with a plain `special_price` attribute. `Model/Promotion/
+  ActivePromotionReader::catalogRuleDiscounts()` reads `Magento\CatalogRule\
+  Model\ResourceModel\Rule::getRulePrices()` — the same real, precomputed
+  `catalogrule_product_price` table Magento's own indexer keeps fresh; this
+  task runs no indexer of its own, mirroring Task 32's merchandising-boost
+  "live read, no reindex" reasoning exactly. Scoped to only the entity IDs
+  already present in the current turn's candidate set — never every active
+  rule in the store.
+- **Key decision — cart rules read via the real active-rule filter, never a
+  full cart evaluation:** `activeCartRules()` uses `Magento\SalesRule\Model\
+  ResourceModel\Rule\Collection::addWebsiteGroupDateFilter()`, the same real
+  "active, in-range, applicable to this website+group" filter cart-rule
+  application itself is built on — deliberately not
+  `setValidationFilter()` (coupon-specific) and deliberately not simulating
+  a full cart against `Magento\SalesRule\Model\Validator` (a heavier,
+  cart-mutating operation with no reason to duplicate here; this tool only
+  reports a rule's own definition, not a cart-specific computed total).
+- **Key decision — auto-applied vs. coupon-required is a real, explicit
+  distinction, not one collapsed flag:** `CartPromotionInterface::
+  requiresCoupon()`/`couponCode()`, derived from the rule's real
+  `coupon_type` (`COUPON_TYPE_NO_COUPON`/`COUPON_TYPE_SPECIFIC`/
+  `COUPON_TYPE_AUTO`). A `COUPON_TYPE_AUTO` rule (many per-use
+  auto-generated codes) correctly reports `requiresCoupon() === true` with
+  `couponCode() === null` — there is no single real code to give, and
+  inventing one would itself be a fabrication.
+- **Key decision — promotion data is a separate system message, not a new
+  field on `ProductContextFormatter`:** that formatter's own existing
+  instructions explicitly forbid price/stock-adjacent facts (not resolved
+  at the time it builds its candidate list). The new `PromotionContextFormatter`
+  mirrors its exact shape (INSTRUCTIONS heredoc + per-item formatting +
+  `?ChatMessage`) and is added as an additional message in `ChatEntryPipeline`,
+  built from already-live-revalidated data.
+- **Key decision — one capability flag gates both the tool and the proactive
+  message:** `isPromotionAwarenessEnabled()` is checked both in
+  `GetActivePromotionsTool::authorize()` and before `ChatEntryPipeline`
+  resolves `PromotionContextFormatter`'s data — a merchant disabling the
+  capability gets promotion awareness turned off end-to-end, not just the
+  explicit-ask path. (Initially drafted as tool-only; corrected before any
+  test was written against the wrong behavior.)
+- **`OutputValidator`'s new `fabricated_discount` check** mirrors
+  `containsFabricatedPrice()`'s exact fail-closed structure and ordering
+  (inserted right after the price check, before the SKU checks):
+  `containsFabricatedPercentage()` (regex-extracts `N%` mentions, compares
+  against real `ProductPromotionInterface::percentOff()` values and
+  cart-rule `discountDescription()` strings re-parsed for a leading
+  percentage) and `containsFabricatedCouponCode()` (regex-extracts text
+  immediately following the literal word "code", compared case-insensitively
+  against real `couponCode()` values). Same disclosed, accepted limitation
+  class as the existing price/URL checks: this is regex-based, not NLP, so
+  "20% off" and an unrelated "20% cotton" material claim are checked
+  identically — documented in the new tests, not hidden.
+- **Bug found and fixed during live verification (not something a unit test
+  with a hand-picked fixture would ever have caught):** this store's real
+  "Spend $50 or more - shipping is free!" cart rule has `simple_action =
+  by_percent` with `discount_amount = 0` (the actual discount mechanism is
+  the separate `simple_free_shipping` flag) — `describeDiscount()`
+  originally produced "0% off" for it, technically true (it matches the
+  real stored amount) but uninformative and potentially confusing if woven
+  into response text. Fixed by checking `getSimpleFreeShipping()`: a
+  zero-amount free-shipping rule now describes itself as "free shipping";
+  a non-zero rule with free shipping also enabled appends "+ free shipping"
+  to its normal description. Added a dedicated unit test
+  (`testActiveCartRulesDescribesAFreeShippingOnlyRuleAsFreeShippingNotZeroPercentOff`)
+  rather than leaving this to only the live check.
+- **Verification — full test suite:** 1496 tests / 3608 assertions / 0
+  failures (up from 1453/3513), plus 4 new Integration tests / 7 assertions
+  against the real database (`ActiveCartPromotionDatabaseTest`, covering
+  active-in-range surfacing, expired-date exclusion, customer-group
+  non-leakage, and a real coupon-required rule's real code). A whole-module
+  `php -l` sweep (609 files) is clean. `setup:di:compile` clean (confirms
+  the new `ActivePromotionReaderInterface` preference and every new
+  constructor injection resolve correctly).
+- **A real bug hit and fixed while writing the Integration test (not a
+  product bug, a test-harness bug):** the test originally called
+  `\Magento\Framework\App\Bootstrap::create()` fresh inside `createRule()`/
+  `cleanup()` (mirroring what looked like the same pattern used elsewhere),
+  which returned an object manager without the area code set (previously
+  set only on the `setUp()`-local `$objectManager`), causing every test to
+  fail with "Area code is not set" the moment `Rule::save()` tried to build
+  its condition combine object. Fixed by caching the object manager as an
+  instance property in `setUp()` and reusing it everywhere, matching
+  `MerchandisingBoostDatabaseTest`'s actual established pattern more
+  closely than the first draft did.
+- **Verification — live, real container, against this store's genuinely
+  pre-existing rules (not fixtures):** this store already has one real,
+  currently-active Catalog Price Rule ("20% off all Women's and Men's
+  Pants," confirmed via `catalogrule_product_price`: product 725/
+  `MP01-32-Black`, regular $35 → rule price $28) and 4 real active Cart
+  Price Rules (a buy-3-get-1-free, a free-shipping-over-$50, a storewide
+  20%-off, and a $4-water-bottle rule requiring the real coupon code
+  `H20`). A standalone script constructing the real, DI-resolved
+  `ActivePromotionReader` confirmed `catalogRuleDiscounts()` returns
+  exactly `regular=35.00 discounted=28.00 percentOff=20.00` for the real
+  product, and `activeCartRules()` returns all 4 real rules with correct
+  auto-applied/coupon-required distinction and the real code `H20` — same
+  confirmed again through the actual DI-resolved `GetActivePromotionsTool`
+  instance (not just the reader). **Full end-to-end through the real,
+  un-mocked `ChatEntryPipeline`**: a real request ("Do you have any pants
+  on sale right now?") against the real retrieval/ranking/revalidation
+  pipeline and a real local LLM (Ollama, `qwen3.5`) produced a generated
+  response whose text states *"Caesar Warm-Up Pant (SKU: MP01) - Sale
+  price: $28 (regular: $35)"* — the exact real catalog-rule discount,
+  sourced from the new `PromotionContextFormatter` proactive message, not
+  invented, and passed `OutputValidator` (including the new
+  `fabricated_discount` check) without triggering a fallback.
+- **Live verification gap, honestly disclosed:** the explicit
+  tool-invocation path (a direct "do you have any coupon codes" question,
+  meant to make the model call `get_active_promotions` itself) was
+  attempted 5 times live and hit `assistant_unavailable` every time, traced
+  via `exception.log` to `ProviderInvalidResponseException`/
+  `PROVIDER_INVALID_RESPONSE` — the same pre-existing local-model
+  reliability ceiling already documented in CLAUDE.md ("Local model
+  (Ollama) occasionally fails..."), confirmed not a regression by finding
+  an identical-shaped failure already logged the day before this task for
+  an unrelated add-to-cart request, and by the debug log's own historical
+  rate (6 of 25 total logged requests ever recorded as
+  `assistant_unavailable`, ~24%, independent of this task). The tool
+  mechanism itself was independently verified correct (above, via direct
+  DI construction and `execute()`), so this gap is specifically "the local
+  model didn't choose/complete the tool call in 5 live attempts," not "the
+  tool is broken" — disclosed rather than silently retried into a
+  misleadingly clean report.
+- **Requirement 6 (coupon-required vs. auto-applied, catalog vs. cart,
+  expired-date exclusion, customer-group scoping, fabricated_discount
+  catching an invented claim) — all covered by tests**, split across
+  `ActivePromotionReaderTest` (unit, mocked collection/resource) and
+  `ActiveCartPromotionDatabaseTest` (integration, real database, since — 
+  matching `MerchandisingBoostDatabaseTest`'s own stated rationale —
+  `addWebsiteGroupDateFilter()`'s real date/website/group SQL isn't
+  meaningfully re-verifiable against a mocked adapter) and 8 new
+  `OutputValidatorTest` cases for the fabrication-catching side.
+- **Skill files updated:** `references/progress-log.md` — header summary
+  replaced, status rows 3/6/8 extended additively, this Task 34 history
+  entry added. `CLAUDE.md`'s own "Discount/promotion tool (Phase 2, in
+  progress)" section (already present from this task's own spec injection)
+  is left as the binding design record — its content already matches what
+  was actually built; no correction needed.
+- **Not done / blocked:** nothing blocked. The Admin Playground's query
+  runner was deliberately not extended to surface promotion data — not
+  required by this task's own scope, and out-of-scope-disclosure is
+  consistent with this module's practice (same judgment call Task 32 made
+  for boost data). `ChatDebugTrace` was not given new promotion-specific
+  fields — the existing trace already captures `final_product_skus`/
+  `outcome`, and promotion facts are fully visible through the existing
+  Tool Calls/Final Response Playground panels for any turn that exercises
+  the tool; a dedicated trace field can be added later if debugging
+  proves this insufficient. The explicit-tool-invocation live-verification
+  gap above is disclosed, not silently worked around.
+
+### Task 35 — LLM usage cost cap: admin controls, enforcement, email alerting (DONE)
+- **Files:** `Api/Config/{CostCapConfigInterface,ProviderCostConfigInterface}.php`,
+  `Model/Config/{CostCapConfig,ProviderCostConfig}.php`, `Model/Config/
+  Source/CapPeriod.php` (new); `Api/CostCap/{CostUsageSnapshotInterface,
+  CostUsageTrackerInterface,CostCapNotifierInterface,
+  CostCapCheckerInterface}.php`, `Model/CostCap/{CostUsageSnapshot,
+  DbCostUsageTracker,PeriodCalculator,CostCalculator,CostCapThreshold,
+  CostCapEnforcer,CostUsageRecorder,EmailCostCapNotifier}.php`,
+  `Model/CostCap/Exception/CostCapException.php` (new); `Model/Chat/
+  CostTrackingChatGenerationService.php` (new); `etc/email_templates.xml`,
+  `view/adminhtml/email/cost_cap_alert.html` (new). Modified:
+  `Model/Config/Path.php` (9 new constants), `Api/Config/
+  ConfigurationReaderInterface.php`/`Model/Config/ConfigurationReader.php`
+  (`readCostCap()`/`readProviderCost()`), `etc/adminhtml/system.xml` (2
+  new groups, `cost_cap`/`provider_cost`), `etc/config.xml`/`etc/
+  db_schema.xml` (new `aavirbhava_ai_cost_cap_usage` table), `etc/di.xml`
+  (`ChatGenerationServiceInterface` preference swapped to the new
+  decorator; 3 new preferences), `Block/Frontend/ChatWidget.php` (new
+  render-gate). Tests: `Test/Unit/Model/Config/{CostCapConfigTest,
+  ProviderCostConfigTest}.php`, `Test/Unit/Model/CostCap/*` (9 new files),
+  `Test/Unit/Model/Chat/CostTrackingChatGenerationServiceTest.php` (new);
+  `Test/Unit/Model/Config/ConfigurationReaderTest.php`, `Test/Unit/Block/
+  Frontend/ChatWidgetTest.php` (extended); `Test/Integration/Model/
+  CostCap/DbCostUsageTrackerDatabaseTest.php` (new, real database).
+- **Key decision — recording lives in exactly one seam, not scattered
+  across callers:** `Model/Chat/CostTrackingChatGenerationService`
+  decorates the concrete `FallbackChatGenerationService` class (the same
+  DI-cycle-avoiding technique that class itself uses to wrap the
+  undecorated `ChatGenerationService`) and is swapped in as the real
+  `ChatGenerationServiceInterface` preference. Every real provider call
+  in the module — the main pipeline's tool-call rounds via
+  `ToolCallingChatService`, and the Admin Playground's own query runner
+  — already goes through this one interface, so usage tracking reaches
+  both with zero changes to either caller. Recording only happens after
+  `chat()` actually returns a `ChatResponse`; a thrown exception means
+  nothing was spent, so nothing is recorded — matches the task's own
+  "not before" instruction precisely.
+- **Key decision — real token usage needed no new plumbing.**
+  `AbstractChatProvider::parseUsage()` was already parsing real
+  `prompt_tokens`/`completion_tokens` from the actual provider HTTP
+  response into `TokenUsage`/`ChatResponse.usage` before this task
+  (confirmed by reading the code first, per the task's own explicit
+  "confirm whether... already surfaces" instruction) — `LlmProviderInterface`
+  needed no changes. `Model/Chat/Response/ResponseMetadata` still doesn't
+  carry usage (a separate, narrower gap — the response contract exposed
+  to the shopper — deliberately left alone since nothing in this task
+  required exposing cost/usage to the customer-facing response).
+- **Key decision — atomic increments via `insertOnDuplicate`/
+  `Zend_Db_Expr`, no read-then-write:** `Model/CostCap/DbCostUsageTracker`
+  mirrors `Model/Indexing/Queue/DbIncrementalWorkLedger`/`Model/Indexing/
+  RebuildFence/DbRebuildFence`'s own `ResourceConnection`-direct style,
+  simplified since nothing here needs lease/generation/claim machinery —
+  only an increment (single `insertOnDuplicate`) and a one-time
+  notification claim (single compare-and-swap `UPDATE`). Threshold ranks
+  (`CostCapThreshold::NONE/WARNING/CAP` = 0/1/2) are monotonically
+  increasing specifically so a single large usage jump that crosses both
+  the warning threshold and the cap in one call correctly claims and
+  fires both notifications in sequence, each still exactly once — not
+  just the simpler "one threshold per call" case.
+- **Key decision — period rollover is a keying scheme, not a reset
+  step.** `Model/CostCap/PeriodCalculator::periodKey()` computes a
+  period-start string (`Y-m-d` daily, the Monday of the ISO week for
+  weekly, `Y-m-01` monthly) from the real current time; a new period is
+  just a different primary-key value in `aavirbhava_ai_cost_cap_usage`,
+  so "usage resets at a new period" falls out of the table's own keying
+  rather than needing an explicit cron/reset job.
+- **Key decision — the render-time cap check fails OPEN, deliberately
+  the opposite direction from its neighbor.** `ChatWidget::_toHtml()`
+  already had one fail-closed check (`isAssistantEnabled()` — a config
+  read error hides the widget, per Task 11's own documented reasoning
+  that a page-wide persistent block is a contained-enough blast radius
+  to fail safe on). The new `costCapChecker->isBlocking()` check is
+  fail-OPEN by design (`Model/CostCap/CostCapEnforcer` catches every
+  `Throwable`, including store resolution, and resolves to "not
+  blocking") — a broken cost tracker must never silently take down a
+  working, revenue-relevant customer channel, the exact instruction the
+  task itself gave. Both checks live side by side in the same method,
+  each failing in its own correct direction — not a copy-paste of one
+  into the other.
+- **Key decision — per-provider pricing is 2 static field-pairs, not a
+  dynamic per-registry-entry UI.** Investigated first: this module's
+  existing provider-config convention (`llm`/`fallback` groups) is one
+  flat field set for whichever single provider is currently selected,
+  not one row per registered provider, and no repeater-style admin UI
+  precedent exists anywhere in this module to mirror. With only 2
+  providers actually registered in `Api/Provider/LlmProviderRegistryInterface`
+  today (`openai`, `openai_compatible`), a static `provider_cost` group
+  with one price-pair per known identifier (`Model/Provider/
+  ProviderIdentifiers`) is simpler and more Magento-idiomatic than
+  inventing a new dynamic-repeater pattern for 2 rows. A provider
+  identifier with no configured pricing (including a future, not-yet-
+  wired-up one) costs 0.0 — disclosed as a real limitation (a newly
+  added paid provider needs its own pricing fields added here too, not
+  automatic), not a silent undercount hidden from the merchant.
+- **Bug found and fixed via genuine live verification (not something
+  the unit test suite, which only asserts what reaches
+  `setTemplateVars()`, could have caught):** a `Phrase` object (from
+  `__()`) passed directly as a template var rendered as completely
+  empty text in the real, captured email — `threshold_label`/
+  `override_status` were blank, and the subject line (which embeds
+  `threshold_label`) was truncated to just "AI Shopping Assistant:" —
+  despite `Magento\Framework\Phrase` implementing `__toString()`. Fixed
+  by explicitly `(string)`-casting every translated value before it
+  reaches `setTemplateVars()`. Re-verified with a second real request:
+  both emails (warning and cap) rendered every field correctly, subject
+  included. Added a matching regression assertion in
+  `EmailCostCapNotifierTest` and a code comment warning against
+  reintroducing a raw `Phrase` here without re-verifying against a real
+  captured email, since the unit test alone would not re-catch this
+  specific failure mode.
+- **A second, smaller bug found while writing the Integration test (a
+  test-data mistake, not a product bug):** the test's first draft used
+  long, descriptive period keys (e.g. `ai-assistant-test-accumulation-
+  test`, 36 characters) against the real `period_key varchar(20)`
+  column — this environment's MySQL isn't running in strict SQL mode, so
+  the INSERT silently truncated the key to 20 characters instead of
+  erroring, and every subsequent read by the full, untruncated key then
+  matched nothing. Fixed by using short keys (`cctest-accum`, etc.,
+  matching the column's real intended width — production keys are
+  always the 10-character `Y-m-d` form) rather than widening the column,
+  since 20 characters is already generous for a real key and the bug
+  was in the test's own key choice, not the schema.
+- **Verification — full test suite:** 1544 tests / 3709 assertions / 0
+  failures (up from 1496/3608 at the end of Task 34), plus 6 new
+  Integration tests / 14 assertions against the real database
+  (`DbCostUsageTrackerDatabaseTest`: cost accumulation across multiple
+  real calls, an untouched period reading as zero/non-existent rather
+  than erroring, two period keys accumulating independently, a
+  threshold claim succeeding once then failing for a repeat claim, a
+  claim escalating from warning to cap, and a claim never allowing a
+  downgrade back to a lower threshold). A whole-module `php -l` sweep
+  (638 files) is clean. `setup:di:compile` is clean (a first run
+  produced 53 unrelated pre-existing-code errors from a stale/incomplete
+  `generated/code/Magento/Cms` factory — confirmed via `class_exists()`
+  and a source-code search that `CmsPageContentSearcher.php` genuinely
+  depends on it and always has, so this was compile flakiness from that
+  specific run, not anything Task 35 touched; a clean re-run of
+  `setup:di:compile` alone resolved it and the full suite passed
+  cleanly afterward). `setup:upgrade` created the new table (confirmed
+  via `DESCRIBE aavirbhava_ai_cost_cap_usage`); the pre-existing,
+  unrelated `Magento_CatalogSampleData` patch failure recurred
+  identically, as expected.
+- **Verification — live, real container, across genuinely separate real
+  requests:** two separate real chat requests through the actual,
+  un-mocked `ChatEntryPipeline` (real retrieval/ranking/revalidation, a
+  real local LLM) against a temporarily-configured non-zero local-
+  provider price accumulated real cost exactly matching hand-computed
+  expected values from the real token counts returned
+  (`(9697/1000×0.01)+(1316/1000×0.02) = 0.12329`, then
+  `(16192/1000×0.01)+(2042/1000×0.02) = 0.20276` after a second call —
+  both matched the real database row exactly). With a real cap
+  configured below the accumulated cost: `CostCapCheckerInterface::
+  isBlocking()`, resolved via the real DI container in a separate PHP
+  process, returned `true` with override=No and `false` with the same
+  real data once override was flipped to Yes — live-proving requirement
+  5's full override matrix, not just its unit-tested mock version. A
+  third real request (with the cap now active) correctly jumped
+  `notified_threshold_rank` from 0 straight to 2 (cap) in the real
+  database, and — per the email bug above — 2 real emails (warning, cap)
+  were captured by this environment's real Mailcatcher instance
+  (`http://mailcatcher:1080`, discovered this task: `msmtp` is
+  configured as this container's `sendmail_path`, relaying there),
+  confirming genuine end-to-end delivery through Magento's real mail
+  transport, not just that `sendMessage()` was called. All temporary
+  config changes (cap amount, override, provider pricing, notification
+  email, warning threshold) and all test data (the real
+  `aavirbhava_ai_cost_cap_usage` rows created during this verification)
+  were reverted/cleared afterward — confirmed via `core_config_data` and
+  a row count of 0.
+- **Skill files updated:** `references/progress-log.md` — header summary
+  replaced, status rows 3/7/12 extended additively, this Task 35 history
+  entry added. `CLAUDE.md` — the "LLM cost cap (new feature)" section
+  (present from this task's own spec injection) rewritten to "LLM cost
+  cap" marked implemented, with real implementation-decision bullets
+  (the decorator seam, the atomic-increment/CAS mechanics, the
+  fail-open-vs-fail-closed distinction, the claim-before-send tradeoff,
+  the Phrase-rendering bug) replacing the original spec bullets; a new
+  "Environment realities" entry documents the real Mailcatcher instance
+  for future tasks that need to live-verify email. **This report itself
+  is written and delivered before this task is reported done**, per the
+  "Status reports — this is not optional" section added to CLAUDE.md
+  immediately before this task began.
+- **Not done / blocked:** nothing blocked. Two disclosed, deliberate
+  scope boundaries: (1) a transient email-transport failure after a
+  successful threshold claim permanently forfeits that one
+  notification for that period (claim-before-send, chosen specifically
+  to prevent duplicate emails under concurrent requests — the opposite
+  tradeoff would risk spamming on retries instead); (2) an unconfigured/
+  future provider identifier's cost defaults to 0.0 rather than being
+  impossible to under-report — adding a new paid provider to the
+  registry requires also adding its pricing fields to the
+  `provider_cost` system.xml group, not automatic. Both are stated here
+  rather than silently left as gaps.
+
+### Task 36 — Admin config: fix broken color pickers + CSS layout (DONE)
+- **Files modified:** `Block/Adminhtml/System/Config/{ColorPickerField,
+  OllamaModelField}.php`, `Test/Unit/Block/Adminhtml/System/Config/
+  {ColorPickerFieldTest,OllamaModelFieldTest}.php`. No new files, no
+  `system.xml`/`config.xml`/`db_schema.xml` change — presentation/
+  interaction only, per the task's own explicit constraint.
+- **Root cause, diagnosed from evidence before any fix was written (per
+  this module's own required workflow):** read `ColorPickerField.php`'s
+  JS in full first — `require(['jquery', 'jquery/colorpicker/js/
+  colorpicker'], ...)` is a normal, correctly-shaped RequireJS call;
+  confirmed `colorpicker.js` itself is genuinely AMD-wrapped
+  (`define(['jquery'], function ($) {...})`, no shim needed); confirmed
+  the swatch `<span>` the script binds to already exists in the DOM by
+  the time the inline `<script>` executes (both are emitted in the same
+  server-rendered HTML string, in source order). The JS was never the
+  problem. Then read `vendor/magento/module-swatches/view/adminhtml/
+  layout/catalog_product_attribute_edit.xml` — the real core page that
+  already uses this exact same `jquery/colorpicker/js/colorpicker`
+  widget for its "Visual Swatch" attribute editor — and found it
+  explicitly loads TWO stylesheets via `<css src="...">`:
+  `jquery/colorpicker/css/colorpicker.css` (the base plugin's own
+  required layout/positioning CSS — `.colorpicker { position: absolute;
+  ...; display: none; }` and every slider/hue-bar/swatch-preview
+  sub-element's own absolute positioning) and `Magento_Swatches::css/
+  swatches.css` (an admin-skin color/font re-theme layered on top).
+  Grepped this entire module and every core adminhtml layout file for
+  any reference to either stylesheet — found zero. Confirmed: without
+  `colorpicker.css`, `.ColorPicker()`'s click handler correctly builds
+  the picker's popup DOM (proven by reading the plugin source — nothing
+  in it depends on CSS being present to construct the DOM), but with no
+  CSS the popup's default `display` is the browser's own block-level
+  default (never `none`) and none of its children have the `position:
+  absolute` layout the plugin's own markup assumes — rendering as an
+  unstyled, jumbled block-flow blob rather than a real floating
+  picker. This is functionally indistinguishable from "clicking does
+  nothing" to an admin, even though DOM manipulation is genuinely
+  happening. Corroborating evidence: `OllamaModelField`'s sibling
+  "Fetch Ollama Models" button uses the identical bare `require(['jquery'],
+  ...)` pattern with no CSS dependency at all, and the task's own
+  description confirms THAT field only has an alignment issue, never a
+  "does nothing" complaint — consistent with `require()`/RequireJS
+  itself working correctly on this page, isolating the real defect to
+  the missing CSS specifically.
+- **Fix:** `ColorPickerField::_getElementHtml()` now emits a `<link
+  rel="stylesheet">` for the real `jquery/colorpicker/css/colorpicker.css`
+  file id, resolved via this block's own inherited `getViewFileUrl()`
+  (backed by the real `Magento\Framework\View\Asset\Repository`, the
+  same DI-provided service every other Magento block uses for a static
+  asset URL — no new dependency added). Deliberately did NOT also load
+  `Magento_Swatches::css/swatches.css`: that file only re-themes an
+  already-functional picker's colors/fonts to match the admin skin more
+  closely, and pulling it in would make this module's own admin config
+  page depend on `Magento_Swatches` being enabled for a purely cosmetic
+  benefit — a real, disclosed scope narrowing from the closest core
+  precedent, not an oversight.
+- **Second, separate issue — CSS/layout inconsistency, confirmed by
+  reading the two field classes side by side, not by guessing:** the
+  swatch (`ColorPickerField`) had `vertical-align: middle` and a raw
+  `margin-left: 8px` plus a stray leading space in the PHP string
+  (giving it slightly more effective gap than intended); the "Fetch
+  Ollama Models" button and its status `<span>` (`OllamaModelField`)
+  had neither `vertical-align` at all (defaulting to CSS's own
+  `baseline`) nor any documented spacing rationale for their own
+  `margin-left: 8px`. Fixed by introducing one identical private
+  `TRAILING_ELEMENT_STYLE` constant in BOTH classes (`vertical-align:
+  middle;margin-left:0.8rem;`) — every trailing inline element after
+  every one of these 3 color fields and both Ollama-model fields
+  (llm/model, fallback/model) now shares the exact same alignment/
+  spacing rule. Converted from a raw `8px` to `0.8rem` specifically to
+  match Magento admin's own real root font-size convention
+  (`theme-adminhtml-backend/web/css/source/_typography.less`:
+  `html { font-size: 62.5%; }`, meaning `1rem = 10px` in this admin
+  theme, not the browser default 16px) — the same LESS-value-sourcing
+  discipline this module's own Playground redesign task (Task 33)
+  already established, rather than an arbitrary new pixel value.
+  Searched core for a more specific native "input + adjacent inline
+  button" spacing class to reuse instead of a shared constant (checked
+  `theme-adminhtml-backend`'s `_forms.less`/`styles-old.less`/`mui/
+  styles/_table.less`, and `Magento\AdvancedSearch`'s own real
+  `TestConnection` field — the closest core precedent for a config-page
+  button) — none exists for this exact case (system-config fields still
+  render as a legacy `<table>` row, not the newer `admin__field` grid,
+  confirmed by reading `Magento\Config\Block\System\Config\Form\Field::
+  render()` itself), so unifying this module's own two fields to one
+  shared, LESS-sourced value is the closest honest match to "align with
+  Magento's native conventions" available without inventing a new class
+  scheme from nothing.
+- **Verification — what IS verifiable without a browser, per the
+  task's own explicit instruction:** both fields' embedded JS extracted
+  and run through `node --check` (PHP heredoc interpolations/escapes
+  substituted with placeholder literals first) — both syntactically
+  valid, confirming this task introduced no JS syntax error. A real,
+  DI-resolved `Magento\Framework\View\Asset\Repository::
+  getUrlWithParams()` call (via a real bootstrap, real adminhtml area
+  code, not a mock) resolved `jquery/colorpicker/css/colorpicker.css`
+  to a genuine, well-formed static-view URL, and the physical file it
+  points at was confirmed to exist on disk
+  (`vendor/magento/magento2-base/lib/web/jquery/colorpicker/css/
+  colorpicker.css`) — proving the asset id is real and correctly
+  resolvable, not a typo'd path that would 404. An actual HTTP fetch of
+  that resolved URL was attempted and did not complete (curl `000` —
+  this container has no direct nginx reachability, a pre-existing
+  environment gap unrelated to this fix, not a 404) — disclosed
+  honestly rather than treated as a pass. **No claim of actual visual
+  rendering is made anywhere in this report** — consistent with the
+  task's own instruction and this module's established practice for
+  every prior admin-UI task blocked by the same missing-browser-tool
+  gap (Tasks 32/33).
+- **Regression tests added**, both asserting facts directly readable
+  from the generated HTML string (no rendering engine needed):
+  `ColorPickerFieldTest::testEmitsTheRealColorpickerStylesheetLink`
+  (the `<link>` tag appears, using a mocked `Asset\Repository` returning
+  a known URL — the existing test file's own established `Context`-
+  construction pattern, extended with the one additional constructor
+  arg, `assetRepo`) and `testTrailingSwatchAlignsWithOllamaModelFieldsTrailingElements`;
+  `OllamaModelFieldTest::testButtonAndStatusSpanAlignWithColorPickerFieldsTrailingElements`
+  (asserts the shared style string appears exactly twice — once for the
+  button, once for the status span). Every pre-existing test in both
+  files (name/value/type attribute assertions, sibling base_url-field
+  derivation, swatch background-color logic) still passes unmodified,
+  confirming no config field's underlying value/save/scope behavior
+  changed.
+- **Verification — full test suite:** 1547 tests / 3713 assertions / 0
+  failures (up from 1544/3709 at the end of Task 35). A whole-module
+  `php -l` sweep (638 files, unchanged — no new files this task) is
+  clean. `setup:di:compile` is clean.
+- **Skill files updated:** `references/progress-log.md` — header
+  summary replaced, row 12 (Storefront chat widget, where
+  `ColorPickerField`'s original Task 22 addition already lives) extended
+  additively, this Task 36 history entry added. No `CLAUDE.md` design-
+  constraint section existed for these two admin-JS fields to update —
+  the fix is behavioral/CSS-only, not a change to either field's
+  documented purpose or contract.
+- **Not done / blocked:** nothing blocked. The one real, disclosed gap
+  is the same one every prior admin-UI task in this session has
+  disclosed identically: actual rendered appearance in a real browser
+  remains unconfirmed, since no browser-automation tool is available in
+  this session and this environment's admin login enforces a CAPTCHA
+  that blocks a scripted authenticated session. Every other layer (root
+  cause, JS syntax, real asset-URL resolution, physical file existence,
+  unit-test coverage of the generated markup) is genuinely, separately
+  verified and disclosed as such, not silently assumed.
+- **Follow-up, same task, user-reported via a real screenshot**: the
+  `TRAILING_ELEMENT_STYLE`/`vertical-align:middle;margin-left:0.8rem;`
+  fix above was insufficient on its own — the actual screenshot showed
+  the swatch/button dropping to their own line entirely below the
+  input, not merely misaligned next to it. Root cause: Magento's native
+  `.input-text` admin styling is full-width, so with no flex/inline-
+  block containment the swatch/button simply have no horizontal room
+  left on the same line as the input and wrap, regardless of their own
+  `vertical-align`. Fixed by replacing the margin-based approach
+  entirely with a real flexbox row: both `ColorPickerField` and
+  `OllamaModelField` now wrap the input (in a `flex:1;min-width:0;`
+  span — `min-width:0` is required so the flex item can actually shrink
+  below the input's own intrinsic full-width sizing, a standard
+  flexbox gotcha) and the trailing control(s) in one
+  `<div class="aavirbhava-inline-field-row" style="display:flex;
+  align-items:center;gap:10px;">`, with `gap:10px` (the user's own
+  specified value) replacing the old manual margin, and
+  `align-items:center` replacing the old manual `vertical-align`
+  natively. `OllamaModelField`'s status `<span>` stays inside the same
+  row (so short status text appears inline after the button); its
+  `<datalist>` stays outside (invisible, no layout footprint). Real,
+  DI-resolved verification via Magento's actual `Form\Field::render()`
+  chain (not just the reflected `_getElementHtml()` unit-test path)
+  confirmed the genuine rendered `<tr>` markup has the input and
+  swatch/button as sibling children of one flex container, not
+  separately floating rows. Regression tests rewritten to match (old
+  margin/vertical-align assertions removed, replaced with flex-row
+  structure and DOM-position assertions). Full suite 1549 tests / 3735
+  assertions / 0 failures (up from 1547/3713).
+
+### Task 37 — Add Anthropic (Claude), xAI (Grok), and Google (Gemini) as selectable LLM providers (DONE)
+- **Files:** `Model/Provider/Llm/{XaiProvider,AnthropicProvider,
+  GeminiProvider,HttpStatusMapper}.php` (all new). Modified:
+  `Model/Provider/ProviderIdentifiers.php` (new `LLM_GOOGLE` constant),
+  `etc/di.xml` (3 new `LlmProviderRegistry` entries + a new `google`
+  label — `anthropic`/`xai` labels already existed, pre-declared ahead
+  of an implementation). No `system.xml`/`config.xml` change needed:
+  both the Primary LLM and Fallback LLM provider dropdowns already
+  derive their option list from the DI registry via the existing
+  `Model\Config\Source\Provider`, so registering a provider there makes
+  it selectable in both roles automatically. No new admin field for a
+  per-provider API key either — one shared `llm/api_key` (`fallback/
+  api_key`) field already exists per role regardless of which provider
+  is selected there, confirmed by reading `SecretReader` before writing
+  any code.
+- **Scope, explicitly confirmed with the user before starting:** all
+  three providers (Claude, Grok, Gemini), built to spec against each
+  provider's own real, documented API — no live API key was available
+  in this session to exercise a real call against any of the three, a
+  choice the user made explicitly when asked. Disclosed here and in
+  every new class's own docblock, not silently treated as "tested."
+- **Key decision — xAI reuses `AbstractChatProvider` unchanged; Claude
+  and Gemini do not:** xAI's API is genuinely OpenAI-SDK-compatible (the
+  same `/chat/completions` wire shape, `Authorization: Bearer` auth, and
+  the older `max_tokens` field name Ollama's own compatible layer also
+  uses) — `XaiProvider` extends `AbstractChatProvider` exactly like
+  `OpenAiProvider` does, and `ChatEndpointPolicy`'s existing
+  `cloudEndpoint()` branch already covers it correctly with zero code
+  change there (it only special-cases `openai_compatible`; every other
+  identifier, including this new one, already gets the "official
+  default URL only" cloud policy). Anthropic's Messages API and
+  Google's `generateContent` API are both genuinely, load-bearingly
+  different from OpenAI's shape (system prompt as a separate top-level
+  field on both; Anthropic represents tool calls/results as content
+  blocks inside `user`/`assistant` turns with no dedicated `tool` role
+  and no `Authorization: Bearer` auth; Gemini uses `user`/`model` roles
+  — never `assistant` — addresses a tool RESULT by function NAME rather
+  than an opaque call id, and puts the model name in the URL path, not
+  the body) — trying to force either through `AbstractChatProvider`'s
+  shared OpenAI-shaped request/response builders would have needed
+  enough conditionals to defeat the point of sharing them, so both
+  implement `LlmProviderInterface` directly instead, each with its own
+  request/response mapping.
+- **Gemini's tool-result-by-name resolution, the trickiest mapping
+  here:** Gemini's `functionResponse` has no call-id concept at all —
+  only a function name. Rather than trying to parse or invent a name
+  from this module's own opaque `toolCallId` string, `GeminiProvider`
+  builds a real id-to-name lookup from the actual `ToolCall` objects
+  already present on every assistant turn earlier in the SAME request's
+  own message history (every `ToolCall` already carries both its real
+  id and its real name), so the correct name is always resolved from
+  data the conversation already has, never guessed. Gemini's own
+  response also gives a function call no id at all, so `GeminiProvider`
+  synthesizes one purely for this module's own internal round-tripping
+  (`gemini-call-<index>`) — never sent back to Gemini, and the request
+  side never needs to parse it back apart, since the id-to-name map
+  above makes that unnecessary.
+- **New shared `HttpStatusMapper`**: the same HTTP-status-to-
+  `Provider*Exception` mapping `AbstractChatProvider`'s own (untouched,
+  private) `assertSuccessStatus()` already applies, extracted once so
+  `AnthropicProvider`/`GeminiProvider` — which can't extend
+  `AbstractChatProvider` — still map transport failures onto the
+  identical exception hierarchy `FallbackEligibilityPolicy` checks via
+  `instanceof`, rather than re-deriving or drifting from that logic a
+  second and third time. `AbstractChatProvider`/`OpenAiProvider`/
+  `OpenAiCompatibleProvider`/`XaiProvider` are completely untouched by
+  this — a new, additional call site, not a refactor of already-tested
+  code, chosen deliberately to keep zero risk to the pre-existing,
+  passing test suite.
+- **Capabilities reported honestly, not by copying OpenAI's:** Claude's
+  stable Messages API has no native `response_format`/JSON-schema-
+  constrained output field the way OpenAI's does, so
+  `AnthropicProvider::capabilities()` reports `structuredOutput: false`
+  — this module's existing prompt-based `ResponseContractFormatter` +
+  malformed-response retry (built originally for local-model compliance
+  gaps) is what carries structured-output compliance for this provider,
+  unchanged, since that mechanism already runs unconditionally for
+  every provider regardless of this flag. Gemini genuinely does support
+  real, documented `generationConfig.responseSchema`, so
+  `GeminiProvider` reports `structuredOutput: true` and actually
+  forwards a provided schema, not just claims support.
+- **Verification — full test suite:** 1596 tests / 3868 assertions / 0
+  failures (up from 1549/3735) — 51 new tests across
+  `{Xai,Anthropic,Gemini}ProviderTest`/`HttpStatusMapperTest`, covering
+  the endpoint/header/auth shape, the request-body mapping for every
+  role (system extraction, tool-call/tool-result round-tripping,
+  Gemini's role renaming and by-name tool-result resolution), response
+  parsing (text, tool calls, usage field-name mapping including each
+  provider's own real prompt-caching field), and the full HTTP-status/
+  transport-failure/fail-closed-config matrix already proven for
+  `OpenAiProvider`. `ProviderIdentifiersTest` updated for the new
+  `google` identifier. A whole-module `php -l` sweep (646 files) and
+  `setup:di:compile` are both clean.
+- **Verification — real DI-resolved wiring, honestly distinguished from
+  a live provider call:** constructed all 5 registered LLM providers
+  through the real, compiled container (not a mock) and confirmed each
+  resolves with the correct identifier and capabilities; separately
+  confirmed the real `Model\Config\Source\Provider` — the actual source
+  model both the Primary LLM and Fallback LLM admin dropdowns use —
+  now lists all 5 with the correct labels ("Anthropic Claude", "Google
+  Gemini", "OpenAI", "Local / Ollama (OpenAI-Compatible)", "xAI Grok").
+  This proves the wiring/registration/admin-selectability chain is
+  genuinely correct end-to-end; it does not and cannot substitute for
+  an actual authenticated call to any of the three new providers' real
+  APIs, which this session had no key to make — stated plainly, not
+  blurred together.
+- **Skill files updated:** `references/progress-log.md` (this entry);
+  `CLAUDE.md`'s "Everything is provider-agnostic..." rule already
+  covered this without needing a wording change, since it was already
+  written generically rather than naming a fixed provider list.
+- **Not done / blocked:** live verification against a real Anthropic,
+  xAI, or Google API key — explicitly out of scope for this task by the
+  user's own choice, not an oversight. A future task with real
+  credentials for one or more of these providers should exercise a real
+  `chat()` call (and, ideally, a real tool-calling round trip, since
+  that's the most protocol-divergent part of each new adapter) before
+  any of them is treated as production-verified rather than built-to-
+  spec.
+
 ## Next up
 
 **Phase 1, per architecture.md's own roadmap table ("Module install,
@@ -3679,12 +4952,24 @@ here so they aren't lost:
 - `FullProductReindexer`'s successful runs appear to leave prior
   run-indices behind in OpenSearch rather than cleaning them up —
   noticed incidentally, not yet investigated (Task 16).
+- The Merchandising Boosts admin UI (grid, mass action, edit form) has
+  never been rendered/exercised through a real authenticated browser
+  session — this environment enforces a CAPTCHA on admin login that
+  blocks scripted curl authentication, and no browser-automation tool
+  exists in this session (Task 32). Every other layer (schema, DI
+  compile, real ORM integration test, live ranking effect) is
+  separately, genuinely verified; only the actual rendered-HTML/click-
+  through UI experience is unconfirmed.
 
 **Open decision, not a gap:** Phase 2 ("Marketing rules, promoted
 products, campaign boosting, recommendations, analytics" per
-architecture.md's roadmap table) has no task defined against it yet —
-this is the next genuinely open question for the sequence, not
-something left unfinished.
+architecture.md's roadmap table) has two implemented pieces as of
+Task 31 (`RatingSignal`, a ranking-side "recommendations" input) and
+Task 32 (`MerchandisingBoostSignal`, a real "campaign boosting" input,
+including its own admin merchandising UI) but
+still has no task defined against promotion/campaign/marketing-rule
+boosting or analytics — that remains the next genuinely open question
+for the sequence, not something left unfinished.
 
 **Explicitly out of Phase 1 by architecture.md's own roadmap table:**
 order assistance, returns, support escalation, voice/image-based

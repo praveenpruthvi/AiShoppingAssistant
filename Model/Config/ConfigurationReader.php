@@ -8,14 +8,18 @@ use Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductAttributePolicyInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\AppearanceConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\CapabilitiesConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\ConfigurationReaderInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Config\CostCapConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\EmbeddingConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\FallbackConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\GeneralConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\GuardrailConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\IndexingConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\LlmConfigInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Config\ProviderCostConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\RetrievalConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Config\Exception\ConfigurationException;
+use Aavirbhava\AiShoppingAssistant\Model\Config\Source\CapPeriod;
+use Aavirbhava\AiShoppingAssistant\Model\Provider\ProviderIdentifiers;
 use Magento\Framework\App\Config\ScopeConfigInterface;
 use Magento\Framework\Phrase;
 use Magento\Store\Model\ScopeInterface;
@@ -61,6 +65,21 @@ final class ConfigurationReader implements ConfigurationReaderInterface
     public const MIN_FINAL_PRODUCTS = 1;
     public const MAX_FINAL_PRODUCTS = 20;
     public const DEFAULT_FINAL_PRODUCTS = 8;
+
+    /**
+     * How much RatingSignal's Bayesian-weighted rating score contributes to
+     * a candidate's running rank score, out of the roughly 0-1-per-signal
+     * range TextRelevanceSignal/VectorSimilaritySignal/AttributeMatchSignal
+     * already contribute. Kept deliberately conservative by default — 0.1
+     * is a nudge relative to the ~1.0 a strong text/vector match already
+     * contributes, not a dominant factor: a well-matching low-rated product
+     * should still generally outrank a well-rated but irrelevant one.
+     * Bounded at 1.0 so even a merchant who wants ratings to matter a lot
+     * cannot make this signal alone outweigh every other signal combined.
+     */
+    public const MIN_RATING_SIGNAL_WEIGHT = 0.0;
+    public const MAX_RATING_SIGNAL_WEIGHT = 1.0;
+    public const DEFAULT_RATING_SIGNAL_WEIGHT = 0.1;
 
     public const MIN_MAX_INPUT_CHARACTERS = 1;
     public const MAX_MAX_INPUT_CHARACTERS = 10000;
@@ -113,6 +132,20 @@ final class ConfigurationReader implements ConfigurationReaderInterface
      * @var list<string>
      */
     public const DEFAULT_SEARCHABLE_ATTRIBUTE_CODES = ['manufacturer', 'color', 'size', 'material'];
+
+    public const MIN_COST_CAP_AMOUNT = 0.0;
+    public const MAX_COST_CAP_AMOUNT = 1000000.0;
+    public const DEFAULT_COST_CAP_AMOUNT = 0.0;
+
+    public const MIN_WARNING_THRESHOLD_PERCENT = 1;
+    public const MAX_WARNING_THRESHOLD_PERCENT = 99;
+    public const DEFAULT_WARNING_THRESHOLD_PERCENT = 80;
+
+    public const DEFAULT_COST_CAP_PERIOD = CapPeriod::DAILY;
+
+    public const MIN_PROVIDER_PRICE_PER_1K_TOKENS = 0.0;
+    public const MAX_PROVIDER_PRICE_PER_1K_TOKENS = 1000.0;
+    public const DEFAULT_PROVIDER_PRICE_PER_1K_TOKENS = 0.0;
 
     public const DEFAULT_PRIMARY_COLOR = '#1979c3';
     public const DEFAULT_MESSAGE_BUBBLE_COLOR = '#f2f2f2';
@@ -290,7 +323,14 @@ final class ConfigurationReader implements ConfigurationReaderInterface
                 self::MAX_FINAL_PRODUCTS,
                 self::DEFAULT_FINAL_PRODUCTS
             ),
-            $this->readBool(Path::RETRIEVAL_RERANKER_ENABLED, $storeId, false)
+            $this->readBool(Path::RETRIEVAL_RERANKER_ENABLED, $storeId, false),
+            $this->readFloat(
+                Path::RETRIEVAL_RATING_SIGNAL_WEIGHT,
+                $storeId,
+                self::MIN_RATING_SIGNAL_WEIGHT,
+                self::MAX_RATING_SIGNAL_WEIGHT,
+                self::DEFAULT_RATING_SIGNAL_WEIGHT
+            )
         );
     }
 
@@ -327,8 +367,46 @@ final class ConfigurationReader implements ConfigurationReaderInterface
             $this->readBool(Path::CAPABILITIES_COMPARISON_ENABLED, $storeId, true),
             $this->readBool(Path::CAPABILITIES_PRICE_CHECKING_ENABLED, $storeId, true),
             $this->readBool(Path::CAPABILITIES_STOCK_CHECKING_ENABLED, $storeId, true),
-            $this->readBool(Path::CAPABILITIES_POLICY_SEARCH_ENABLED, $storeId, true)
+            $this->readBool(Path::CAPABILITIES_POLICY_SEARCH_ENABLED, $storeId, true),
+            $this->readBool(Path::CAPABILITIES_PROMOTION_AWARENESS_ENABLED, $storeId, true)
         );
+    }
+
+    public function readCostCap(int $storeId): CostCapConfigInterface
+    {
+        return new CostCapConfig(
+            $this->readFloat(
+                Path::COST_CAP_AMOUNT,
+                $storeId,
+                self::MIN_COST_CAP_AMOUNT,
+                self::MAX_COST_CAP_AMOUNT,
+                self::DEFAULT_COST_CAP_AMOUNT
+            ),
+            $this->readCapPeriod($storeId),
+            $this->readInt(
+                Path::COST_CAP_WARNING_THRESHOLD_PERCENT,
+                $storeId,
+                self::MIN_WARNING_THRESHOLD_PERCENT,
+                self::MAX_WARNING_THRESHOLD_PERCENT,
+                self::DEFAULT_WARNING_THRESHOLD_PERCENT
+            ),
+            $this->readBool(Path::COST_CAP_ALLOW_OVERRIDE, $storeId, false),
+            $this->readEmailList(Path::COST_CAP_NOTIFICATION_EMAILS, $storeId)
+        );
+    }
+
+    public function readProviderCost(int $storeId): ProviderCostConfigInterface
+    {
+        return new ProviderCostConfig([
+            ProviderIdentifiers::LLM_OPENAI => [
+                'input' => $this->readProviderPrice(Path::PROVIDER_COST_OPENAI_PRICE_PER_1K_INPUT_TOKENS, $storeId),
+                'output' => $this->readProviderPrice(Path::PROVIDER_COST_OPENAI_PRICE_PER_1K_OUTPUT_TOKENS, $storeId),
+            ],
+            ProviderIdentifiers::LLM_OPENAI_COMPATIBLE => [
+                'input' => $this->readProviderPrice(Path::PROVIDER_COST_OPENAI_COMPATIBLE_PRICE_PER_1K_INPUT_TOKENS, $storeId),
+                'output' => $this->readProviderPrice(Path::PROVIDER_COST_OPENAI_COMPATIBLE_PRICE_PER_1K_OUTPUT_TOKENS, $storeId),
+            ],
+        ]);
     }
 
     public function readIndexing(int $storeId): IndexingConfigInterface
@@ -423,6 +501,60 @@ final class ConfigurationReader implements ConfigurationReaderInterface
         return array_slice($allowed, 0, self::MAX_SEARCHABLE_ATTRIBUTE_CODES);
     }
 
+    private function readProviderPrice(string $path, int $storeId): float
+    {
+        return $this->readFloat(
+            $path,
+            $storeId,
+            self::MIN_PROVIDER_PRICE_PER_1K_TOKENS,
+            self::MAX_PROVIDER_PRICE_PER_1K_TOKENS,
+            self::DEFAULT_PROVIDER_PRICE_PER_1K_TOKENS
+        );
+    }
+
+    /**
+     * An unrecognized/blank stored value fails closed to the daily period
+     * rather than throwing — the cap feature degrading to its narrowest,
+     * safest period is preferable to a broken store-wide config read.
+     */
+    private function readCapPeriod(int $storeId): string
+    {
+        $value = $this->readString(Path::COST_CAP_PERIOD, $storeId, self::DEFAULT_COST_CAP_PERIOD);
+
+        return in_array($value, [CapPeriod::DAILY, CapPeriod::WEEKLY, CapPeriod::MONTHLY], true)
+            ? $value
+            : self::DEFAULT_COST_CAP_PERIOD;
+    }
+
+    /**
+     * Comma-separated list of notification email addresses, following the
+     * same normalize-and-validate convention as readAttributeCodeList()
+     * (trim each token, drop blanks) but for email syntax instead of
+     * attribute-code syntax. A structurally invalid address is dropped
+     * rather than failing the whole config read — one merchant typo
+     * should not also silence every other correctly-entered address.
+     *
+     * @return list<string>
+     */
+    private function readEmailList(string $path, int $storeId): array
+    {
+        $raw = $this->readString($path, $storeId);
+
+        if ($raw === '') {
+            return [];
+        }
+
+        $emails = [];
+        foreach (explode(',', $raw) as $token) {
+            $email = trim($token);
+            if ($email !== '' && filter_var($email, FILTER_VALIDATE_EMAIL) !== false) {
+                $emails[] = $email;
+            }
+        }
+
+        return array_values(array_unique($emails));
+    }
+
     /**
      * A merchant-entered color is never trusted as trailing CSS to be
      * emitted verbatim — only a strict `#rgb`/`#rrggbb` hex literal is
@@ -474,6 +606,33 @@ final class ConfigurationReader implements ConfigurationReaderInterface
         }
 
         $parsed = (int) $normalized;
+
+        if ($parsed < $min) {
+            return $min;
+        }
+
+        if ($parsed > $max) {
+            return $max;
+        }
+
+        return $parsed;
+    }
+
+    private function readFloat(string $path, int $storeId, float $min, float $max, float $default): float
+    {
+        $value = $this->readRaw($path, $storeId);
+
+        if ($value === null) {
+            return $default;
+        }
+
+        $normalized = trim((string) $value);
+
+        if ($normalized === '' || preg_match('/^\d+(\.\d+)?$/', $normalized) !== 1) {
+            return $default;
+        }
+
+        $parsed = (float) $normalized;
 
         if ($parsed < $min) {
             return $min;

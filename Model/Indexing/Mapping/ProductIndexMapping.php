@@ -93,6 +93,9 @@ final class ProductIndexMapping implements ProductIndexMappingInterface
                     self::FIELD_EMBEDDING_CONTENT_HASH => ['type' => 'keyword'],
                     self::FIELD_COMPLETE_DOCUMENT_HASH => ['type' => 'keyword'],
                     self::FIELD_UPDATED_AT => ['type' => 'date'],
+                    self::FIELD_RATING_AVERAGE => ['type' => 'float'],
+                    self::FIELD_REVIEW_COUNT => ['type' => 'integer'],
+                    self::FIELD_CATALOG_RATING_AVERAGE => ['type' => 'float'],
                     self::FIELD_EMBEDDING => [
                         'type' => 'knn_vector',
                         'dimension' => $embeddingDimensions,

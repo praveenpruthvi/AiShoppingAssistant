@@ -29,7 +29,10 @@ final readonly class ProductSnapshot implements ProductSnapshotInterface
         private int $visibility,
         private array $categories,
         private array $attributes,
-        private ?string $updatedAt = null
+        private ?string $updatedAt = null,
+        private float $ratingAverage = 0.0,
+        private int $reviewCount = 0,
+        private float $catalogRatingAverage = 0.0
     ) {
         if ($entityId < 1) {
             throw new CatalogException(__('Product entity id must be a positive integer.'));
@@ -55,6 +58,16 @@ final readonly class ProductSnapshot implements ProductSnapshotInterface
 
         if ($productType === '') {
             throw new CatalogException(__('Product type must not be empty.'));
+        }
+
+        foreach (['ratingAverage' => $ratingAverage, 'catalogRatingAverage' => $catalogRatingAverage] as $rating) {
+            if ($rating < 0.0 || $rating > 5.0) {
+                throw new CatalogException(__('A product rating average must be between 0 and 5.'));
+            }
+        }
+
+        if ($reviewCount < 0) {
+            throw new CatalogException(__('Product review count must not be negative.'));
         }
     }
 
@@ -121,5 +134,20 @@ final readonly class ProductSnapshot implements ProductSnapshotInterface
     public function updatedAt(): ?string
     {
         return $this->updatedAt;
+    }
+
+    public function ratingAverage(): float
+    {
+        return $this->ratingAverage;
+    }
+
+    public function reviewCount(): int
+    {
+        return $this->reviewCount;
+    }
+
+    public function catalogRatingAverage(): float
+    {
+        return $this->catalogRatingAverage;
     }
 }

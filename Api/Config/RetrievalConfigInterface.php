@@ -15,4 +15,11 @@ interface RetrievalConfigInterface
     public function finalProducts(): int;
 
     public function isRerankerEnabled(): bool;
+
+    /**
+     * How much RatingSignal's Bayesian-weighted rating contributes to a
+     * candidate's running rank score. 0.0 disables the signal's effect
+     * entirely without needing to remove it from the pipeline.
+     */
+    public function ratingSignalWeight(): float;
 }

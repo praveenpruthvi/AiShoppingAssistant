@@ -134,6 +134,9 @@ final class ProductDocumentNormalizer implements ProductDocumentNormalizerInterf
             'categories' => $categoryPayload,
             'attributes' => $attributePayload,
             'searchableText' => $searchableText,
+            'ratingAverage' => $snapshot->ratingAverage(),
+            'reviewCount' => $snapshot->reviewCount(),
+            'catalogRatingAverage' => $snapshot->catalogRatingAverage(),
         ];
 
         $document = new ProductDocument(
@@ -154,7 +157,10 @@ final class ProductDocumentNormalizer implements ProductDocumentNormalizerInterf
             $searchableText,
             $this->hashService->hash($embeddingPayload),
             $this->hashService->hash($completePayload),
-            $this->formatUpdatedAt($snapshot->updatedAt())
+            $this->formatUpdatedAt($snapshot->updatedAt()),
+            $snapshot->ratingAverage(),
+            $snapshot->reviewCount(),
+            $snapshot->catalogRatingAverage()
         );
 
         return new ProductNormalizationResult(true, ProductEligibilityResultInterface::REASON_ELIGIBLE, $document);

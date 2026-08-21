@@ -1,0 +1,103 @@
+<?php
+/**
+ * @var \Aavirbhava\AiShoppingAssistant\Block\Adminhtml\Boost\Edit $block
+ */
+$error = $block->getError();
+$existing = $block->getExistingBoost();
+$products = $block->getProducts();
+?>
+<div class="admin__fieldset-wrapper aavirbhava-boost-edit">
+    <?php if ($error !== null): ?>
+        <div class="message message-error error">
+            <?= $block->escapeHtml($error) ?>
+        </div>
+    <?php else: ?>
+        <div class="admin__fieldset-wrapper-title">
+            <strong><?= $block->escapeHtml(
+                $existing !== null ? __('Edit Merchandising Boost') : __('New Merchandising Boost')
+            ) ?></strong>
+        </div>
+        <form method="post" action="<?= $block->escapeUrl($block->getSaveUrl()) ?>">
+            <input name="form_key" type="hidden" value="<?= $block->escapeHtmlAttr($block->getFormKey()) ?>"/>
+            <?php if ($existing !== null): ?>
+                <input type="hidden" name="boost_id" value="<?= (int) $existing->boostId() ?>"/>
+            <?php endif; ?>
+            <input type="hidden" name="product_ids" value="<?= $block->escapeHtmlAttr(implode(',', $block->getProductIds())) ?>"/>
+
+            <fieldset class="admin__fieldset">
+                <div class="admin__field">
+                    <label class="admin__field-label"><span><?= $block->escapeHtml(__('Product(s)')) ?></span></label>
+                    <div class="admin__field-control">
+                        <ul>
+                            <?php foreach ($products as $product): ?>
+                                <li>
+                                    <?= $block->escapeHtml($product['sku']) ?>
+                                    <?php if ($product['name'] !== ''): ?>
+                                        — <?= $block->escapeHtml($product['name']) ?>
+                                    <?php endif; ?>
+                                </li>
+                            <?php endforeach; ?>
+                        </ul>
+                    </div>
+                </div>
+                <div class="admin__field _required">
+                    <label class="admin__field-label" for="aavirbhava-boost-weight">
+                        <span><?= $block->escapeHtml(__('Boost Weight')) ?></span>
+                    </label>
+                    <div class="admin__field-control">
+                        <input type="number" id="aavirbhava-boost-weight" name="boost_weight" min="0" max="1"
+                               step="0.01" class="admin__control-text"
+                               value="<?= $block->escapeHtmlAttr((string) ($existing !== null ? $existing->boostWeight() : 0.5)) ?>"
+                               required="required"/>
+                        <div class="admin__field-note">
+                            <span><?= $block->escapeHtml(__(
+                                'A number from 0 (no effect) to 1 (roughly one full relevance signal\'s '
+                                . 'worth of extra rank score) — additive, never a hard override of genuine '
+                                . 'query relevance.'
+                            )) ?></span>
+                        </div>
+                    </div>
+                </div>
+                <div class="admin__field">
+                    <label class="admin__field-label" for="aavirbhava-boost-start-date">
+                        <span><?= $block->escapeHtml(__('Start Date')) ?></span>
+                    </label>
+                    <div class="admin__field-control">
+                        <input type="date" id="aavirbhava-boost-start-date" name="start_date"
+                               class="admin__control-text"
+                               value="<?= $block->escapeHtmlAttr($existing !== null && $existing->startDate() !== null ? substr($existing->startDate(), 0, 10) : '') ?>"/>
+                    </div>
+                </div>
+                <div class="admin__field">
+                    <label class="admin__field-label" for="aavirbhava-boost-end-date">
+                        <span><?= $block->escapeHtml(__('End Date')) ?></span>
+                    </label>
+                    <div class="admin__field-control">
+                        <input type="date" id="aavirbhava-boost-end-date" name="end_date"
+                               class="admin__control-text"
+                               value="<?= $block->escapeHtmlAttr($existing !== null && $existing->endDate() !== null ? substr($existing->endDate(), 0, 10) : '') ?>"/>
+                        <div class="admin__field-note">
+                            <span><?= $block->escapeHtml(__('Leave either date blank for no restriction on that side.')) ?></span>
+                        </div>
+                    </div>
+                </div>
+                <div class="admin__field">
+                    <div class="admin__field-control">
+                        <input type="checkbox" id="aavirbhava-boost-active" name="is_active" value="1"
+                               class="admin__control-checkbox"
+                            <?= ($existing === null || $existing->isActive()) ? 'checked="checked"' : '' ?>/>
+                        <label for="aavirbhava-boost-active"><?= $block->escapeHtml(__('Active')) ?></label>
+                    </div>
+                </div>
+                <div class="admin__field">
+                    <button type="submit" class="action-primary">
+                        <span><?= $block->escapeHtml(__('Save')) ?></span>
+                    </button>
+                    <a href="<?= $block->escapeUrl($block->getGridUrl()) ?>" class="action-secondary">
+                        <span><?= $block->escapeHtml(__('Cancel')) ?></span>
+                    </a>
+                </div>
+            </fieldset>
+        </form>
+    <?php endif; ?>
+</div>

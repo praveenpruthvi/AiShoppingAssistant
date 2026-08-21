@@ -79,6 +79,49 @@ final class OllamaModelFieldTest extends TestCase
         self::assertStringContainsString('<input id="ai_shopping_assistant_llm_model" data-original="true"/>', $html);
     }
 
+    /**
+     * Regression test for a real, screenshot-confirmed layout bug:
+     * Magento's native .input-text styling is full-width, so without a
+     * flex wrapper the button/status text have no room on the same line
+     * and wrap onto their own row below the input. Shared verbatim with
+     * ColorPickerField::INLINE_ROW_STYLE/INPUT_WRAPPER_STYLE so a color
+     * field and a model field lay out identically.
+     */
+    public function testInputButtonAndStatusShareOneFlexRowWithA10pxGap(): void
+    {
+        $html = $this->renderedHtml('ai_shopping_assistant_llm_model');
+
+        self::assertStringContainsString(
+            '<div class="aavirbhava-inline-field-row" style="display:flex;align-items:center;gap:10px;">',
+            $html
+        );
+        self::assertStringContainsString('<span style="flex:1;min-width:0;">', $html);
+
+        $rowStart = strpos($html, '<div class="aavirbhava-inline-field-row"');
+        $rowEnd = strpos($html, '</div>', $rowStart);
+
+        self::assertNotFalse($rowStart);
+        self::assertNotFalse($rowEnd);
+        foreach (['data-original="true"', 'id="ai_shopping_assistant_llm_model_fetch"', 'id="ai_shopping_assistant_llm_model_status"'] as $needle) {
+            $position = strpos($html, $needle);
+            self::assertNotFalse($position, "Expected to find {$needle}");
+            self::assertGreaterThan($rowStart, $position);
+            self::assertLessThan($rowEnd, $position);
+        }
+    }
+
+    public function testDatalistStaysOutsideTheFlexRow(): void
+    {
+        $html = $this->renderedHtml('ai_shopping_assistant_llm_model');
+
+        $rowEnd = strpos($html, '</div>');
+        $datalistPosition = strpos($html, '<datalist');
+
+        self::assertNotFalse($rowEnd);
+        self::assertNotFalse($datalistPosition);
+        self::assertGreaterThan($rowEnd, $datalistPosition);
+    }
+
     private function renderedHtml(string $htmlId): string
     {
         $objectManager = new ObjectManager($this);

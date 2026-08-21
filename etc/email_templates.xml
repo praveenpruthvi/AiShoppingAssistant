@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Email:etc/email_templates.xsd">
+    <template id="aavirbhava_cost_cap_alert_email_template" label="AI Shopping Assistant - LLM Cost Cap Alert"
+              file="cost_cap_alert.html" type="html" module="Aavirbhava_AiShoppingAssistant" area="adminhtml"/>
+</config>

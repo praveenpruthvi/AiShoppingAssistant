@@ -22,7 +22,7 @@ interface ProductIndexMappingInterface
      * Version of the assistant mapping structure. Increment when field layout
      * or settings change incompatibly.
      */
-    public const MAPPING_VERSION = 2;
+    public const MAPPING_VERSION = 3;
 
     /**
      * Bounded, non-disabled refresh interval applied at index creation so
@@ -56,6 +56,9 @@ interface ProductIndexMappingInterface
     public const FIELD_EMBEDDING_CONTENT_HASH = 'embedding_content_hash';
     public const FIELD_COMPLETE_DOCUMENT_HASH = 'complete_document_hash';
     public const FIELD_UPDATED_AT = 'updated_at';
+    public const FIELD_RATING_AVERAGE = 'rating_average';
+    public const FIELD_REVIEW_COUNT = 'review_count';
+    public const FIELD_CATALOG_RATING_AVERAGE = 'catalog_rating_average';
     public const FIELD_EMBEDDING = 'embedding';
     public const FIELD_EMBEDDING_HASH = 'embedding_hash';
     public const FIELD_EMBEDDING_FINGERPRINT = 'embedding_fingerprint';

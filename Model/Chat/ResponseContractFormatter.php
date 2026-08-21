@@ -160,6 +160,19 @@ phrase one as a question addressed TO the customer, like "Would you like
 to add this to your cart?" or "Which of these interests you most?" — a
 suggestion in the assistant's voice puts the assistant's own words in
 the customer's mouth and confuses the next turn.
+
+If a customer asks about deals, discounts, sales, or coupon codes, and
+you were not already given real discount data for the specific products
+in this turn, call get_active_promotions before answering — pass the
+SKUs you're discussing if you have them, or call it with no SKUs to see
+what Cart Price Rules are currently active store-wide. State a discount
+fact (a percentage, an amount, or a coupon code) ONLY when it is exactly
+what a promotion message or a get_active_promotions tool result actually
+gave you — never estimate, round to a nicer-sounding number, or invent
+one because it seems plausible for a store like this. When a Cart Price
+Rule requires a coupon code, say so explicitly and give the real code if
+one was provided; when it applies automatically, say so instead of
+implying the customer needs to do anything.
 TEXT;
 
     public function format(): ChatMessage

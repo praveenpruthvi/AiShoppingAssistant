@@ -14,7 +14,8 @@ final readonly class CapabilitiesConfig implements CapabilitiesConfigInterface
         private bool $comparisonEnabled,
         private bool $priceCheckingEnabled,
         private bool $stockCheckingEnabled,
-        private bool $policySearchEnabled
+        private bool $policySearchEnabled,
+        private bool $promotionAwarenessEnabled
     ) {
     }
 
@@ -46,5 +47,10 @@ final readonly class CapabilitiesConfig implements CapabilitiesConfigInterface
     public function isPolicySearchEnabled(): bool
     {
         return $this->policySearchEnabled;
+    }
+
+    public function isPromotionAwarenessEnabled(): bool
+    {
+        return $this->promotionAwarenessEnabled;
     }
 }

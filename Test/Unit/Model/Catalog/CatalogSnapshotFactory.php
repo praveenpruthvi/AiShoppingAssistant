@@ -38,6 +38,9 @@ final class CatalogSnapshotFactory
                 new SearchableAttribute('material', 'Material', ['leather']),
             ],
             'updatedAt' => '2026-01-01T00:00:00+00:00',
+            'ratingAverage' => 4.5,
+            'reviewCount' => 12,
+            'catalogRatingAverage' => 3.5,
         ], $overrides);
 
         return new ProductSnapshot(
@@ -53,7 +56,10 @@ final class CatalogSnapshotFactory
             $data['visibility'],
             $data['categories'],
             $data['attributes'],
-            $data['updatedAt']
+            $data['updatedAt'],
+            $data['ratingAverage'],
+            $data['reviewCount'],
+            $data['catalogRatingAverage']
         );
     }
 }

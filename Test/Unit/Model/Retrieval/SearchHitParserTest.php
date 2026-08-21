@@ -28,6 +28,9 @@ final class SearchHitParserTest extends TestCase
             ],
             'is_enabled' => true,
             'visibility' => 4,
+            'rating_average' => 4.5,
+            'review_count' => 12,
+            'catalog_rating_average' => 3.5,
         ];
     }
 
@@ -48,19 +51,32 @@ final class SearchHitParserTest extends TestCase
         self::assertSame(1.5, $candidate->bm25Score);
         self::assertSame(0.8, $candidate->vectorScore);
         self::assertSame(0.0, $candidate->score);
+        self::assertSame(4.5, $candidate->ratingAverage);
+        self::assertSame(12, $candidate->reviewCount);
+        self::assertSame(3.5, $candidate->catalogRatingAverage);
     }
 
     public function testDefaultsMissingOptionalFields(): void
     {
         $parser = new SearchHitParser();
         $source = $this->validSource();
-        unset($source['short_description'], $source['categories'], $source['attributes']);
+        unset(
+            $source['short_description'],
+            $source['categories'],
+            $source['attributes'],
+            $source['rating_average'],
+            $source['review_count'],
+            $source['catalog_rating_average']
+        );
 
         $candidate = $parser->parse($source, 0.0, 0.0);
 
         self::assertSame('', $candidate->shortDescription);
         self::assertSame([], $candidate->categoryNames);
         self::assertSame([], $candidate->attributes);
+        self::assertSame(0.0, $candidate->ratingAverage);
+        self::assertSame(0, $candidate->reviewCount);
+        self::assertSame(0.0, $candidate->catalogRatingAverage);
     }
 
     public function testRejectsMissingEntityId(): void

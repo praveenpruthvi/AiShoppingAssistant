@@ -198,6 +198,12 @@
                     <label>Enable Reranker</label>
                     <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
                 </field>
+                <field id="rating_signal_weight" translate="label comment" type="text" sortOrder="60"
+                       showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Rating Signal Weight</label>
+                    <comment>How much a product's Bayesian-weighted rating nudges ranking order, from 0 (no effect) to 1. Default 0.1 is deliberately conservative — a well-matching low-rated product should still generally outrank a well-rated but irrelevant one.</comment>
+                    <validate>validate-number validate-zero-or-greater</validate>
+                </field>
             </group>
 
             <group id="guardrails" translate="label" type="text" sortOrder="60"
@@ -279,6 +285,72 @@
                     <label>Store Content Search (search_store_content)</label>
                     <comment>Lets the assistant search CMS pages, blog posts (if available), and products by keyword — e.g. "do you have a returns policy page."</comment>
                     <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                </field>
+                <field id="promotion_awareness_enabled" translate="label comment" type="select" sortOrder="70"
+                       showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Promotion Awareness (get_active_promotions)</label>
+                    <comment>Lets the assistant check and mention real, currently-active Catalog Price Rule and Cart Price Rule discounts, both when a customer asks and proactively for products that genuinely have one.</comment>
+                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                </field>
+            </group>
+
+            <group id="cost_cap" translate="label" type="text" sortOrder="68"
+                   showInDefault="1" showInWebsite="1" showInStore="1">
+                <label>LLM Cost Cap</label>
+                <field id="amount" translate="label comment" type="text" sortOrder="10"
+                       showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Cost Cap Amount</label>
+                    <comment>Spend cap for one period, in the store's base currency. Leave at 0 to disable the cap entirely.</comment>
+                    <validate>validate-number</validate>
+                </field>
+                <field id="period" translate="label" type="select" sortOrder="20"
+                       showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Cap Period</label>
+                    <source_model>Aavirbhava\AiShoppingAssistant\Model\Config\Source\CapPeriod</source_model>
+                </field>
+                <field id="warning_threshold_percent" translate="label comment" type="text" sortOrder="30"
+                       showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Warning Threshold (%)</label>
+                    <comment>Send a warning notification once usage reaches this percentage of the cap (1-99).</comment>
+                    <validate>validate-digits validate-greater-than-zero</validate>
+                </field>
+                <field id="allow_override" translate="label comment" type="select" sortOrder="40"
+                       showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Allow Cost Override</label>
+                    <comment>If Yes, the chat widget keeps serving customers after the cap is reached (still sends the cap-reached notification). If No, the widget stops rendering entirely once the cap is reached.</comment>
+                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                </field>
+                <field id="notification_emails" translate="label comment" type="text" sortOrder="50"
+                       showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Notification Email Addresses</label>
+                    <comment>Comma-separated list of email addresses notified when the warning threshold or the cap itself is first reached in a period.</comment>
+                </field>
+            </group>
+
+            <group id="provider_cost" translate="label" type="text" sortOrder="69"
+                   showInDefault="1" showInWebsite="1" showInStore="1">
+                <label>Provider Pricing (Cost Cap)</label>
+                <field id="openai_price_per_1k_input_tokens" translate="label comment" type="text" sortOrder="10"
+                       showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>OpenAI: Price per 1K Input Tokens</label>
+                    <comment>Used only to compute spend against the cost cap above. Leave at 0 if this provider isn't in use.</comment>
+                    <validate>validate-number</validate>
+                </field>
+                <field id="openai_price_per_1k_output_tokens" translate="label" type="text" sortOrder="20"
+                       showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>OpenAI: Price per 1K Output Tokens</label>
+                    <validate>validate-number</validate>
+                </field>
+                <field id="openai_compatible_price_per_1k_input_tokens" translate="label comment" type="text" sortOrder="30"
+                       showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Local / Ollama (OpenAI-Compatible): Price per 1K Input Tokens</label>
+                    <comment>Defaults to 0 — a self-hosted server typically has no per-token API cost, so local usage doesn't count toward the cost cap.</comment>
+                    <validate>validate-number</validate>
+                </field>
+                <field id="openai_compatible_price_per_1k_output_tokens" translate="label" type="text" sortOrder="40"
+                       showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Local / Ollama (OpenAI-Compatible): Price per 1K Output Tokens</label>
+                    <validate>validate-number</validate>
                 </field>
             </group>
 

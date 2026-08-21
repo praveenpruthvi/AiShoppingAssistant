@@ -115,4 +115,57 @@
             <column name="created_at"/>
         </index>
     </table>
+    <table name="aavirbhava_ai_merchandising_boost" resource="default" engine="innodb"
+           comment="AI Shopping Assistant Merchandising Boost">
+        <column xsi:type="int" name="boost_id" unsigned="true" nullable="false" identity="true"
+                comment="Boost ID"/>
+        <column xsi:type="int" name="product_id" unsigned="true" nullable="false" identity="false"
+                comment="Product Entity ID"/>
+        <column xsi:type="decimal" name="boost_weight" scale="4" precision="12" unsigned="false"
+                nullable="false" default="0" comment="Additive Ranking Score Boost"/>
+        <column xsi:type="datetime" name="start_date" on_update="false" nullable="true"
+                comment="Boost Active From (null = always active from creation)"/>
+        <column xsi:type="datetime" name="end_date" on_update="false" nullable="true"
+                comment="Boost Active Until (null = no expiry)"/>
+        <column xsi:type="smallint" name="is_active" unsigned="true" nullable="false" identity="false"
+                default="1" comment="Boost Enabled"/>
+        <column xsi:type="timestamp" name="created_at" on_update="false" nullable="false"
+                default="CURRENT_TIMESTAMP" comment="Created At"/>
+        <column xsi:type="timestamp" name="updated_at" on_update="true" nullable="false"
+                default="CURRENT_TIMESTAMP" comment="Updated At"/>
+        <constraint xsi:type="primary" referenceId="PRIMARY">
+            <column name="boost_id"/>
+        </constraint>
+        <constraint xsi:type="foreign" referenceId="AAVIRBHAVA_AI_MERCH_BOOST_PRODUCT_ID_CAT_PRD_ENTT_ENTT_ID"
+                    table="aavirbhava_ai_merchandising_boost" column="product_id"
+                    referenceTable="catalog_product_entity" referenceColumn="entity_id" onDelete="CASCADE"/>
+        <index referenceId="AAVIRBHAVA_AI_MERCH_BOOST_ACTIVE_LOOKUP" indexType="btree">
+            <column name="product_id"/>
+            <column name="is_active"/>
+            <column name="start_date"/>
+            <column name="end_date"/>
+        </index>
+    </table>
+    <table name="aavirbhava_ai_cost_cap_usage" resource="default" engine="innodb"
+           comment="AI Shopping Assistant LLM Cost Cap Usage">
+        <column xsi:type="varchar" name="period_key" nullable="false" length="20"
+                comment="Period Start Key (e.g. 2026-08-21, ISO week/month start)"/>
+        <column xsi:type="varchar" name="period_type" nullable="false" length="10"
+                comment="Period Type At Time Of Recording (daily/weekly/monthly)"/>
+        <column xsi:type="bigint" name="input_tokens" unsigned="true" nullable="false" identity="false"
+                default="0" comment="Accumulated Input Tokens"/>
+        <column xsi:type="bigint" name="output_tokens" unsigned="true" nullable="false" identity="false"
+                default="0" comment="Accumulated Output Tokens"/>
+        <column xsi:type="decimal" name="cost_amount" scale="6" precision="18" unsigned="true"
+                nullable="false" default="0" comment="Accumulated Cost"/>
+        <column xsi:type="smallint" name="notified_threshold_rank" unsigned="true" nullable="false"
+                identity="false" default="0" comment="Highest Notified Threshold (0=none,1=warning,2=cap)"/>
+        <column xsi:type="timestamp" name="created_at" on_update="false" nullable="false"
+                default="CURRENT_TIMESTAMP" comment="Created At"/>
+        <column xsi:type="timestamp" name="updated_at" on_update="true" nullable="false"
+                default="CURRENT_TIMESTAMP" comment="Updated At"/>
+        <constraint xsi:type="primary" referenceId="PRIMARY">
+            <column name="period_key"/>
+        </constraint>
+    </table>
 </schema>

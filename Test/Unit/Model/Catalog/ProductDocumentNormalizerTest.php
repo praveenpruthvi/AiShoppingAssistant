@@ -53,6 +53,9 @@ final class ProductDocumentNormalizerTest extends TestCase
         self::assertSame(1, $document->schemaVersion());
         self::assertMatchesRegularExpression('/^[a-f0-9]{64}$/', $document->embeddingContentHash());
         self::assertMatchesRegularExpression('/^[a-f0-9]{64}$/', $document->completeDocumentHash());
+        self::assertSame(4.5, $document->ratingAverage());
+        self::assertSame(12, $document->reviewCount());
+        self::assertSame(3.5, $document->catalogRatingAverage());
     }
 
     public function testReturnsIneligibleResultForDisabledProduct(): void
@@ -207,6 +210,20 @@ final class ProductDocumentNormalizerTest extends TestCase
             'websiteIds' => [1, 2],
             'updatedAt' => '2026-02-02T00:00:00+00:00',
         ]);
+
+        $baseDocument = $this->normalizer->normalize($base, $context)->document();
+        $changedDocument = $this->normalizer->normalize($changed, $context)->document();
+
+        self::assertSame($baseDocument->embeddingContentHash(), $changedDocument->embeddingContentHash());
+        self::assertNotSame($baseDocument->completeDocumentHash(), $changedDocument->completeDocumentHash());
+    }
+
+    public function testEmbeddingHashIgnoresRatingFieldsSoARatingChangeNeverTriggersReEmbedding(): void
+    {
+        $context = new ProductEligibilityContext(1, 1);
+
+        $base = $this->factory->create(['ratingAverage' => 2.0, 'reviewCount' => 3, 'catalogRatingAverage' => 3.5]);
+        $changed = $this->factory->create(['ratingAverage' => 5.0, 'reviewCount' => 300, 'catalogRatingAverage' => 4.1]);
 
         $baseDocument = $this->normalizer->normalize($base, $context)->document();
         $changedDocument = $this->normalizer->normalize($changed, $context)->document();

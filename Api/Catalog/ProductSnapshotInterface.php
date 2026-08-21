@@ -93,4 +93,29 @@ interface ProductSnapshotInterface
      * Optional catalog updated-at timestamp (W3C/ISO-8601). Used for audit only.
      */
     public function updatedAt(): ?string;
+
+    /**
+     * This product's own average rating from Magento's native review system
+     * (Magento_Review), on a 0-5 scale. 0.0 when the product has no reviews
+     * — meaningless on its own at that point (reviewCount() distinguishes
+     * "genuinely rated zero" from "never rated"), but never used directly
+     * for ranking; RatingSignal blends it with reviewCount() and
+     * catalogRatingAverage() into a Bayesian-weighted score instead.
+     */
+    public function ratingAverage(): float;
+
+    /**
+     * Number of approved reviews backing ratingAverage(), from Magento's
+     * native review system. Never negative.
+     */
+    public function reviewCount(): int;
+
+    /**
+     * The store-wide mean rating across the whole catalogue at the time
+     * this batch was indexed (0-5 scale), stamped onto every product in
+     * the same indexing run so RatingSignal never needs a live aggregate
+     * query at ranking time. Not freshness-critical, like the rest of
+     * this snapshot — refreshed whenever the product is next indexed.
+     */
+    public function catalogRatingAverage(): float;
 }

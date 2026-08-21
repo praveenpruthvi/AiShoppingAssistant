@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Aavirbhava\AiShoppingAssistant\Model\Chat;
 
 use Aavirbhava\AiShoppingAssistant\Api\Chat\OutputValidatorInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Promotion\CartPromotionInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Promotion\ProductPromotionInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Chat\Response\AssistantAction;
 use Aavirbhava\AiShoppingAssistant\Model\Chat\Response\AssistantResponse;
 use Aavirbhava\AiShoppingAssistant\Model\Chat\Response\LlmResponseParser;
@@ -35,6 +37,11 @@ use Aavirbhava\AiShoppingAssistant\Model\Revalidation\RevalidatedProduct;
  * word like "under"/"over" (see containsFabricatedPrice()). This is a
  * real improvement over no check at all, not a claim of complete
  * coverage.
+ *
+ * A percentage-off or "use code X" coupon claim (Task 34) is checked the
+ * same way, against real, live-read promotion facts
+ * (ProductPromotionInterface/CartPromotionInterface) rather than
+ * anything the model itself asserts — see containsFabricatedDiscount().
  */
 final class OutputValidator implements OutputValidatorInterface
 {
@@ -42,6 +49,7 @@ final class OutputValidator implements OutputValidatorInterface
     public const REASON_FABRICATED_SKU = 'fabricated_sku';
     public const REASON_FABRICATED_URL = 'fabricated_url';
     public const REASON_FABRICATED_PRICE = 'fabricated_price';
+    public const REASON_FABRICATED_DISCOUNT = 'fabricated_discount';
 
     /**
      * Half a currency unit — covers casual "about $25" rounding to the
@@ -114,8 +122,12 @@ final class OutputValidator implements OutputValidatorInterface
     ) {
     }
 
-    public function validate(ChatResponse $response, array $verifiedProducts): OutputValidationResult
-    {
+    public function validate(
+        ChatResponse $response,
+        array $verifiedProducts,
+        array $verifiedProductPromotions = [],
+        array $verifiedCartPromotions = []
+    ): OutputValidationResult {
         $parsed = $this->parser->parse($response->text);
 
         if ($parsed === null) {
@@ -128,6 +140,10 @@ final class OutputValidator implements OutputValidatorInterface
 
         if ($this->containsFabricatedPrice($parsed->message, $verifiedProducts)) {
             return OutputValidationResult::invalid(self::REASON_FABRICATED_PRICE);
+        }
+
+        if ($this->containsFabricatedDiscount($parsed->message, $verifiedProductPromotions, $verifiedCartPromotions)) {
+            return OutputValidationResult::invalid(self::REASON_FABRICATED_DISCOUNT);
         }
 
         $verifiedBySku = [];
@@ -367,6 +383,90 @@ final class OutputValidator implements OutputValidatorInterface
     {
         foreach ($realPrices as $realPrice) {
             if (abs($mentionedPrice - $realPrice) <= self::PRICE_TOLERANCE) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Mirrors containsFabricatedPrice()'s exact shape (Task 34): scan free
+     * text for a percentage-off or coupon-code claim, reject the response
+     * if any mentioned value doesn't match a real, live-read promotion.
+     * Regex-based, not NLP — the same documented, accepted limitation as
+     * the price/URL checks (see this class's own top-level docblock).
+     *
+     * @param list<ProductPromotionInterface> $verifiedProductPromotions
+     * @param list<CartPromotionInterface> $verifiedCartPromotions
+     */
+    private function containsFabricatedDiscount(
+        string $message,
+        array $verifiedProductPromotions,
+        array $verifiedCartPromotions
+    ): bool {
+        if ($this->containsFabricatedPercentage($message, $verifiedProductPromotions, $verifiedCartPromotions)) {
+            return true;
+        }
+
+        return $this->containsFabricatedCouponCode($message, $verifiedCartPromotions);
+    }
+
+    /**
+     * @param list<ProductPromotionInterface> $verifiedProductPromotions
+     * @param list<CartPromotionInterface> $verifiedCartPromotions
+     */
+    private function containsFabricatedPercentage(
+        string $message,
+        array $verifiedProductPromotions,
+        array $verifiedCartPromotions
+    ): bool {
+        if (preg_match_all('/(\d{1,3})\s?%/', $message, $matches) === 0) {
+            return false;
+        }
+
+        $realPercents = [];
+        foreach ($verifiedProductPromotions as $promotion) {
+            $realPercents[] = (int) round($promotion->percentOff());
+        }
+        foreach ($verifiedCartPromotions as $promotion) {
+            if (preg_match('/(\d{1,3})\s?%/', $promotion->discountDescription(), $descriptionMatch) === 1) {
+                $realPercents[] = (int) $descriptionMatch[1];
+            }
+        }
+
+        foreach ($matches[1] as $mentionedPercent) {
+            if (!in_array((int) $mentionedPercent, $realPercents, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Only checks text immediately following the word "code" (e.g. "use
+     * code SUMMER10", "coupon code: SAVE15") — deliberately narrow,
+     * mirroring containsFabricatedPrice()'s own "regex-based, not NLP"
+     * scope rather than treating any capitalized word as a claimed code.
+     *
+     * @param list<CartPromotionInterface> $verifiedCartPromotions
+     */
+    private function containsFabricatedCouponCode(string $message, array $verifiedCartPromotions): bool
+    {
+        if (preg_match_all('/\bcode[:\s]+([A-Za-z0-9]{3,20})\b/i', $message, $matches) === 0) {
+            return false;
+        }
+
+        $realCodes = [];
+        foreach ($verifiedCartPromotions as $promotion) {
+            if ($promotion->couponCode() !== null) {
+                $realCodes[] = mb_strtoupper($promotion->couponCode());
+            }
+        }
+
+        foreach ($matches[1] as $mentionedCode) {
+            if (!in_array(mb_strtoupper($mentionedCode), $realCodes, true)) {
                 return true;
             }
         }

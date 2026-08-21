@@ -53,6 +53,9 @@ final class IndexedDocumentPayloadBuilderTest extends TestCase
         self::assertSame(self::FINGERPRINT, $payload[ProductIndexMappingInterface::FIELD_EMBEDDING_FINGERPRINT]);
         self::assertSame('2026-01-01T00:00:00+00:00', $payload[ProductIndexMappingInterface::FIELD_INDEXED_AT]);
         self::assertSame('2026-01-01T00:00:00+00:00', $payload[ProductIndexMappingInterface::FIELD_UPDATED_AT]);
+        self::assertSame(4.5, $payload[ProductIndexMappingInterface::FIELD_RATING_AVERAGE]);
+        self::assertSame(12, $payload[ProductIndexMappingInterface::FIELD_REVIEW_COUNT]);
+        self::assertSame(3.5, $payload[ProductIndexMappingInterface::FIELD_CATALOG_RATING_AVERAGE]);
     }
 
     public function testBuildsNestedCategoriesAndAttributes(): void

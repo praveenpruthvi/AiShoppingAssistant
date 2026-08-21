@@ -10,6 +10,8 @@ use Aavirbhava\AiShoppingAssistant\Api\Config\ConfigurationReaderInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\GuardrailConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Tool\CommerceToolInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Chat\ToolCallingChatService;
+use Aavirbhava\AiShoppingAssistant\Model\Promotion\CartPromotion;
+use Aavirbhava\AiShoppingAssistant\Model\Promotion\ProductPromotion;
 use Aavirbhava\AiShoppingAssistant\Model\Dto\ChatMessage;
 use Aavirbhava\AiShoppingAssistant\Model\Dto\ChatResponse;
 use Aavirbhava\AiShoppingAssistant\Model\Dto\TokenUsage;
@@ -151,6 +153,38 @@ final class ToolCallingChatServiceTest extends TestCase
         self::assertCount(2, $result->toolRoundTripMessages);
         self::assertSame($conversations[1][1], $result->toolRoundTripMessages[0]);
         self::assertSame($conversations[1][2], $result->toolRoundTripMessages[1]);
+    }
+
+    public function testPromotionFactsFromAToolCallAreAccumulatedTheSameWayVerifiedProductsAre(): void
+    {
+        $productPromotion = new ProductPromotion('SKU-1', 50.00, 40.00);
+        $cartPromotion = new CartPromotion(1, 'Sale', false, null, '20% off', null);
+
+        $tool = $this->createMock(CommerceToolInterface::class);
+        $tool->method('name')->willReturn('get_active_promotions');
+        $tool->method('description')->willReturn('desc');
+        $tool->method('inputSchema')->willReturn(['type' => 'object']);
+        $tool->expects(self::once())->method('execute')->willReturn(
+            new ToolResult(['ok' => true], [], [$productPromotion], [$cartPromotion])
+        );
+
+        $toolCall = new ToolCall('call_1', 'get_active_promotions', []);
+
+        $chatService = $this->createMock(ChatGenerationServiceInterface::class);
+        $chatService->method('chat')->willReturnOnConsecutiveCalls(
+            new ChatResponse('', [$toolCall], new TokenUsage(1, 1), 'openai', 'gpt-4o-mini', 5),
+            $this->textResponse('Here are the deals.')
+        );
+
+        $service = $this->service(
+            chatService: $chatService,
+            registry: new CommerceToolRegistry(['get_active_promotions' => $tool])
+        );
+
+        $result = $service->converse(self::STORE_ID, null, null, [new ChatMessage('user', 'Any deals?')], null);
+
+        self::assertSame([$productPromotion], $result->verifiedProductPromotions);
+        self::assertSame([$cartPromotion], $result->verifiedCartPromotions);
     }
 
     public function testUnrecognizedToolNameFailsClosedWithoutExecutingAnything(): void

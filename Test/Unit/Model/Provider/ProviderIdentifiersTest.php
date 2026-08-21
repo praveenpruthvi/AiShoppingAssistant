@@ -16,6 +16,7 @@ class ProviderIdentifiersTest extends TestCase
             'openai',
             'anthropic',
             'xai',
+            'google',
             'openai_compatible',
         ], ProviderIdentifiers::llmProviderIds());
 
@@ -42,6 +43,7 @@ class ProviderIdentifiersTest extends TestCase
         self::assertSame('openai', ProviderIdentifiers::LLM_OPENAI);
         self::assertSame('anthropic', ProviderIdentifiers::LLM_ANTHROPIC);
         self::assertSame('xai', ProviderIdentifiers::LLM_XAI);
+        self::assertSame('google', ProviderIdentifiers::LLM_GOOGLE);
         self::assertSame('openai_compatible', ProviderIdentifiers::LLM_OPENAI_COMPATIBLE);
         self::assertSame('openai', ProviderIdentifiers::EMBEDDING_OPENAI);
         self::assertSame('voyage', ProviderIdentifiers::EMBEDDING_VOYAGE);

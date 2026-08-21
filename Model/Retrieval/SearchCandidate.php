@@ -35,7 +35,10 @@ final readonly class SearchCandidate
         public int $visibility,
         public float $bm25Score,
         public float $vectorScore,
-        public float $score = 0.0
+        public float $score = 0.0,
+        public float $ratingAverage = 0.0,
+        public int $reviewCount = 0,
+        public float $catalogRatingAverage = 0.0
     ) {
         if ($entityId < 1) {
             throw new InvalidArgumentException('A search candidate requires a positive entity id.');
@@ -68,7 +71,10 @@ final readonly class SearchCandidate
             $this->visibility,
             $this->bm25Score,
             $this->vectorScore,
-            $score
+            $score,
+            $this->ratingAverage,
+            $this->reviewCount,
+            $this->catalogRatingAverage
         );
     }
 }

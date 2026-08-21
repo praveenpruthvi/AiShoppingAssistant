@@ -7,10 +7,12 @@ namespace Aavirbhava\AiShoppingAssistant\Test\Unit\Model\Chat;
 use Aavirbhava\AiShoppingAssistant\Api\Chat\CommerceScopeClassifierInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Chat\ConversationHistoryStoreInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Chat\ToolCallingChatServiceInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Config\CapabilitiesConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\ConfigurationReaderInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\GeneralConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\GuardrailConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\RetrievalConfigInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Promotion\ActivePromotionReaderInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Ranking\RankingPipelineInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Retrieval\HybridRetrievalServiceInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Revalidation\LiveRevalidationServiceInterface;
@@ -22,11 +24,13 @@ use Aavirbhava\AiShoppingAssistant\Model\Chat\Debug\ChatDebugLogger;
 use Aavirbhava\AiShoppingAssistant\Model\Chat\Exception\ChatInputException;
 use Aavirbhava\AiShoppingAssistant\Model\Chat\OutputValidator;
 use Aavirbhava\AiShoppingAssistant\Model\Chat\ProductContextFormatter;
+use Aavirbhava\AiShoppingAssistant\Model\Chat\PromotionContextFormatter;
 use Aavirbhava\AiShoppingAssistant\Model\Chat\ChatResponseSerializer;
 use Aavirbhava\AiShoppingAssistant\Model\Chat\ProductContextResolver;
 use Aavirbhava\AiShoppingAssistant\Model\Chat\PriceConstraintDetector;
 use Aavirbhava\AiShoppingAssistant\Model\Chat\PriceConstraintReconciler;
 use Aavirbhava\AiShoppingAssistant\Model\Chat\PriorTurnProductCarryOver;
+use Aavirbhava\AiShoppingAssistant\Model\Promotion\ProductPromotion;
 use Aavirbhava\AiShoppingAssistant\Model\Chat\ProductMentionCompletenessChecker;
 use Aavirbhava\AiShoppingAssistant\Model\Chat\ResponseContractFormatter;
 use Aavirbhava\AiShoppingAssistant\Model\Chat\Response\LlmResponseParser;
@@ -952,6 +956,89 @@ final class ChatEntryPipelineTest extends TestCase
         self::assertSame('Show me waterproof phones.', $captured[2]->content);
     }
 
+    public function testARealActiveCatalogDiscountIsSurfacedProactivelyAsItsOwnSystemMessage(): void
+    {
+        $classifier = $this->createMock(CommerceScopeClassifierInterface::class);
+        $classifier->method('classify')->willReturn(ScopeClassification::inScope());
+
+        $candidate = new SearchCandidate(1, 'SKU-1', self::STORE_ID, 'Blue Shoe', '', [], [], true, 4, 0.0, 0.0);
+        $verified = new RevalidatedProduct(1, 'SKU-1', 'Blue Shoe', 50.00, null, 'https://store.test/blue-shoe', '2026-08-16T00:00:00+00:00');
+
+        $retrievalService = $this->createMock(HybridRetrievalServiceInterface::class);
+        $retrievalService->method('retrieve')->willReturn([$candidate]);
+
+        $revalidationService = $this->createMock(LiveRevalidationServiceInterface::class);
+        $revalidationService->method('revalidate')->willReturn([$verified]);
+
+        $discount = new ProductPromotion('SKU-1', 50.00, 40.00);
+        $promotionReader = $this->createMock(ActivePromotionReaderInterface::class);
+        $promotionReader->expects(self::once())
+            ->method('catalogRuleDiscounts')
+            ->with(self::STORE_ID, null, [$verified])
+            ->willReturn(['SKU-1' => $discount]);
+
+        $captured = null;
+        $toolCallingChatService = $this->createMock(ToolCallingChatServiceInterface::class);
+        $toolCallingChatService->method('converse')->willReturnCallback(
+            function (int $storeId, ?int $customerGroupId, ?string $cartId, array $messages) use (&$captured): ToolCallingResult {
+                $captured = $messages;
+
+                return $this->toolCallingResult('ok', []);
+            }
+        );
+
+        $pipeline = $this->pipeline(
+            classifier: $classifier,
+            retrievalService: $retrievalService,
+            revalidationService: $revalidationService,
+            toolCallingChatService: $toolCallingChatService,
+            activePromotionReader: $promotionReader
+        );
+
+        $pipeline->handle(self::STORE_ID, 'Show me waterproof phones.');
+
+        // response contract, product context, promotion context, user message
+        self::assertCount(4, $captured);
+        self::assertSame('system', $captured[2]->role);
+        self::assertStringContainsString('SKU-1', $captured[2]->content);
+        self::assertStringContainsString('20% off', $captured[2]->content);
+        self::assertSame('user', $captured[3]->role);
+    }
+
+    public function testNoActiveDiscountMeansNoPromotionContextMessageIsAdded(): void
+    {
+        $classifier = $this->createMock(CommerceScopeClassifierInterface::class);
+        $classifier->method('classify')->willReturn(ScopeClassification::inScope());
+
+        $candidate = new SearchCandidate(1, 'SKU-1', self::STORE_ID, 'Blue Shoe', '', [], [], true, 4, 0.0, 0.0);
+
+        $retrievalService = $this->createMock(HybridRetrievalServiceInterface::class);
+        $retrievalService->method('retrieve')->willReturn([$candidate]);
+
+        $captured = null;
+        $toolCallingChatService = $this->createMock(ToolCallingChatServiceInterface::class);
+        $toolCallingChatService->method('converse')->willReturnCallback(
+            function (int $storeId, ?int $customerGroupId, ?string $cartId, array $messages) use (&$captured): ToolCallingResult {
+                $captured = $messages;
+
+                return $this->toolCallingResult('ok', []);
+            }
+        );
+
+        $pipeline = $this->pipeline(
+            classifier: $classifier,
+            retrievalService: $retrievalService,
+            toolCallingChatService: $toolCallingChatService,
+            activePromotionReader: $this->noPromotionsReader()
+        );
+
+        $pipeline->handle(self::STORE_ID, 'Show me waterproof phones.');
+
+        // response contract, product context, user message — no promotion message
+        self::assertCount(3, $captured);
+        self::assertSame('user', $captured[2]->role);
+    }
+
     public function testPriorConversationHistoryIsLoadedAndThreadedBetweenContextAndTheNewUserMessage(): void
     {
         $classifier = $this->createMock(CommerceScopeClassifierInterface::class);
@@ -1505,7 +1592,8 @@ final class ChatEntryPipelineTest extends TestCase
         ?LiveRevalidationServiceInterface $revalidationService = null,
         ?ConversationHistoryStoreInterface $historyStore = null,
         ?LoggerInterface $logger = null,
-        bool $assistantEnabled = true
+        bool $assistantEnabled = true,
+        ?ActivePromotionReaderInterface $activePromotionReader = null
     ): ChatEntryPipeline {
         $reader ??= $this->reader($assistantEnabled);
         $retrievalService ??= $this->noCandidatesRetrievalService();
@@ -1521,6 +1609,8 @@ final class ChatEntryPipelineTest extends TestCase
             $classifier ?? $this->createMock(CommerceScopeClassifierInterface::class),
             new ProductContextResolver($reader, $retrievalService, $rankingPipeline),
             new ProductContextFormatter(),
+            $activePromotionReader ?? $this->noPromotionsReader(),
+            new PromotionContextFormatter(),
             new ResponseContractFormatter(),
             $toolCallingChatService ?? $this->createMock(ToolCallingChatServiceInterface::class),
             $revalidationService,
@@ -1559,10 +1649,23 @@ final class ChatEntryPipelineTest extends TestCase
         $retrieval = $this->createMock(RetrievalConfigInterface::class);
         $retrieval->method('isRerankerEnabled')->willReturn(false);
 
+        $capabilities = $this->createMock(CapabilitiesConfigInterface::class);
+        $capabilities->method('isPromotionAwarenessEnabled')->willReturn(true);
+
         $reader = $this->createMock(ConfigurationReaderInterface::class);
         $reader->method('readGuardrails')->with(self::STORE_ID)->willReturn($guardrails);
         $reader->method('readGeneral')->with(self::STORE_ID)->willReturn($general);
         $reader->method('readRetrieval')->with(self::STORE_ID)->willReturn($retrieval);
+        $reader->method('readCapabilities')->with(self::STORE_ID)->willReturn($capabilities);
+
+        return $reader;
+    }
+
+    private function noPromotionsReader(): ActivePromotionReaderInterface
+    {
+        $reader = $this->createMock(ActivePromotionReaderInterface::class);
+        $reader->method('catalogRuleDiscounts')->willReturn([]);
+        $reader->method('activeCartRules')->willReturn([]);
 
         return $reader;
     }

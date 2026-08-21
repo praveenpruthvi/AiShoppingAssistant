@@ -7,6 +7,7 @@ namespace Aavirbhava\AiShoppingAssistant\Test\Unit\Block\Frontend;
 use Aavirbhava\AiShoppingAssistant\Api\Config\AppearanceConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\ConfigurationReaderInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\GeneralConfigInterface;
+use Aavirbhava\AiShoppingAssistant\Api\CostCap\CostCapCheckerInterface;
 use Aavirbhava\AiShoppingAssistant\Block\Frontend\ChatWidget;
 use Magento\Framework\App\ObjectManager as AppObjectManager;
 use Magento\Framework\Escaper;
@@ -115,6 +116,16 @@ final class ChatWidgetTest extends TestCase
         self::assertSame('', $block->toHtml());
     }
 
+    public function testToHtmlIsEmptyWhenTheCostCapCheckerReportsBlocking(): void
+    {
+        $costCapChecker = $this->createMock(CostCapCheckerInterface::class);
+        $costCapChecker->method('isBlocking')->willReturn(true);
+
+        $block = $this->block(costCapChecker: $costCapChecker);
+
+        self::assertSame('', $block->toHtml());
+    }
+
     public function testColorGettersReturnTheConfiguredValues(): void
     {
         $appearance = $this->createMock(AppearanceConfigInterface::class);
@@ -167,7 +178,8 @@ final class ChatWidgetTest extends TestCase
         bool $assistantEnabled = true,
         bool $hyvaPresent = false,
         ?ConfigurationReaderInterface $configurationReader = null,
-        ?UrlInterface $urlBuilder = null
+        ?UrlInterface $urlBuilder = null,
+        ?CostCapCheckerInterface $costCapChecker = null
     ): ChatWidget {
         $objectManager = new ObjectManager($this);
 
@@ -193,11 +205,17 @@ final class ChatWidgetTest extends TestCase
         $moduleManager = $this->createMock(ModuleManager::class);
         $moduleManager->method('isEnabled')->with('Hyva_Theme')->willReturn($hyvaPresent);
 
+        if ($costCapChecker === null) {
+            $costCapChecker = $this->createMock(CostCapCheckerInterface::class);
+            $costCapChecker->method('isBlocking')->willReturn(false);
+        }
+
         return $objectManager->getObject(ChatWidget::class, [
             'context' => $context,
             'configurationReader' => $configurationReader,
             'storeManager' => $storeManager,
             'moduleManager' => $moduleManager,
+            'costCapChecker' => $costCapChecker,
         ]);
     }
 }

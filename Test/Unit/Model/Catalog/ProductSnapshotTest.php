@@ -27,6 +27,30 @@ final class ProductSnapshotTest extends TestCase
         self::assertSame('SKU-42', $snapshot->sku());
         self::assertSame([2, 1], $snapshot->websiteIds());
         self::assertSame('2026-01-01T00:00:00+00:00', $snapshot->updatedAt());
+        self::assertSame(4.5, $snapshot->ratingAverage());
+        self::assertSame(12, $snapshot->reviewCount());
+        self::assertSame(3.5, $snapshot->catalogRatingAverage());
+    }
+
+    public function testRejectsAnOutOfRangeRatingAverage(): void
+    {
+        $this->expectException(CatalogException::class);
+
+        $this->factory->create(['ratingAverage' => 5.1]);
+    }
+
+    public function testRejectsAnOutOfRangeCatalogRatingAverage(): void
+    {
+        $this->expectException(CatalogException::class);
+
+        $this->factory->create(['catalogRatingAverage' => -0.1]);
+    }
+
+    public function testRejectsANegativeReviewCount(): void
+    {
+        $this->expectException(CatalogException::class);
+
+        $this->factory->create(['reviewCount' => -1]);
     }
 
     public function testRejectsNonPositiveEntityId(): void

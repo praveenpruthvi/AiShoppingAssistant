@@ -6,6 +6,7 @@ namespace Aavirbhava\AiShoppingAssistant\Block\Frontend;
 
 use Aavirbhava\AiShoppingAssistant\Api\Config\AppearanceConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\ConfigurationReaderInterface;
+use Aavirbhava\AiShoppingAssistant\Api\CostCap\CostCapCheckerInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Config\AppearanceConfig;
 use Aavirbhava\AiShoppingAssistant\Model\Config\ConfigurationReader;
 use Magento\Framework\Module\Manager as ModuleManager;
@@ -51,6 +52,7 @@ class ChatWidget extends Template
         private readonly ConfigurationReaderInterface $configurationReader,
         private readonly StoreManagerInterface $storeManager,
         private readonly ModuleManager $moduleManager,
+        private readonly CostCapCheckerInterface $costCapChecker,
         array $data = []
     ) {
         parent::__construct($context, $data);
@@ -162,7 +164,7 @@ class ChatWidget extends Template
      */
     protected function _toHtml(): string
     {
-        if (!$this->isAssistantEnabled()) {
+        if (!$this->isAssistantEnabled() || $this->costCapChecker->isBlocking()) {
             return '';
         }
 

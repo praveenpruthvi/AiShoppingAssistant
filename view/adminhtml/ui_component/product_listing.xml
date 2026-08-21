@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Purely additive: only the one new <action> is declared here.
+    Magento's ui_component XML merging matches nodes by their own `name`
+    attribute, so this merges the new "Add to AI Assistant Boost" entry
+    into Magento_Catalog's existing product_listing.xml massaction block
+    without touching (or needing to repeat) its delete/status/attributes
+    actions.
+
+    No `callback`/`type: modal` is used — the default massaction callback
+    (Magento_Ui/js/grid/massactions.js's own defaultCallback) already does
+    a real hidden-form POST of `selected[]` to `url`, a full-page browser
+    navigation exactly mirroring core's own "Update attributes" mass
+    action (Magento\Catalog\Controller\Adminhtml\Product\Action\Attribute\Edit,
+    wired the identical way below). See the Task 32 status report for why
+    this was deliberately chosen over a bespoke JS modal.
+-->
+<listing xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Ui:etc/ui_configuration.xsd">
+    <listingToolbar name="listing_top">
+        <massaction name="listing_massaction">
+            <action name="aavirbhava_boost">
+                <settings>
+                    <url path="aavirbhava_aishoppingassistant/boost/edit"/>
+                    <type>aavirbhava_boost</type>
+                    <label translate="true">Add to AI Assistant Boost</label>
+                </settings>
+            </action>
+        </massaction>
+    </listingToolbar>
+</listing>

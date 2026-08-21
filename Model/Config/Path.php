@@ -43,6 +43,7 @@ final class Path
     public const RETRIEVAL_MERGED_CANDIDATES = self::PREFIX . 'retrieval/merged_candidates';
     public const RETRIEVAL_FINAL_PRODUCTS = self::PREFIX . 'retrieval/final_products';
     public const RETRIEVAL_RERANKER_ENABLED = self::PREFIX . 'retrieval/reranker_enabled';
+    public const RETRIEVAL_RATING_SIGNAL_WEIGHT = self::PREFIX . 'retrieval/rating_signal_weight';
 
     public const GUARDRAILS_MAX_INPUT_CHARACTERS = self::PREFIX . 'guardrails/max_input_characters';
     public const GUARDRAILS_MAX_TOOL_CALLS = self::PREFIX . 'guardrails/max_tool_calls';
@@ -58,6 +59,18 @@ final class Path
     public const CAPABILITIES_PRICE_CHECKING_ENABLED = self::PREFIX . 'capabilities/price_checking_enabled';
     public const CAPABILITIES_STOCK_CHECKING_ENABLED = self::PREFIX . 'capabilities/stock_checking_enabled';
     public const CAPABILITIES_POLICY_SEARCH_ENABLED = self::PREFIX . 'capabilities/policy_search_enabled';
+    public const CAPABILITIES_PROMOTION_AWARENESS_ENABLED = self::PREFIX . 'capabilities/promotion_awareness_enabled';
+
+    public const COST_CAP_AMOUNT = self::PREFIX . 'cost_cap/amount';
+    public const COST_CAP_PERIOD = self::PREFIX . 'cost_cap/period';
+    public const COST_CAP_WARNING_THRESHOLD_PERCENT = self::PREFIX . 'cost_cap/warning_threshold_percent';
+    public const COST_CAP_ALLOW_OVERRIDE = self::PREFIX . 'cost_cap/allow_override';
+    public const COST_CAP_NOTIFICATION_EMAILS = self::PREFIX . 'cost_cap/notification_emails';
+
+    public const PROVIDER_COST_OPENAI_PRICE_PER_1K_INPUT_TOKENS = self::PREFIX . 'provider_cost/openai_price_per_1k_input_tokens';
+    public const PROVIDER_COST_OPENAI_PRICE_PER_1K_OUTPUT_TOKENS = self::PREFIX . 'provider_cost/openai_price_per_1k_output_tokens';
+    public const PROVIDER_COST_OPENAI_COMPATIBLE_PRICE_PER_1K_INPUT_TOKENS = self::PREFIX . 'provider_cost/openai_compatible_price_per_1k_input_tokens';
+    public const PROVIDER_COST_OPENAI_COMPATIBLE_PRICE_PER_1K_OUTPUT_TOKENS = self::PREFIX . 'provider_cost/openai_compatible_price_per_1k_output_tokens';
 
     public const INDEXING_BATCH_SIZE = self::PREFIX . 'indexing/batch_size';
     public const INDEXING_SEARCHABLE_ATTRIBUTE_CODES = self::PREFIX . 'indexing/searchable_attribute_codes';

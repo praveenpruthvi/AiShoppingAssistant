@@ -36,6 +36,7 @@
                 <merged_candidates>30</merged_candidates>
                 <final_products>8</final_products>
                 <reranker_enabled>0</reranker_enabled>
+                <rating_signal_weight>0.1</rating_signal_weight>
             </retrieval>
             <guardrails>
                 <max_input_characters>1000</max_input_characters>
@@ -53,7 +54,21 @@
                 <price_checking_enabled>1</price_checking_enabled>
                 <stock_checking_enabled>1</stock_checking_enabled>
                 <policy_search_enabled>1</policy_search_enabled>
+                <promotion_awareness_enabled>1</promotion_awareness_enabled>
             </capabilities>
+            <cost_cap>
+                <amount>0</amount>
+                <period>daily</period>
+                <warning_threshold_percent>80</warning_threshold_percent>
+                <allow_override>0</allow_override>
+                <notification_emails></notification_emails>
+            </cost_cap>
+            <provider_cost>
+                <openai_price_per_1k_input_tokens>0</openai_price_per_1k_input_tokens>
+                <openai_price_per_1k_output_tokens>0</openai_price_per_1k_output_tokens>
+                <openai_compatible_price_per_1k_input_tokens>0</openai_compatible_price_per_1k_input_tokens>
+                <openai_compatible_price_per_1k_output_tokens>0</openai_compatible_price_per_1k_output_tokens>
+            </provider_cost>
             <indexing>
                 <batch_size>100</batch_size>
                 <searchable_attribute_codes>manufacturer,color,size,material,climate,pattern,style_general,style_bottom,activity,collar,sleeve</searchable_attribute_codes>

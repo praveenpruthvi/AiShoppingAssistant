@@ -6,6 +6,7 @@ namespace Aavirbhava\AiShoppingAssistant\Test\Unit\Model\Catalog;
 
 use Aavirbhava\AiShoppingAssistant\Api\Catalog\CategoryReferenceInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Catalog\CategoryReferenceResolverInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductRatingResolverInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductSnapshotInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Catalog\SearchableAttributeInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Catalog\SearchableAttributeValueResolverInterface;
@@ -37,6 +38,8 @@ final class ProductSnapshotProviderTest extends TestCase
                     'short_description' => 'Short',
                     'description' => 'Long',
                     'category_ids' => [5],
+                    'rating_summary' => 90.0,
+                    'reviews_count' => 12,
                     default => null,
                 }
             );
@@ -72,7 +75,13 @@ final class ProductSnapshotProviderTest extends TestCase
         $attributeResolver = $this->createMock(SearchableAttributeValueResolverInterface::class);
         $attributeResolver->method('resolve')->willReturn([$attribute]);
 
-        $provider = new ProductSnapshotProvider($factory, $categoryResolver, $attributeResolver);
+        $ratingResolver = $this->createMock(ProductRatingResolverInterface::class);
+        $ratingResolver->method('catalogAverage')->willReturn(3.5);
+        $ratingResolver->method('percentToStars')->willReturnCallback(
+            static fn (float $percent): float => $percent / 20.0
+        );
+
+        $provider = new ProductSnapshotProvider($factory, $categoryResolver, $attributeResolver, $ratingResolver);
 
         $config = $this->createMock(IndexingConfigInterface::class);
         $config->method('includeShortDescription')->willReturn(true);
@@ -104,6 +113,9 @@ final class ProductSnapshotProviderTest extends TestCase
         self::assertCount(1, $snapshot->categories());
         self::assertSame([$attribute], $snapshot->attributes());
         self::assertSame('2026-01-01 00:00:00', $snapshot->updatedAt());
+        self::assertSame(4.5, $snapshot->ratingAverage());
+        self::assertSame(12, $snapshot->reviewCount());
+        self::assertSame(3.5, $snapshot->catalogRatingAverage());
     }
 
     public function testEmptyInputReturnsEmptyBatch(): void
@@ -111,8 +123,9 @@ final class ProductSnapshotProviderTest extends TestCase
         $factory = $this->createMock(ProductCollectionFactory::class);
         $categoryResolver = $this->createMock(CategoryReferenceResolverInterface::class);
         $attributeResolver = $this->createMock(SearchableAttributeValueResolverInterface::class);
+        $ratingResolver = $this->createMock(ProductRatingResolverInterface::class);
 
-        $provider = new ProductSnapshotProvider($factory, $categoryResolver, $attributeResolver);
+        $provider = new ProductSnapshotProvider($factory, $categoryResolver, $attributeResolver, $ratingResolver);
 
         $config = $this->createMock(IndexingConfigInterface::class);
         $scope = $this->createMock(StoreScopeInterface::class);
@@ -157,7 +170,11 @@ final class ProductSnapshotProviderTest extends TestCase
         $attributeResolver = $this->createMock(SearchableAttributeValueResolverInterface::class);
         $attributeResolver->method('resolve')->willReturn([]);
 
-        $provider = new ProductSnapshotProvider($factory, $categoryResolver, $attributeResolver);
+        $ratingResolver = $this->createMock(ProductRatingResolverInterface::class);
+        $ratingResolver->method('catalogAverage')->willReturn(0.0);
+        $ratingResolver->method('percentToStars')->willReturn(0.0);
+
+        $provider = new ProductSnapshotProvider($factory, $categoryResolver, $attributeResolver, $ratingResolver);
 
         $config = $this->createMock(IndexingConfigInterface::class);
         $config->method('includeShortDescription')->willReturn(false);

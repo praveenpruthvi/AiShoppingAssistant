@@ -60,6 +60,19 @@ final class ProductIndexMappingTest extends TestCase
         self::assertArrayNotHasKey('api_key', $body['mappings']['_meta']);
     }
 
+    public function testDeclaresTheRatingFieldsWithNumericTypes(): void
+    {
+        $scope = new StoreScope(2, 1, 'default');
+        $context = new RebuildRunContext(self::RUN_ID, 1, [$scope], 1.0);
+
+        $body = $this->mapping->createBody($scope, $context, 768, self::FINGERPRINT, self::BASE_URL_HASH, 'index');
+
+        $properties = $body['mappings']['properties'];
+        self::assertSame(['type' => 'float'], $properties[ProductIndexMappingInterface::FIELD_RATING_AVERAGE]);
+        self::assertSame(['type' => 'integer'], $properties[ProductIndexMappingInterface::FIELD_REVIEW_COUNT]);
+        self::assertSame(['type' => 'float'], $properties[ProductIndexMappingInterface::FIELD_CATALOG_RATING_AVERAGE]);
+    }
+
     public function testVectorFieldUsesStoreDimensions(): void
     {
         $scope = new StoreScope(2, 1, 'default');

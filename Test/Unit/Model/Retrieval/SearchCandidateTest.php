@@ -32,6 +32,33 @@ final class SearchCandidateTest extends TestCase
         self::assertNotSame($original, $updated);
     }
 
+    public function testWithScorePreservesRatingFieldsAcrossReconstruction(): void
+    {
+        $original = new SearchCandidate(
+            42,
+            'SKU-42',
+            1,
+            'Blue Shoe',
+            'desc',
+            ['Shoes'],
+            [],
+            true,
+            4,
+            1.0,
+            0.5,
+            0.0,
+            4.2,
+            37,
+            3.5
+        );
+
+        $updated = $original->withScore(9.9);
+
+        self::assertSame(4.2, $updated->ratingAverage);
+        self::assertSame(37, $updated->reviewCount);
+        self::assertSame(3.5, $updated->catalogRatingAverage);
+    }
+
     public function testRejectsNonPositiveEntityId(): void
     {
         $this->expectException(InvalidArgumentException::class);

@@ -10,6 +10,7 @@ use Aavirbhava\AiShoppingAssistant\Api\Chat\ConversationHistoryStoreInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Chat\OutputValidatorInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Chat\ToolCallingChatServiceInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\ConfigurationReaderInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Promotion\ActivePromotionReaderInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Revalidation\LiveRevalidationServiceInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Store\StoreScopeProviderInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Chat\Debug\ChatDebugLogger;
@@ -237,6 +238,8 @@ TEXT;
         private readonly CommerceScopeClassifierInterface $scopeClassifier,
         private readonly ProductContextResolver $productContextResolver,
         private readonly ProductContextFormatter $productContextFormatter,
+        private readonly ActivePromotionReaderInterface $activePromotionReader,
+        private readonly PromotionContextFormatter $promotionContextFormatter,
         private readonly ResponseContractFormatter $responseContractFormatter,
         private readonly ToolCallingChatServiceInterface $toolCallingChatService,
         private readonly LiveRevalidationServiceInterface $revalidationService,
@@ -350,12 +353,32 @@ TEXT;
                 }
             }
 
+            // Resolved from this turn's already-live-revalidated products
+            // (never the search index), so a real catalog-rule discount can
+            // be mentioned proactively even when the shopper never asks —
+            // see PromotionContextFormatter's own docblock for why this is
+            // a separate message rather than a new ProductContextFormatter
+            // field. Gated by the same capability toggle as the
+            // get_active_promotions tool (isPromotionAwarenessEnabled())
+            // — disabling the capability turns off promotion awareness end
+            // to end, not merely the tool.
+            $catalogDiscounts = $this->configurationReader->readCapabilities($storeId)->isPromotionAwarenessEnabled()
+                ? $this->activePromotionReader->catalogRuleDiscounts($storeId, $customerGroupId, $verifiedProducts)
+                : [];
+
             $userMessage = new ChatMessage('user', $message);
             $contextMessage = $this->productContextFormatter->format($candidates);
+            $promotionContextMessage = $this->promotionContextFormatter->format($catalogDiscounts);
             $responseContractMessage = $this->responseContractFormatter->format();
-            $messages = $contextMessage !== null
-                ? [$responseContractMessage, $contextMessage, ...$priorMessages, $userMessage]
-                : [$responseContractMessage, ...$priorMessages, $userMessage];
+
+            $messages = [$responseContractMessage];
+            if ($contextMessage !== null) {
+                $messages[] = $contextMessage;
+            }
+            if ($promotionContextMessage !== null) {
+                $messages[] = $promotionContextMessage;
+            }
+            $messages = [...$messages, ...$priorMessages, $userMessage];
 
             // The best valid response seen across attempts, kept separately
             // from $validation/$toolResult (which always reflect the *last*
@@ -404,7 +427,9 @@ TEXT;
 
                 $validation = $this->outputValidator->validate(
                     $toolResult->response,
-                    $this->mergeVerifiedProducts($verifiedProducts, $toolResult->verifiedProducts)
+                    $this->mergeVerifiedProducts($verifiedProducts, $toolResult->verifiedProducts),
+                    [...array_values($catalogDiscounts), ...$toolResult->verifiedProductPromotions],
+                    $toolResult->verifiedCartPromotions
                 );
 
                 if ($validation->isValid()) {

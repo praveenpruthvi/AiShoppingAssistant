@@ -27,12 +27,30 @@ use Magento\Framework\Data\Form\Element\AbstractElement;
  * fully intact while offering real, fetched suggestions, which degrades
  * gracefully to "just a text field" if the fetch fails or hasn't been
  * run yet.
+ *
+ * Wraps the input, button, and status text in a flex row
+ * (`INLINE_ROW_STYLE`, shared verbatim with `ColorPickerField` — see
+ * that class's own docblock for why `min-width:0` on the input's
+ * wrapping span is required) rather than relying on natural inline
+ * flow: Magento's native `.input-text` admin styling is full-width, so
+ * without a flex wrapper the button has no room left on the same line
+ * and wraps onto its own row below — a real, screenshot-confirmed
+ * layout bug, not a hypothetical one.
  */
 class OllamaModelField extends Field
 {
+    /**
+     * Kept identical to ColorPickerField::INLINE_ROW_STYLE/
+     * INPUT_WRAPPER_STYLE — both fields must lay out their input +
+     * trailing control the same way. `gap:10px` is the one explicit
+     * spacing value between the input and the button/status text.
+     */
+    private const INLINE_ROW_STYLE = 'display:flex;align-items:center;gap:10px;';
+    private const INPUT_WRAPPER_STYLE = 'flex:1;min-width:0;';
+
     protected function _getElementHtml(AbstractElement $element): string
     {
-        $html = parent::_getElementHtml($element);
+        $inputHtml = parent::_getElementHtml($element);
 
         $fieldId = $element->getHtmlId();
         $baseUrlFieldId = preg_replace('/_model$/', '_base_url', $fieldId) ?? $fieldId;
@@ -41,11 +59,14 @@ class OllamaModelField extends Field
         $statusId = $fieldId . '_status';
         $fetchUrl = $this->getUrl('aavirbhava_aishoppingassistant/system_config/fetchOllamaModels');
 
-        $html .= '<button type="button" id="' . $this->escapeHtmlAttr($buttonId) . '" '
-            . 'class="action-secondary" style="margin-left:8px;">'
+        $html = '<div class="aavirbhava-inline-field-row" style="' . self::INLINE_ROW_STYLE . '">'
+            . '<span style="' . self::INPUT_WRAPPER_STYLE . '">' . $inputHtml . '</span>'
+            . '<button type="button" id="' . $this->escapeHtmlAttr($buttonId) . '" '
+            . 'class="action-secondary" style="flex:0 0 auto;">'
             . $this->escapeHtml(__('Fetch Ollama Models'))
-            . '</button> '
-            . '<span id="' . $this->escapeHtmlAttr($statusId) . '"></span>'
+            . '</button>'
+            . '<span id="' . $this->escapeHtmlAttr($statusId) . '" style="flex:0 1 auto;"></span>'
+            . '</div>'
             . '<datalist id="' . $this->escapeHtmlAttr($datalistId) . '"></datalist>';
 
         $html .= '<script>' . $this->fetchModelsScript(

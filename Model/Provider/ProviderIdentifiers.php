@@ -23,6 +23,7 @@ final class ProviderIdentifiers
     public const LLM_OPENAI = 'openai';
     public const LLM_ANTHROPIC = 'anthropic';
     public const LLM_XAI = 'xai';
+    public const LLM_GOOGLE = 'google';
     public const LLM_OPENAI_COMPATIBLE = 'openai_compatible';
 
     public const EMBEDDING_OPENAI = 'openai';
@@ -40,6 +41,7 @@ final class ProviderIdentifiers
         self::LLM_OPENAI,
         self::LLM_ANTHROPIC,
         self::LLM_XAI,
+        self::LLM_GOOGLE,
         self::LLM_OPENAI_COMPATIBLE,
     ];
 

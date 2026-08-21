@@ -1,9 +1,36 @@
 <?php
 /**
  * @var \Aavirbhava\AiShoppingAssistant\Block\Adminhtml\Playground\Index $block
+ *
+ * Task 33: visual-only redesign. Every data field below is unchanged from
+ * before this task — only the markup wrapping it changed (collapsible
+ * panels via Magento's own native `mage/collapsible` widget, status
+ * badges reusing Magento's own message-success/error/warning/notice
+ * classes, and JSON syntax highlighting for the genuinely-JSON blocks).
+ * See the Task 33 status report for the full before/after accounting.
  */
 $result = $block->getResult();
 $error = $block->getError();
+
+/**
+ * Opens one collapsible panel using the exact same declarative
+ * `fieldset-wrapper admin__collapsible-block-wrapper` +
+ * `data-mage-init="collapsible"` markup
+ * Magento\Catalog\Block\Adminhtml\Product\Edit\Tab\ChildTab's own real
+ * template uses for the product-edit page's collapsible sections — not a
+ * bespoke accordion. A local closure (not a named function) so this
+ * template can `require` more than once per process without a
+ * "cannot redeclare function" fatal.
+ */
+$sectionOpen = static function (string $title, bool $active) use ($block): string {
+    return '<div class="fieldset-wrapper admin__collapsible-block-wrapper" data-mage-init=\''
+        . $block->escapeHtmlAttr($block->getCollapsibleInitJson($active)) . '\'>'
+        . '<div class="fieldset-wrapper-title" data-role="title">'
+        . '<strong class="admin__collapsible-title" data-role="trigger"><span>'
+        . $block->escapeHtml($title) . '</span></strong></div>'
+        . '<div class="fieldset-wrapper-content" data-role="content">';
+};
+$sectionClose = '</div></div>';
 ?>
 <div class="admin__fieldset-wrapper aavirbhava-playground">
     <div class="admin__fieldset-wrapper-title">
@@ -12,17 +39,17 @@ $error = $block->getError();
     <form method="post" action="<?= $block->escapeUrl($block->getUrl('aavirbhava_aishoppingassistant/playground/index')) ?>">
         <input name="form_key" type="hidden" value="<?= $block->escapeHtmlAttr($block->getFormKey()) ?>"/>
         <fieldset class="admin__fieldset">
-            <div class="admin__field">
+            <div class="admin__field admin__field-wide">
                 <label class="admin__field-label" for="aavirbhava-playground-query">
                     <span><?= $block->escapeHtml(__('Customer message')) ?></span>
                 </label>
                 <div class="admin__field-control">
                     <textarea id="aavirbhava-playground-query" name="query" rows="3"
-                              class="admin__control-textarea" style="width:100%;"
+                              class="admin__control-textarea"
                     ><?= $block->escapeHtml($block->getSubmittedQuery()) ?></textarea>
                 </div>
             </div>
-            <div class="admin__field">
+            <div class="admin__field admin__field-wide">
                 <div class="admin__field-control">
                     <input type="checkbox" id="aavirbhava-playground-call-llm" name="call_llm" value="1"
                            class="admin__control-checkbox"
@@ -35,14 +62,16 @@ $error = $block->getError();
                     </label>
                 </div>
             </div>
-            <div class="admin__field">
-                <button type="submit" class="action-primary">
-                    <span><?= $block->escapeHtml(__('Run Query')) ?></span>
-                </button>
-                <button type="button" id="aavirbhava-playground-test-connection" class="action-secondary">
-                    <span><?= $block->escapeHtml(__('Test LLM Connection')) ?></span>
-                </button>
-                <span id="aavirbhava-playground-test-connection-result"></span>
+            <div class="admin__field admin__field-wide aavirbhava-playground-actions">
+                <div class="admin__field-control">
+                    <button type="submit" class="action-primary">
+                        <span><?= $block->escapeHtml(__('Run Query')) ?></span>
+                    </button>
+                    <button type="button" id="aavirbhava-playground-test-connection" class="action-secondary">
+                        <span><?= $block->escapeHtml(__('Test LLM Connection')) ?></span>
+                    </button>
+                    <span id="aavirbhava-playground-test-connection-result"></span>
+                </div>
             </div>
         </fieldset>
     </form>
@@ -56,7 +85,8 @@ $error = $block->getError();
 
 <?php if ($result !== null): ?>
     <div class="aavirbhava-playground-panel">
-        <h3><?= $block->escapeHtml(__('1. Query / Parsed Intent')) ?></h3>
+
+        <?= $sectionOpen(__('1. Query / Parsed Intent'), true) ?>
         <p>
             <em><?= $block->escapeHtml(__(
                 'No query-parsing or intent-extraction step exists anywhere in this pipeline '
@@ -67,7 +97,8 @@ $error = $block->getError();
         <p><code><?= $block->escapeHtml($result->queryText) ?></code></p>
         <p>
             <?= $block->escapeHtml(__('Commerce Scope Classifier:')) ?>
-            <strong><?= $result->inScope ? $block->escapeHtml(__('In scope')) : $block->escapeHtml(__('Out of scope')) ?></strong>
+            <?php $scopeBadge = $block->getScopeBadge($result); ?>
+            <?= /* @noEscape */ $block->getBadgeHtml($scopeBadge['label'], $scopeBadge['type']) ?>
             <?php if ($result->scopeReasonCode !== null): ?>
                 (<?= $block->escapeHtml($result->scopeReasonCode) ?>)
             <?php endif; ?>
@@ -79,22 +110,28 @@ $error = $block->getError();
                 )) ?></em>
             <?php endif; ?>
         </p>
+        <?= $sectionClose ?>
 
-        <h3><?= $block->escapeHtml(__('2. BM25 (Keyword) Results')) ?></h3>
+        <?= $sectionOpen(__('2. BM25 (Keyword) Results'), true) ?>
         <?= $block->getCandidateTableHtml($block->getSortedByBm25($result->retrievedCandidates), 'bm25Score') ?>
+        <?= $sectionClose ?>
 
-        <h3><?= $block->escapeHtml(__('3. Vector (Semantic) Results')) ?></h3>
+        <?= $sectionOpen(__('3. Vector (Semantic) Results'), true) ?>
         <?= $block->getCandidateTableHtml($block->getSortedByVector($result->retrievedCandidates), 'vectorScore') ?>
+        <?= $sectionClose ?>
 
-        <h3><?= $block->escapeHtml(__('4. Combined Ranking')) ?></h3>
+        <?= $sectionOpen(__('4. Combined Ranking'), true) ?>
+        <?php $previousScores = []; ?>
         <?php foreach ($result->rankingStages as $stage): ?>
             <h4><?= $block->escapeHtml(__('After signal: %1', $stage['signal'])) ?></h4>
-            <?= $block->getCandidateTableHtml($stage['candidates'], 'score') ?>
+            <?= $block->getCandidateTableHtml($stage['candidates'], 'score', $previousScores) ?>
+            <?php $previousScores = $block->scoresByEntityId($stage['candidates']); ?>
         <?php endforeach; ?>
         <h4><?= $block->escapeHtml(__('Final ranked list (sent downstream)')) ?></h4>
         <?= $block->getCandidateTableHtml($result->rankedCandidates, 'score') ?>
+        <?= $sectionClose ?>
 
-        <h3><?= $block->escapeHtml(__('5. Reranker Status')) ?></h3>
+        <?= $sectionOpen(__('5. Reranker Status'), true) ?>
         <p>
             <?php if ($result->rerankerConfigured): ?>
                 <?= $block->escapeHtml(__(
@@ -108,8 +145,9 @@ $error = $block->getError();
                 <?= $block->escapeHtml(__('reranker_enabled is OFF for this store. No reranker is implemented regardless.')) ?>
             <?php endif; ?>
         </p>
+        <?= $sectionClose ?>
 
-        <h3><?= $block->escapeHtml(__('6. Live-Data Validation')) ?></h3>
+        <?= $sectionOpen(__('6. Live-Data Validation'), true) ?>
         <table class="data-grid">
             <thead>
                 <tr><th><?= $block->escapeHtml(__('SKU')) ?></th><th><?= $block->escapeHtml(__('Found')) ?></th><th><?= $block->escapeHtml(__('In stock')) ?></th><th><?= $block->escapeHtml(__('Name')) ?></th></tr>
@@ -136,15 +174,17 @@ $error = $block->getError();
                 . 'broken down by which specific check failed (by design, since Task 4).'
             )) ?></em>
         </p>
+        <?= $sectionClose ?>
 
-        <h3><?= $block->escapeHtml(__('7. Product Context Sent to the LLM')) ?></h3>
+        <?= $sectionOpen(__('7. Product Context Sent to the LLM'), true) ?>
         <?php if ($result->productContextText !== null): ?>
             <pre class="aavirbhava-playground-pre"><?= $block->escapeHtml($result->productContextText) ?></pre>
         <?php else: ?>
             <p><?= $block->escapeHtml(__('No candidates — no product context message would be sent.')) ?></p>
         <?php endif; ?>
+        <?= $sectionClose ?>
 
-        <h3><?= $block->escapeHtml(__('8. Tool Calls')) ?></h3>
+        <?= $sectionOpen(__('8. Tool Calls'), true) ?>
         <?php if (!$result->llmWasCalled): ?>
             <p><?= $block->escapeHtml(__('The LLM was not called for this run ("Also call the LLM" was unchecked).')) ?></p>
         <?php elseif ($result->toolExecutions === []): ?>
@@ -153,45 +193,65 @@ $error = $block->getError();
             <?php foreach ($result->toolExecutions as $execution): ?>
                 <h4><?= $block->escapeHtml($execution['call']->name) ?></h4>
                 <p><strong><?= $block->escapeHtml(__('Arguments:')) ?></strong></p>
-                <pre class="aavirbhava-playground-pre"><?= $block->escapeHtml($block->jsonPretty($execution['call']->arguments)) ?></pre>
+                <pre class="aavirbhava-playground-pre" data-aavirbhava-json="1"><?= $block->escapeHtml($block->jsonPretty($execution['call']->arguments)) ?></pre>
                 <p><strong><?= $block->escapeHtml(__('Result:')) ?></strong></p>
-                <pre class="aavirbhava-playground-pre"><?= $block->escapeHtml($block->jsonPretty($execution['result']->data)) ?></pre>
+                <pre class="aavirbhava-playground-pre" data-aavirbhava-json="1"><?= $block->escapeHtml($block->jsonPretty($execution['result']->data)) ?></pre>
             <?php endforeach; ?>
         <?php endif; ?>
+        <?= $sectionClose ?>
 
-        <h3><?= $block->escapeHtml(__('9. Final Response')) ?></h3>
+        <?= $sectionOpen(__('9. Final Response'), true) ?>
         <?php if (!$result->llmWasCalled): ?>
             <p><?= $block->escapeHtml(__('The LLM was not called for this run.')) ?></p>
         <?php elseif ($result->llmError !== null): ?>
             <p class="message message-error error"><?= $block->escapeHtml(__('Provider error: %1', $result->llmError)) ?></p>
-        <?php elseif ($result->finalResponse !== null): ?>
-            <p><strong><?= $block->escapeHtml(__('Message:')) ?></strong> <?= $block->escapeHtml($result->finalResponse->message) ?></p>
-            <?php if ($result->finalResponse->products !== []): ?>
-                <p><strong><?= $block->escapeHtml(__('Products:')) ?></strong></p>
-                <table class="data-grid">
-                    <thead><tr><th><?= $block->escapeHtml(__('SKU')) ?></th><th><?= $block->escapeHtml(__('Price')) ?></th><th><?= $block->escapeHtml(__('Reason')) ?></th></tr></thead>
-                    <tbody>
-                    <?php foreach ($result->finalResponse->products as $product): ?>
-                        <tr>
-                            <td><?= $block->escapeHtml($product->product->sku) ?></td>
-                            <td><?= $block->escapeHtml((string) $product->product->price) ?></td>
-                            <td><?= $block->escapeHtml($product->reason) ?></td>
-                        </tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
-            <?php endif; ?>
-        <?php elseif ($result->safeResponse !== null): ?>
-            <p class="message message-warning warning">
-                <?= $block->escapeHtml(__(
-                    'Safe fallback (reason: %1): %2',
-                    $result->safeResponse->reasonCode,
-                    $result->safeResponse->message
-                )) ?>
-            </p>
-        <?php endif; ?>
+        <?php else: ?>
+            <div class="aavirbhava-playground-badge-row">
+                <?php foreach ($block->getValidationCheckBadges($result) as $check): ?>
+                    <?= /* @noEscape */ $block->getBadgeHtml($check['label'], $check['type']) ?>
+                <?php endforeach; ?>
+                <?php $fallbackBadge = $block->getFallbackBadge($result); ?>
+                <?= $block->escapeHtml(__('Fallback provider used:')) ?>
+                <?= /* @noEscape */ $block->getBadgeHtml($fallbackBadge['label'], $fallbackBadge['type']) ?>
+            </div>
 
-        <h3><?= $block->escapeHtml(__('10. Tokens / Cost / Latency')) ?></h3>
+            <?php if ($result->finalResponse !== null): ?>
+                <p><strong><?= $block->escapeHtml(__('Message:')) ?></strong> <?= $block->escapeHtml($result->finalResponse->message) ?></p>
+                <?php if ($result->finalResponse->products !== []): ?>
+                    <p><strong><?= $block->escapeHtml(__('Products:')) ?></strong></p>
+                    <table class="data-grid">
+                        <thead><tr><th><?= $block->escapeHtml(__('SKU')) ?></th><th><?= $block->escapeHtml(__('Price')) ?></th><th><?= $block->escapeHtml(__('Reason')) ?></th></tr></thead>
+                        <tbody>
+                        <?php foreach ($result->finalResponse->products as $product): ?>
+                            <tr>
+                                <td><?= $block->escapeHtml($product->product->sku) ?></td>
+                                <td><?= $block->escapeHtml((string) $product->product->price) ?></td>
+                                <td><?= $block->escapeHtml($product->reason) ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                <?php endif; ?>
+            <?php elseif ($result->safeResponse !== null): ?>
+                <p class="message message-warning warning">
+                    <?= $block->escapeHtml(__(
+                        'Safe fallback (reason: %1): %2',
+                        $result->safeResponse->reasonCode,
+                        $result->safeResponse->message
+                    )) ?>
+                </p>
+            <?php endif; ?>
+
+            <?php $finalResponseJson = $block->getFinalResponseJson($result); ?>
+            <?php if ($finalResponseJson !== null): ?>
+                <?= $sectionOpen(__('Raw JSON'), false) ?>
+                <pre class="aavirbhava-playground-pre" data-aavirbhava-json="1"><?= $block->escapeHtml($finalResponseJson) ?></pre>
+                <?= $sectionClose ?>
+            <?php endif; ?>
+        <?php endif; ?>
+        <?= $sectionClose ?>
+
+        <?= $sectionOpen(__('10. Tokens / Cost / Latency'), true) ?>
         <?php if (!$result->llmWasCalled): ?>
             <p><?= $block->escapeHtml(__('The LLM was not called for this run.')) ?></p>
         <?php else: ?>
@@ -208,14 +268,151 @@ $error = $block->getError();
                 </tbody>
             </table>
         <?php endif; ?>
+        <?= $sectionClose ?>
+
     </div>
 <?php endif; ?>
 
 <style>
-.aavirbhava-playground-panel h3 { margin-top: 2em; border-bottom: 1px solid #ccc; padding-bottom: .3em; }
-.aavirbhava-playground-panel h4 { margin-top: 1em; color: #555; }
-.aavirbhava-playground-pre { background: #f5f5f5; padding: 1em; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
-.aavirbhava-playground .admin__field { margin-bottom: 1em; }
+/*
+ * Both the query form and the results panels below share a real card
+ * look (border, padding, subtle shadow, a tinted title strip) —
+ * Magento's own .admin__fieldset-wrapper/.fieldset-wrapper classes only
+ * provide a title underline by default (confirmed by reading
+ * _temp.less/_fields.less directly: a full bordered "card" look only
+ * comes from the heavier .admin__page-section pattern, e.g. the sales
+ * order view page), so this box treatment is this template's own light
+ * addition, not a native Magento class. Colors are kept to Magento's
+ * own real admin palette values (theme-adminhtml-backend's
+ * lib/_variables.less / _colors.less) rather than invented ones.
+ */
+.aavirbhava-playground,
+.aavirbhava-playground-panel .fieldset-wrapper.admin__collapsible-block-wrapper {
+    max-width: 960px;
+    margin-bottom: 2rem;
+    /* #ccc / #fafafa match Magento's own @color-gray80 / @color-gray98
+       (theme-adminhtml-backend lib/_variables.less, _colors.less) — this
+       file is plain CSS, not LESS, so the real hex values are used
+       directly rather than the variable names. */
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    background: #fff;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, .07);
+    overflow: hidden;
+}
+.aavirbhava-playground .admin__fieldset-wrapper-title,
+.aavirbhava-playground-panel .fieldset-wrapper.admin__collapsible-block-wrapper .fieldset-wrapper-title {
+    margin: 0;
+    padding: 1.6rem 2.4rem;
+    background: #fafafa;
+    border-bottom: 1px solid #ccc;
+}
+.aavirbhava-playground .admin__fieldset-wrapper-title strong,
+.aavirbhava-playground-panel .admin__collapsible-title span {
+    font-size: 1.5rem;
+    color: #333;
+}
+.aavirbhava-playground .admin__fieldset { padding: 2.2rem 2.4rem 2.4rem; }
+.aavirbhava-playground-panel .fieldset-wrapper.admin__collapsible-block-wrapper .fieldset-wrapper-content {
+    padding: 2.2rem 2.4rem 2.4rem;
+}
+.aavirbhava-playground-panel .fieldset-wrapper-content h4 { margin: 1.5em 0 .8em; color: #555; }
+.aavirbhava-playground-actions { margin-top: .5rem; }
+.aavirbhava-playground-actions .admin__field-control button { margin-right: .8rem; }
+.aavirbhava-playground-pre {
+    background: #f6f6f6;
+    border: 1px solid #e3e3e3;
+    border-radius: 4px;
+    padding: 1.4em;
+    margin: .8em 0 1.6em;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.aavirbhava-playground .admin__field { margin-bottom: 1.8rem; }
+.aavirbhava-playground .admin__field:last-child { margin-bottom: 0; }
+.aavirbhava-playground .admin__control-textarea,
+.aavirbhava-playground .admin__control-text {
+    border-radius: 3px;
+    border-color: #c2c2c2;
+}
+/*
+ * Real root cause (found by reading _checkbox-radio.less directly): the
+ * checkbox's visible glyph is a floated ::before on its <label>, and
+ * Magento's own gap between glyph and text only exists for a label
+ * carrying the .admin__field-label class specifically (padding-left:
+ * 1.6rem + 1rem, with the glyph pulled back via a matching negative
+ * margin) — this template's checkbox label is a plain <label>, which
+ * never picked up that rule, so the glyph and text rendered with no
+ * gap. Re-applied the identical padding/negative-margin pair (Magento's
+ * own @control-checkbox-radio__size/@field-label__indent values, 1.6rem/
+ * 1rem) to the plain label instead of only adding padding to the label
+ * (which alone cannot separate a floated ::before from adjacent text).
+ */
+.aavirbhava-playground .admin__control-checkbox + label { padding-left: 2.6rem; }
+.aavirbhava-playground .admin__control-checkbox + label:before { margin: 1px 1rem 0 -2.6rem; }
+.aavirbhava-playground-panel .data-grid { margin: .8em 0 1.6em; border: 1px solid #e3e3e3; }
+/*
+ * No th background/color override here on purpose: Magento's own native
+ * .data-grid th (theme-adminhtml-backend Magento_Ui/_data-grid.less)
+ * already pairs a dark background (@color-brownie) with white text
+ * (@color-white) — a previous revision of this stylesheet set only the
+ * background to a light color without touching text color, leaving
+ * white-on-near-white header text. Removed rather than re-fixed with
+ * another override, so the real native header styling (which already
+ * looks correct) applies unmodified.
+ */
+/*
+ * th padding: Magento's own native .data-grid th is `padding: 0` at the
+ * base level (confirmed by reading _data-grid.less directly) — real
+ * padding only appears on td (1rem 1rem, @data-grid-cell__padding-
+ * vertical/horizontal) and on th only inside the heavier JS-rendered Ui
+ * Component grid markup this plain hand-rolled <table> doesn't have.
+ * That's why the "SKU/Price/Reason" header row and the "Provider/Model/…"
+ * row-label column (both real <th> cells) had no breathing room. Padding
+ * added here matches td's own real padding value exactly, for both
+ * header-row and row-label usages of <th> across every table on this page.
+ */
+.aavirbhava-playground-panel .data-grid th { padding: 1rem; }
+
+/*
+ * Compact inline badges reusing Magento's own message-success/error/
+ * warning/notice classes for semantics (see this template's
+ * getBadgeHtml() usage). Magento's own .message component only visually
+ * distinguishes message-error (a real background color, @color-pink);
+ * success/warning/notice otherwise share the same pale background and
+ * differ only by icon. Since this task asks for genuinely color-coded
+ * badges, the tint colors below are derived from Magento's OWN real
+ * admin palette (@color-green-apple/@color-phoenix/@color-blue-pure/
+ * @color-pink, from theme-adminhtml-backend's _colors.less) rather than
+ * invented from scratch — an extension of the native classes' existing
+ * color semantics into a compact badge layout, not a new color system.
+ */
+.aavirbhava-playground-badge-row { margin: .5em 0 1em; }
+.aavirbhava-playground-badge {
+    display: inline-block;
+    position: static;
+    margin: 0 .5em .5em 0;
+    padding: .3em 1em;
+    font-size: 1.2rem;
+    font-weight: 600;
+    border-radius: 3px;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+}
+.aavirbhava-playground-badge:before { display: none; }
+.aavirbhava-playground-badge.message-success { background: rgba(121, 162, 46, .15); color: #4a6b1f; }
+.aavirbhava-playground-badge.message-error { background: #fcc; color: #7a1a1a; }
+.aavirbhava-playground-badge.message-warning { background: rgba(235, 82, 2, .15); color: #a13c00; }
+.aavirbhava-playground-badge.message-notice { background: rgba(0, 123, 219, .12); color: #00517d; }
+
+/* Lightweight JSON syntax highlighting tokens — see the highlightJson() script below. */
+.aavirbhava-json-key { color: #905; font-weight: 600; }
+.aavirbhava-json-string { color: #690; }
+.aavirbhava-json-number { color: #07a; }
+.aavirbhava-json-boolean { color: #a50; font-weight: 600; }
+.aavirbhava-json-null { color: #999; font-style: italic; }
+.aavirbhava-json-punctuation { color: #333; }
 </style>
 
 <script>
@@ -245,4 +442,70 @@ require(['jquery'], function ($) {
         });
     });
 });
+
+/**
+ * Lightweight, dependency-free JSON syntax highlighter — no new JS
+ * library, matching this module's existing "vanilla JS" convention for
+ * the storefront widget (chat-widget-core.js). Tokenizes each
+ * [data-aavirbhava-json] element's own textContent (never innerHTML of
+ * untrusted content) and rebuilds it from document.createTextNode()/
+ * document.createElement('span') calls only — every span's text is set
+ * via .textContent, which the browser always treats as literal text, so
+ * this can never inject markup regardless of what a real LLM tool result
+ * or product name happens to contain.
+ */
+(function () {
+    'use strict';
+
+    var TOKEN_PATTERN = /("(?:\\.|[^"\\])*"(?:\s*:)?|\btrue\b|\bfalse\b|\bnull\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|[{}\[\],:])/g;
+
+    function classify(token) {
+        if (token.charAt(0) === '"') {
+            return /:\s*$/.test(token) ? 'aavirbhava-json-key' : 'aavirbhava-json-string';
+        }
+        if (token === 'true' || token === 'false') {
+            return 'aavirbhava-json-boolean';
+        }
+        if (token === 'null') {
+            return 'aavirbhava-json-null';
+        }
+        if (/^[{}\[\],:]$/.test(token)) {
+            return 'aavirbhava-json-punctuation';
+        }
+        return 'aavirbhava-json-number';
+    }
+
+    function highlight(element) {
+        var text = element.textContent;
+        var fragment = document.createDocumentFragment();
+        var lastIndex = 0;
+        var match;
+
+        TOKEN_PATTERN.lastIndex = 0;
+        while ((match = TOKEN_PATTERN.exec(text)) !== null) {
+            if (match.index > lastIndex) {
+                fragment.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
+            }
+
+            var span = document.createElement('span');
+            span.className = classify(match[0]);
+            span.textContent = match[0];
+            fragment.appendChild(span);
+
+            lastIndex = TOKEN_PATTERN.lastIndex;
+        }
+
+        if (lastIndex < text.length) {
+            fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
+        }
+
+        element.textContent = '';
+        element.appendChild(fragment);
+    }
+
+    var blocks = document.querySelectorAll('[data-aavirbhava-json]');
+    for (var i = 0; i < blocks.length; i++) {
+        highlight(blocks[i]);
+    }
+}());
 </script>

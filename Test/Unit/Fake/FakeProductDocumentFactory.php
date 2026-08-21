@@ -14,8 +14,14 @@ use Aavirbhava\AiShoppingAssistant\Model\Catalog\SearchableAttribute;
  */
 final class FakeProductDocumentFactory
 {
-    public function make(int $storeId = 1, int $entityId = 42, string $sku = 'SKU-42'): ProductDocument
-    {
+    public function make(
+        int $storeId = 1,
+        int $entityId = 42,
+        string $sku = 'SKU-42',
+        float $ratingAverage = 4.5,
+        int $reviewCount = 12,
+        float $catalogRatingAverage = 3.5
+    ): ProductDocument {
         return new ProductDocument(
             ProductDocumentSchema::VERSION,
             $storeId . '_' . $entityId,
@@ -34,7 +40,10 @@ final class FakeProductDocumentFactory
             'Test Product Shoes blue',
             str_repeat('a', 64),
             str_repeat('b', 64),
-            '2026-01-01T00:00:00+00:00'
+            '2026-01-01T00:00:00+00:00',
+            $ratingAverage,
+            $reviewCount,
+            $catalogRatingAverage
         );
     }
 }

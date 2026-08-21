@@ -17,6 +17,9 @@
                     <resource id="Aavirbhava_AiShoppingAssistant::playground"
                               title="AI Shopping Assistant Playground"
                               sortOrder="910"/>
+                    <resource id="Aavirbhava_AiShoppingAssistant::boost"
+                              title="AI Shopping Assistant Merchandising Boosts"
+                              sortOrder="920"/>
                 </resource>
             </resource>
         </resources>

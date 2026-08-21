@@ -17,5 +17,13 @@
              parent="Aavirbhava_AiShoppingAssistant::playground"
              action="aavirbhava_aishoppingassistant/playground/index"
              resource="Aavirbhava_AiShoppingAssistant::playground"/>
+        <add id="Aavirbhava_AiShoppingAssistant::boost_index"
+             title="Merchandising Boosts"
+             translate="title"
+             module="Aavirbhava_AiShoppingAssistant"
+             sortOrder="920"
+             parent="Magento_Backend::marketing"
+             action="aavirbhava_aishoppingassistant/boost/index"
+             resource="Aavirbhava_AiShoppingAssistant::boost"/>
     </menu>
 </config>

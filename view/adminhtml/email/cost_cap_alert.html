@@ -1,0 +1,44 @@
+<!--
+/**
+ * AI Shopping Assistant - LLM Cost Cap Alert (admin notification)
+ */
+-->
+<!--@subject {{trans "AI Shopping Assistant: %threshold_label" threshold_label=$threshold_label}} @-->
+<!--@vars {
+"var threshold_label":"Threshold Label",
+"var current_cost":"Current Period Cost",
+"var cap_amount":"Configured Cap Amount",
+"var period_label":"Period Type",
+"var period_key":"Period Start",
+"var override_status":"Override Status"
+} @-->
+
+<table>
+    <tr>
+        <td>
+            <p>{{trans "The AI Shopping Assistant's LLM cost usage has crossed the following threshold for the current period:" threshold_label=$threshold_label}} <strong>{{var threshold_label}}</strong></p>
+            <table class="message-details">
+                <tr>
+                    <td><strong>{{trans "Threshold"}}</strong></td>
+                    <td>{{var threshold_label}}</td>
+                </tr>
+                <tr>
+                    <td><strong>{{trans "Current Usage"}}</strong></td>
+                    <td>{{var current_cost}}</td>
+                </tr>
+                <tr>
+                    <td><strong>{{trans "Configured Cap"}}</strong></td>
+                    <td>{{var cap_amount}}</td>
+                </tr>
+                <tr>
+                    <td><strong>{{trans "Period"}}</strong></td>
+                    <td>{{var period_label}} ({{var period_key}})</td>
+                </tr>
+                <tr>
+                    <td><strong>{{trans "Service Status"}}</strong></td>
+                    <td>{{var override_status}}</td>
+                </tr>
+            </table>
+        </td>
+    </tr>
+</table>

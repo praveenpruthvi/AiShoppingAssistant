@@ -53,8 +53,17 @@ final class SearchHitParser
             $isEnabled,
             $visibility,
             $bm25Score,
-            $vectorScore
+            $vectorScore,
+            0.0,
+            $this->parseNumeric($source[Field::FIELD_RATING_AVERAGE] ?? null, 0.0),
+            (int) $this->parseNumeric($source[Field::FIELD_REVIEW_COUNT] ?? null, 0.0),
+            $this->parseNumeric($source[Field::FIELD_CATALOG_RATING_AVERAGE] ?? null, 0.0)
         );
+    }
+
+    private function parseNumeric(mixed $value, float $default): float
+    {
+        return is_int($value) || is_float($value) ? (float) $value : $default;
     }
 
     /**

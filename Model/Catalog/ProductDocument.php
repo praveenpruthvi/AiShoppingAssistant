@@ -34,7 +34,10 @@ final readonly class ProductDocument implements ProductDocumentInterface
         private string $searchableText,
         private string $embeddingContentHash,
         private string $completeDocumentHash,
-        private ?string $updatedAt = null
+        private ?string $updatedAt = null,
+        private float $ratingAverage = 0.0,
+        private int $reviewCount = 0,
+        private float $catalogRatingAverage = 0.0
     ) {
         if ($schemaVersion < 1) {
             throw new CatalogException(__('Schema version must be a positive integer.'));
@@ -83,6 +86,16 @@ final readonly class ProductDocument implements ProductDocumentInterface
             || preg_match(self::HASH_PATTERN, $completeDocumentHash) !== 1
         ) {
             throw new CatalogException(__('Document content hashes must be SHA-256 hex digests.'));
+        }
+
+        foreach (['ratingAverage' => $ratingAverage, 'catalogRatingAverage' => $catalogRatingAverage] as $rating) {
+            if ($rating < 0.0 || $rating > 5.0) {
+                throw new CatalogException(__('A product rating average must be between 0 and 5.'));
+            }
+        }
+
+        if ($reviewCount < 0) {
+            throw new CatalogException(__('Product review count must not be negative.'));
         }
     }
 
@@ -174,5 +187,20 @@ final readonly class ProductDocument implements ProductDocumentInterface
     public function updatedAt(): ?string
     {
         return $this->updatedAt;
+    }
+
+    public function ratingAverage(): float
+    {
+        return $this->ratingAverage;
+    }
+
+    public function reviewCount(): int
+    {
+        return $this->reviewCount;
+    }
+
+    public function catalogRatingAverage(): float
+    {
+        return $this->catalogRatingAverage;
     }
 }

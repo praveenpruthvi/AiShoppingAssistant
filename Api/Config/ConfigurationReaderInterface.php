@@ -23,4 +23,8 @@ interface ConfigurationReaderInterface
     public function readIndexing(int $storeId): IndexingConfigInterface;
 
     public function readCapabilities(int $storeId): CapabilitiesConfigInterface;
+
+    public function readCostCap(int $storeId): CostCapConfigInterface;
+
+    public function readProviderCost(int $storeId): ProviderCostConfigInterface;
 }

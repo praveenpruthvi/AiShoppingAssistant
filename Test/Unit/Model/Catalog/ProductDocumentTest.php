@@ -37,6 +37,9 @@ final class ProductDocumentTest extends TestCase
             'embeddingContentHash' => str_repeat('a', 64),
             'completeDocumentHash' => str_repeat('b', 64),
             'updatedAt' => null,
+            'ratingAverage' => 4.5,
+            'reviewCount' => 12,
+            'catalogRatingAverage' => 3.5,
         ], $overrides);
 
         return new ProductDocument(
@@ -57,7 +60,10 @@ final class ProductDocumentTest extends TestCase
             $data['searchableText'],
             $data['embeddingContentHash'],
             $data['completeDocumentHash'],
-            $data['updatedAt']
+            $data['updatedAt'],
+            $data['ratingAverage'],
+            $data['reviewCount'],
+            $data['catalogRatingAverage']
         );
     }
 
@@ -67,6 +73,30 @@ final class ProductDocumentTest extends TestCase
 
         self::assertSame('1_42', $document->documentId());
         self::assertSame(1, $document->schemaVersion());
+        self::assertSame(4.5, $document->ratingAverage());
+        self::assertSame(12, $document->reviewCount());
+        self::assertSame(3.5, $document->catalogRatingAverage());
+    }
+
+    public function testRejectsAnOutOfRangeRatingAverage(): void
+    {
+        $this->expectException(CatalogException::class);
+
+        $this->makeDocument(['ratingAverage' => 5.1]);
+    }
+
+    public function testRejectsAnOutOfRangeCatalogRatingAverage(): void
+    {
+        $this->expectException(CatalogException::class);
+
+        $this->makeDocument(['catalogRatingAverage' => -0.1]);
+    }
+
+    public function testRejectsANegativeReviewCount(): void
+    {
+        $this->expectException(CatalogException::class);
+
+        $this->makeDocument(['reviewCount' => -1]);
     }
 
     public function testRejectsInvalidSchemaVersion(): void

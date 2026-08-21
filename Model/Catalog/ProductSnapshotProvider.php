@@ -6,6 +6,7 @@ namespace Aavirbhava\AiShoppingAssistant\Model\Catalog;
 
 use Aavirbhava\AiShoppingAssistant\Api\Catalog\CategoryReferenceInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Catalog\CategoryReferenceResolverInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductRatingResolverInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductSnapshotBatchInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductSnapshotProviderInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Catalog\SearchableAttributeValueResolverInterface;
@@ -22,7 +23,8 @@ final class ProductSnapshotProvider implements ProductSnapshotProviderInterface
     public function __construct(
         private readonly ProductCollectionFactory $productCollectionFactory,
         private readonly CategoryReferenceResolverInterface $categoryReferenceResolver,
-        private readonly SearchableAttributeValueResolverInterface $searchableAttributeValueResolver
+        private readonly SearchableAttributeValueResolverInterface $searchableAttributeValueResolver,
+        private readonly ProductRatingResolverInterface $productRatingResolver
     ) {
     }
 
@@ -57,6 +59,8 @@ final class ProductSnapshotProvider implements ProductSnapshotProviderInterface
             $collection->addAttributeToSelect($code);
         }
 
+        $this->productRatingResolver->appendToCollection($collection, $scope);
+
         $collection->setOrder('entity_id', Collection::SORT_ORDER_ASC);
         $collection->setPageSize(count($ids));
         $collection->setCurPage(1);
@@ -67,6 +71,7 @@ final class ProductSnapshotProvider implements ProductSnapshotProviderInterface
         $items = array_values($collection->getItems());
 
         $categories = $this->loadCategoryReferences($scope, $items);
+        $catalogRatingAverage = $this->productRatingResolver->catalogAverage($scope);
 
         $foundIds = [];
         foreach ($items as $product) {
@@ -75,7 +80,7 @@ final class ProductSnapshotProvider implements ProductSnapshotProviderInterface
 
         $snapshots = [];
         foreach ($items as $product) {
-            $snapshots[] = $this->snapshotFor($scope, $config, $product, $categories);
+            $snapshots[] = $this->snapshotFor($scope, $config, $product, $categories, $catalogRatingAverage);
         }
 
         $missing = array_values(array_diff($ids, $foundIds));
@@ -110,7 +115,8 @@ final class ProductSnapshotProvider implements ProductSnapshotProviderInterface
         StoreScopeInterface $scope,
         IndexingConfigInterface $config,
         ProductInterface $product,
-        array $categories
+        array $categories,
+        float $catalogRatingAverage
     ): ProductSnapshot {
         $categoryByRef = [];
         foreach ($categories as $category) {
@@ -140,7 +146,10 @@ final class ProductSnapshotProvider implements ProductSnapshotProviderInterface
             (int) $product->getVisibility(),
             $productCategories,
             $attributes,
-            $product->getUpdatedAt() !== null ? (string) $product->getUpdatedAt() : null
+            $product->getUpdatedAt() !== null ? (string) $product->getUpdatedAt() : null,
+            $this->productRatingResolver->percentToStars((float) ($this->rawData($product, 'rating_summary') ?? 0)),
+            (int) ($this->rawData($product, 'reviews_count') ?? 0),
+            $catalogRatingAverage
         );
     }
 

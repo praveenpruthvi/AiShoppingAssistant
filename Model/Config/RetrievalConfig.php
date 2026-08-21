@@ -14,12 +14,17 @@ final readonly class RetrievalConfig implements RetrievalConfigInterface
         private int $vectorCandidates,
         private int $mergedCandidates,
         private int $finalProducts,
-        private bool $rerankerEnabled
+        private bool $rerankerEnabled,
+        private float $ratingSignalWeight
     ) {
         foreach ([$keywordCandidates, $vectorCandidates, $mergedCandidates, $finalProducts] as $candidate) {
             if ($candidate < 1) {
                 throw new InvalidArgumentException('Retrieval candidate counts must be greater than zero.');
             }
+        }
+
+        if ($ratingSignalWeight < 0.0) {
+            throw new InvalidArgumentException('The rating signal weight must not be negative.');
         }
     }
 
@@ -46,5 +51,10 @@ final readonly class RetrievalConfig implements RetrievalConfigInterface
     public function isRerankerEnabled(): bool
     {
         return $this->rerankerEnabled;
+    }
+
+    public function ratingSignalWeight(): float
+    {
+        return $this->ratingSignalWeight;
     }
 }

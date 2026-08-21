@@ -13,7 +13,7 @@ final class CapabilitiesConfigTest extends TestCase
 {
     public function testExposesEachToggleIndependently(): void
     {
-        $capabilities = new CapabilitiesConfig(true, false, true, false, true, false);
+        $capabilities = new CapabilitiesConfig(true, false, true, false, true, false, true);
 
         self::assertTrue($capabilities->isProductDiscoveryEnabled());
         self::assertFalse($capabilities->isProductDetailsEnabled());
@@ -21,5 +21,6 @@ final class CapabilitiesConfigTest extends TestCase
         self::assertFalse($capabilities->isPriceCheckingEnabled());
         self::assertTrue($capabilities->isStockCheckingEnabled());
         self::assertFalse($capabilities->isPolicySearchEnabled());
+        self::assertTrue($capabilities->isPromotionAwarenessEnabled());
     }
 }

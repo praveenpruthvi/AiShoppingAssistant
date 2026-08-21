@@ -21,12 +21,21 @@
         FallbackChatGenerationService is a decorator: it depends on the
         concrete Model\Chat\ChatGenerationService class (not this interface)
         to reach the undecorated, primary-only implementation without a DI
-        cycle. Every existing caller of ChatGenerationServiceInterface
-        (ChatEntryPipeline, tests) gets retry/circuit-breaker/fallback
+        cycle. CostTrackingChatGenerationService decorates it the same way
+        (depends on the concrete FallbackChatGenerationService class) to add
+        LLM cost-cap usage tracking on top. Every existing caller of
+        ChatGenerationServiceInterface (ChatEntryPipeline, PlaygroundQueryRunner,
+        tests) gets retry/circuit-breaker/fallback AND usage tracking
         transparently with no code change on their side.
     -->
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Chat\ChatGenerationServiceInterface"
-                type="Aavirbhava\AiShoppingAssistant\Model\Chat\FallbackChatGenerationService"/>
+                type="Aavirbhava\AiShoppingAssistant\Model\Chat\CostTrackingChatGenerationService"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\CostCap\CostUsageTrackerInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\CostCap\DbCostUsageTracker"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\CostCap\CostCapCheckerInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\CostCap\CostCapEnforcer"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\CostCap\CostCapNotifierInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\CostCap\EmailCostCapNotifier"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Chat\CircuitBreakerInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Chat\Fallback\CacheCircuitBreaker"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Model\Chat\Fallback\BackoffSleeperInterface"
@@ -87,6 +96,14 @@
                 type="Aavirbhava\AiShoppingAssistant\Model\Catalog\CategoryReferenceResolver"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Catalog\SearchableAttributeValueResolverInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Catalog\SearchableAttributeValueResolver"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductRatingResolverInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Catalog\ProductRatingResolver"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Merchandising\MerchandisingBoostRepositoryInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Merchandising\MerchandisingBoostRepository"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Merchandising\ActiveBoostReaderInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Merchandising\ActiveBoostReader"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Promotion\ActivePromotionReaderInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Promotion\ActivePromotionReader"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\FullProductReindexerInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Indexing\FullProductReindexer"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\ProductDocumentWriterInterface"
@@ -145,6 +162,9 @@
         <arguments>
             <argument name="providers" xsi:type="array">
                 <item name="openai" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Provider\Llm\OpenAiProvider</item>
+                <item name="anthropic" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Provider\Llm\AnthropicProvider</item>
+                <item name="xai" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Provider\Llm\XaiProvider</item>
+                <item name="google" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Provider\Llm\GeminiProvider</item>
                 <item name="openai_compatible" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Provider\Llm\OpenAiCompatibleProvider</item>
             </argument>
         </arguments>
@@ -164,6 +184,7 @@
                 <item name="openai" xsi:type="string">OpenAI</item>
                 <item name="anthropic" xsi:type="string">Anthropic Claude</item>
                 <item name="xai" xsi:type="string">xAI Grok</item>
+                <item name="google" xsi:type="string">Google Gemini</item>
                 <item name="openai_compatible" xsi:type="string">Local / Ollama (OpenAI-Compatible)</item>
                 <item name="voyage" xsi:type="string">Voyage AI</item>
                 <item name="local_openai_compatible" xsi:type="string">Local OpenAI-Compatible</item>
@@ -188,6 +209,8 @@
                 <item name="text_relevance" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Ranking\Signal\TextRelevanceSignal</item>
                 <item name="vector_similarity" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Ranking\Signal\VectorSimilaritySignal</item>
                 <item name="attribute_match" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Ranking\Signal\AttributeMatchSignal</item>
+                <item name="rating" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Ranking\Signal\RatingSignal</item>
+                <item name="merchandising_boost" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Ranking\Signal\MerchandisingBoostSignal</item>
                 <item name="availability" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Ranking\Signal\AvailabilitySignal</item>
             </argument>
         </arguments>
@@ -215,6 +238,7 @@
                 <item name="add_to_cart" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Tool\AddToCartTool</item>
                 <item name="remove_from_cart" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Tool\RemoveFromCartTool</item>
                 <item name="search_store_content" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Tool\SearchStoreContentTool</item>
+                <item name="get_active_promotions" xsi:type="object">Aavirbhava\AiShoppingAssistant\Model\Tool\GetActivePromotionsTool</item>
             </argument>
         </arguments>
     </type>

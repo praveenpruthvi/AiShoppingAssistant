@@ -32,6 +32,9 @@ final class SearchQueryBuilder
         Field::FIELD_ATTRIBUTES,
         Field::FIELD_IS_ENABLED,
         Field::FIELD_VISIBILITY,
+        Field::FIELD_RATING_AVERAGE,
+        Field::FIELD_REVIEW_COUNT,
+        Field::FIELD_CATALOG_RATING_AVERAGE,
     ];
 
     /**

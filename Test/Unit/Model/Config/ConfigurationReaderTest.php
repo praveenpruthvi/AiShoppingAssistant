@@ -11,6 +11,8 @@ use Aavirbhava\AiShoppingAssistant\Model\Config\ColorContrast;
 use Aavirbhava\AiShoppingAssistant\Model\Config\ConfigurationReader;
 use Aavirbhava\AiShoppingAssistant\Model\Config\Exception\ConfigurationException;
 use Aavirbhava\AiShoppingAssistant\Model\Config\Path;
+use Aavirbhava\AiShoppingAssistant\Model\Config\Source\CapPeriod;
+use Aavirbhava\AiShoppingAssistant\Model\Provider\ProviderIdentifiers;
 use Magento\Framework\App\Config\ScopeConfigInterface;
 use Magento\Store\Model\ScopeInterface;
 use PHPUnit\Framework\Attributes\CoversClass;
@@ -73,6 +75,7 @@ final class ConfigurationReaderTest extends TestCase
             Path::RETRIEVAL_MERGED_CANDIDATES => '30',
             Path::RETRIEVAL_FINAL_PRODUCTS => '8',
             Path::RETRIEVAL_RERANKER_ENABLED => '0',
+            Path::RETRIEVAL_RATING_SIGNAL_WEIGHT => '0.2',
             Path::GUARDRAILS_MAX_INPUT_CHARACTERS => '1000',
             Path::GUARDRAILS_MAX_TOOL_CALLS => '4',
             Path::GUARDRAILS_CART_MUTATIONS_ENABLED => '0',
@@ -124,6 +127,7 @@ final class ConfigurationReaderTest extends TestCase
         self::assertSame(30, $retrieval->mergedCandidates());
         self::assertSame(8, $retrieval->finalProducts());
         self::assertFalse($retrieval->isRerankerEnabled());
+        self::assertSame(0.2, $retrieval->ratingSignalWeight());
 
         $guardrails = $reader->readGuardrails($storeId);
         self::assertSame(1000, $guardrails->maxInputCharacters());
@@ -218,6 +222,7 @@ final class ConfigurationReaderTest extends TestCase
             Path::CAPABILITIES_PRICE_CHECKING_ENABLED => '0',
             Path::CAPABILITIES_STOCK_CHECKING_ENABLED => '1',
             Path::CAPABILITIES_POLICY_SEARCH_ENABLED => '0',
+            Path::CAPABILITIES_PROMOTION_AWARENESS_ENABLED => '0',
         ]);
 
         $capabilities = $reader->readCapabilities(1);
@@ -227,6 +232,7 @@ final class ConfigurationReaderTest extends TestCase
         self::assertFalse($capabilities->isPriceCheckingEnabled());
         self::assertTrue($capabilities->isStockCheckingEnabled());
         self::assertFalse($capabilities->isPolicySearchEnabled());
+        self::assertFalse($capabilities->isPromotionAwarenessEnabled());
     }
 
     public function testCapabilitiesDefaultToEnabledWhenConfigurationIsUnavailable(): void
@@ -240,6 +246,7 @@ final class ConfigurationReaderTest extends TestCase
         self::assertTrue($capabilities->isPriceCheckingEnabled());
         self::assertTrue($capabilities->isStockCheckingEnabled());
         self::assertTrue($capabilities->isPolicySearchEnabled());
+        self::assertTrue($capabilities->isPromotionAwarenessEnabled());
     }
 
     public function testConvertsBooleanStrings(): void
@@ -423,6 +430,39 @@ final class ConfigurationReaderTest extends TestCase
 
         $retrieval = $reader->readRetrieval(1);
         self::assertFalse($retrieval->isRerankerEnabled());
+        self::assertSame(ConfigurationReader::DEFAULT_RATING_SIGNAL_WEIGHT, $retrieval->ratingSignalWeight());
+    }
+
+    public function testRatingSignalWeightClampsToItsUpperBound(): void
+    {
+        $reader = $this->reader([Path::RETRIEVAL_RATING_SIGNAL_WEIGHT => '5.0']);
+        self::assertSame(
+            ConfigurationReader::MAX_RATING_SIGNAL_WEIGHT,
+            $reader->readRetrieval(1)->ratingSignalWeight()
+        );
+    }
+
+    public function testRatingSignalWeightUsesSafeDefaultOnANegativeValue(): void
+    {
+        // Mirrors readInt()'s own regex-validated-shape precedent (see
+        // testNumbersAtOrBelowLowerBoundAreHandledSafely): a leading "-"
+        // never matches the digits-only shape, so this falls to the safe
+        // default rather than reaching the min-clamp branch at all.
+        $reader = $this->reader([Path::RETRIEVAL_RATING_SIGNAL_WEIGHT => '-1.0']);
+        self::assertSame(
+            ConfigurationReader::DEFAULT_RATING_SIGNAL_WEIGHT,
+            $reader->readRetrieval(1)->ratingSignalWeight()
+        );
+    }
+
+    public function testRatingSignalWeightUsesSafeDefaultOnMalformedValue(): void
+    {
+        $reader = $this->reader([Path::RETRIEVAL_RATING_SIGNAL_WEIGHT => 'not-a-number']);
+
+        self::assertSame(
+            ConfigurationReader::DEFAULT_RATING_SIGNAL_WEIGHT,
+            $reader->readRetrieval(1)->ratingSignalWeight()
+        );
     }
 
     public function testEmptyBaseUrlIsAllowed(): void
@@ -613,5 +653,69 @@ final class ConfigurationReaderTest extends TestCase
         $this->expectExceptionMessage('Configurable variant aggregation is not available');
 
         $reader->readIndexing(1);
+    }
+
+    public function testReadsCostCapConfiguration(): void
+    {
+        $reader = $this->reader([
+            Path::COST_CAP_AMOUNT => '50.5',
+            Path::COST_CAP_PERIOD => CapPeriod::WEEKLY,
+            Path::COST_CAP_WARNING_THRESHOLD_PERCENT => '90',
+            Path::COST_CAP_ALLOW_OVERRIDE => '1',
+            Path::COST_CAP_NOTIFICATION_EMAILS => 'ops@store.test, bad-email, finance@store.test',
+        ]);
+
+        $costCap = $reader->readCostCap(1);
+
+        self::assertSame(50.5, $costCap->capAmount());
+        self::assertSame(CapPeriod::WEEKLY, $costCap->period());
+        self::assertSame(90, $costCap->warningThresholdPercent());
+        self::assertTrue($costCap->allowOverride());
+        self::assertSame(['ops@store.test', 'finance@store.test'], $costCap->notificationEmails());
+    }
+
+    public function testCostCapDefaultsToDisabledDailyNoOverrideWhenConfigurationIsUnavailable(): void
+    {
+        $costCap = $this->reader([])->readCostCap(1);
+
+        self::assertSame(0.0, $costCap->capAmount());
+        self::assertSame(CapPeriod::DAILY, $costCap->period());
+        self::assertSame(80, $costCap->warningThresholdPercent());
+        self::assertFalse($costCap->allowOverride());
+        self::assertSame([], $costCap->notificationEmails());
+    }
+
+    public function testCostCapFailsClosedToDailyOnAnUnrecognizedStoredPeriod(): void
+    {
+        $costCap = $this->reader([Path::COST_CAP_PERIOD => 'fortnightly'])->readCostCap(1);
+
+        self::assertSame(CapPeriod::DAILY, $costCap->period());
+    }
+
+    public function testReadsProviderCostConfiguration(): void
+    {
+        $reader = $this->reader([
+            Path::PROVIDER_COST_OPENAI_PRICE_PER_1K_INPUT_TOKENS => '0.005',
+            Path::PROVIDER_COST_OPENAI_PRICE_PER_1K_OUTPUT_TOKENS => '0.015',
+            Path::PROVIDER_COST_OPENAI_COMPATIBLE_PRICE_PER_1K_INPUT_TOKENS => '0',
+            Path::PROVIDER_COST_OPENAI_COMPATIBLE_PRICE_PER_1K_OUTPUT_TOKENS => '0',
+        ]);
+
+        $providerCost = $reader->readProviderCost(1);
+
+        self::assertSame(0.005, $providerCost->pricePerThousandInputTokens(ProviderIdentifiers::LLM_OPENAI));
+        self::assertSame(0.015, $providerCost->pricePerThousandOutputTokens(ProviderIdentifiers::LLM_OPENAI));
+        self::assertSame(0.0, $providerCost->pricePerThousandInputTokens(ProviderIdentifiers::LLM_OPENAI_COMPATIBLE));
+        self::assertSame(0.0, $providerCost->pricePerThousandOutputTokens(ProviderIdentifiers::LLM_OPENAI_COMPATIBLE));
+    }
+
+    public function testProviderCostDefaultsToZeroForEveryKnownProviderWhenConfigurationIsUnavailable(): void
+    {
+        $providerCost = $this->reader([])->readProviderCost(1);
+
+        self::assertSame(0.0, $providerCost->pricePerThousandInputTokens(ProviderIdentifiers::LLM_OPENAI));
+        self::assertSame(0.0, $providerCost->pricePerThousandOutputTokens(ProviderIdentifiers::LLM_OPENAI));
+        self::assertSame(0.0, $providerCost->pricePerThousandInputTokens(ProviderIdentifiers::LLM_OPENAI_COMPATIBLE));
+        self::assertSame(0.0, $providerCost->pricePerThousandOutputTokens(ProviderIdentifiers::LLM_OPENAI_COMPATIBLE));
     }
 }

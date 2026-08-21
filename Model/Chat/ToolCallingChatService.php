@@ -62,13 +62,15 @@ final class ToolCallingChatService implements ToolCallingChatServiceInterface
         $conversation = $messages;
         $appended = [];
         $verifiedProducts = [];
+        $verifiedProductPromotions = [];
+        $verifiedCartPromotions = [];
 
         for ($round = 0; $round < $maxRounds; $round++) {
             $response = $this->chatGenerationService->chat($storeId, $conversation, $toolDefinitions, $responseSchema);
             $collector?->recordRound($round, $response);
 
             if ($response->toolCalls === []) {
-                return new ToolCallingResult($response, $verifiedProducts, $appended);
+                return new ToolCallingResult($response, $verifiedProducts, $appended, $verifiedProductPromotions, $verifiedCartPromotions);
             }
 
             $assistantMessage = new ChatMessage('assistant', $response->text, null, $response->toolCalls);
@@ -76,7 +78,14 @@ final class ToolCallingChatService implements ToolCallingChatServiceInterface
             $appended[] = $assistantMessage;
 
             foreach ($response->toolCalls as $toolCall) {
-                $toolMessage = $this->executeToolCall($toolCall, $context, $verifiedProducts, $collector);
+                $toolMessage = $this->executeToolCall(
+                    $toolCall,
+                    $context,
+                    $verifiedProducts,
+                    $verifiedProductPromotions,
+                    $verifiedCartPromotions,
+                    $collector
+                );
                 $conversation[] = $toolMessage;
                 $appended[] = $toolMessage;
             }
@@ -88,7 +97,7 @@ final class ToolCallingChatService implements ToolCallingChatServiceInterface
         $finalResponse = $this->chatGenerationService->chat($storeId, $conversation, [], $responseSchema);
         $collector?->recordRound($maxRounds, $finalResponse);
 
-        return new ToolCallingResult($finalResponse, $verifiedProducts, $appended);
+        return new ToolCallingResult($finalResponse, $verifiedProducts, $appended, $verifiedProductPromotions, $verifiedCartPromotions);
     }
 
     /**
@@ -125,17 +134,21 @@ final class ToolCallingChatService implements ToolCallingChatServiceInterface
     }
 
     /**
-     * Appends any RevalidatedProducts the tool call touched onto
-     * $verifiedProducts (by reference — the accumulator spans every round
-     * and every tool call within a round) and returns the `tool` role
-     * ChatMessage to add to the conversation.
+     * Appends any RevalidatedProducts/promotion facts the tool call
+     * touched onto the accumulators (by reference — each spans every
+     * round and every tool call within a round) and returns the `tool`
+     * role ChatMessage to add to the conversation.
      *
      * @param list<RevalidatedProduct> $verifiedProducts
+     * @param list<\Aavirbhava\AiShoppingAssistant\Api\Promotion\ProductPromotionInterface> $verifiedProductPromotions
+     * @param list<\Aavirbhava\AiShoppingAssistant\Api\Promotion\CartPromotionInterface> $verifiedCartPromotions
      */
     private function executeToolCall(
         ToolCall $toolCall,
         ToolContext $context,
         array &$verifiedProducts,
+        array &$verifiedProductPromotions,
+        array &$verifiedCartPromotions,
         ?ToolCallingDebugCollectorInterface $collector = null
     ): ChatMessage {
         if (!$this->toolRegistry->has($toolCall->name)) {
@@ -160,6 +173,14 @@ final class ToolCallingChatService implements ToolCallingChatServiceInterface
 
         foreach ($result->verifiedProducts as $product) {
             $verifiedProducts[] = $product;
+        }
+
+        foreach ($result->verifiedProductPromotions as $promotion) {
+            $verifiedProductPromotions[] = $promotion;
+        }
+
+        foreach ($result->verifiedCartPromotions as $promotion) {
+            $verifiedCartPromotions[] = $promotion;
         }
 
         return $this->toolResultMessage($toolCall, $result->data);

@@ -8,6 +8,8 @@ use Aavirbhava\AiShoppingAssistant\Model\Chat\OutputValidator;
 use Aavirbhava\AiShoppingAssistant\Model\Chat\Response\LlmResponseParser;
 use Aavirbhava\AiShoppingAssistant\Model\Dto\ChatResponse;
 use Aavirbhava\AiShoppingAssistant\Model\Dto\TokenUsage;
+use Aavirbhava\AiShoppingAssistant\Model\Promotion\CartPromotion;
+use Aavirbhava\AiShoppingAssistant\Model\Promotion\ProductPromotion;
 use Aavirbhava\AiShoppingAssistant\Model\Revalidation\RevalidatedProduct;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
@@ -527,5 +529,152 @@ final class OutputValidatorTest extends TestCase
         $result = $this->validator()->validate($response, [$cheap, $pricey1, $pricey2]);
 
         self::assertTrue($result->isValid());
+    }
+
+    public function testGenuinePercentageDiscountMatchingARealProductPromotionIsValid(): void
+    {
+        $response = $this->response([
+            'message' => 'The Blue Shoe is 20% off right now.',
+            'product_skus' => [['sku' => 'SKU-1', 'reason' => 'on sale']],
+            'follow_up_questions' => [],
+            'actions' => [],
+        ]);
+
+        $result = $this->validator()->validate(
+            $response,
+            [$this->verified()],
+            [new ProductPromotion('SKU-1', 50.00, 40.00)]
+        );
+
+        self::assertTrue($result->isValid());
+    }
+
+    public function testFabricatedPercentageDiscountIsInvalid(): void
+    {
+        $response = $this->response([
+            'message' => 'The Blue Shoe is 50% off right now.',
+            'product_skus' => [['sku' => 'SKU-1', 'reason' => 'on sale']],
+            'follow_up_questions' => [],
+            'actions' => [],
+        ]);
+
+        // The only real promotion is 20% off — 50% was never a real fact.
+        $result = $this->validator()->validate(
+            $response,
+            [$this->verified()],
+            [new ProductPromotion('SKU-1', 50.00, 40.00)]
+        );
+
+        self::assertFalse($result->isValid());
+        self::assertSame(OutputValidator::REASON_FABRICATED_DISCOUNT, $result->reasonCode());
+    }
+
+    public function testPercentageDiscountWithNoRealPromotionAtAllIsInvalid(): void
+    {
+        $response = $this->response([
+            'message' => 'The Blue Shoe is 20% off right now.',
+            'product_skus' => [['sku' => 'SKU-1', 'reason' => 'on sale']],
+            'follow_up_questions' => [],
+            'actions' => [],
+        ]);
+
+        $result = $this->validator()->validate($response, [$this->verified()]);
+
+        self::assertFalse($result->isValid());
+        self::assertSame(OutputValidator::REASON_FABRICATED_DISCOUNT, $result->reasonCode());
+    }
+
+    public function testGenuineCartRulePercentageIsValid(): void
+    {
+        $response = $this->response([
+            'message' => 'We currently have a storewide 15% off promotion.',
+            'product_skus' => [],
+            'follow_up_questions' => [],
+            'actions' => [],
+        ]);
+
+        $result = $this->validator()->validate(
+            $response,
+            [],
+            [],
+            [new CartPromotion(1, 'Spring Sale', false, null, '15% off', null)]
+        );
+
+        self::assertTrue($result->isValid());
+    }
+
+    public function testRealCouponCodeMentionedWithCodeIsValid(): void
+    {
+        $response = $this->response([
+            'message' => 'Use code SUMMER10 for 10% off your order.',
+            'product_skus' => [],
+            'follow_up_questions' => [],
+            'actions' => [],
+        ]);
+
+        $result = $this->validator()->validate(
+            $response,
+            [],
+            [],
+            [new CartPromotion(1, 'Summer Sale', true, 'SUMMER10', '10% off', null)]
+        );
+
+        self::assertTrue($result->isValid());
+    }
+
+    public function testFabricatedCouponCodeIsInvalid(): void
+    {
+        $response = $this->response([
+            'message' => 'Use code MADEUP20 for a discount.',
+            'product_skus' => [],
+            'follow_up_questions' => [],
+            'actions' => [],
+        ]);
+
+        // The only real code is SUMMER10 — MADEUP20 was never a real fact.
+        $result = $this->validator()->validate(
+            $response,
+            [],
+            [],
+            [new CartPromotion(1, 'Summer Sale', true, 'SUMMER10', '10% off', null)]
+        );
+
+        self::assertFalse($result->isValid());
+        self::assertSame(OutputValidator::REASON_FABRICATED_DISCOUNT, $result->reasonCode());
+    }
+
+    public function testCouponCodeMentionedWithNoActiveCartRuleAtAllIsInvalid(): void
+    {
+        $response = $this->response([
+            'message' => 'Use code SAVE10 at checkout.',
+            'product_skus' => [],
+            'follow_up_questions' => [],
+            'actions' => [],
+        ]);
+
+        $result = $this->validator()->validate($response, []);
+
+        self::assertFalse($result->isValid());
+        self::assertSame(OutputValidator::REASON_FABRICATED_DISCOUNT, $result->reasonCode());
+    }
+
+    public function testMentioningAPercentageUnrelatedToADiscountContextStillRequiresAMatch(): void
+    {
+        // Documented, accepted limitation (mirrors containsFabricatedPrice's
+        // own regex-only scope): this check has no way to tell "20% off"
+        // apart from an unrelated number that happens to be followed by a
+        // percent sign, so it is checked the same way regardless of
+        // surrounding wording.
+        $response = $this->response([
+            'message' => 'This fabric is 20% cotton.',
+            'product_skus' => [['sku' => 'SKU-1', 'reason' => 'material']],
+            'follow_up_questions' => [],
+            'actions' => [],
+        ]);
+
+        $result = $this->validator()->validate($response, [$this->verified()]);
+
+        self::assertFalse($result->isValid());
+        self::assertSame(OutputValidator::REASON_FABRICATED_DISCOUNT, $result->reasonCode());
     }
 }

@@ -27,4 +27,15 @@ interface CapabilitiesConfigInterface
     public function isStockCheckingEnabled(): bool;
 
     public function isPolicySearchEnabled(): bool;
+
+    /**
+     * Gates promotion awareness end to end (Task 34): both
+     * get_active_promotions (excluded from the offered tool set when
+     * disabled, same as every other capability here) and
+     * ChatEntryPipeline's proactive PromotionContextFormatter message —
+     * a merchant turning this off means no discount fact is surfaced to
+     * the model at all, not merely that the model can no longer ask for
+     * one explicitly.
+     */
+    public function isPromotionAwarenessEnabled(): bool;
 }
