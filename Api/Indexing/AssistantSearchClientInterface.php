@@ -143,6 +143,43 @@ interface AssistantSearchClientInterface
     public function deleteIndex(string $indexName): void;
 
     /**
+     * Physical index names that currently exist and match a wildcard pattern
+     * (e.g. "<prefix>_store_<storeId>_run_*").
+     *
+     * Returns an empty list when nothing matches; that is not a failure.
+     *
+     * @return list<string>
+     *
+     * @throws ProductIndexingException when the listing itself fails
+     */
+    public function listIndices(string $pattern): array;
+
+    /**
+     * Alias names currently pointing at one exact physical index.
+     *
+     * An empty list means the index is not referenced by any alias and is
+     * safe, from an aliasing standpoint, to consider for retention cleanup.
+     * Used to confirm an old physical index is not still referenced by
+     * anything (this store's own alias, a foreign alias, or a leftover
+     * generation) before it is ever deleted.
+     *
+     * @return list<string>
+     *
+     * @throws ProductIndexingException when the lookup itself fails
+     */
+    public function indexAliases(string $indexName): array;
+
+    /**
+     * The physical index's own creation timestamp, in epoch milliseconds.
+     *
+     * Used only to order retention-cleanup candidates from newest to oldest;
+     * never a substitute for the ownership checks in indexMeta().
+     *
+     * @throws ProductIndexingException when the timestamp cannot be read
+     */
+    public function indexCreatedAt(string $indexName): int;
+
+    /**
      * Executes a read-only query against an exact index or alias and returns
      * its raw hits, verified but otherwise untransformed.
      *

@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace Aavirbhava\AiShoppingAssistant\Test\Unit\Block\Frontend;
 
+use Aavirbhava\AiShoppingAssistant\Api\Chat\CircuitBreakerInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\AppearanceConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\ConfigurationReaderInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Config\FallbackConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\GeneralConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\CostCap\CostCapCheckerInterface;
 use Aavirbhava\AiShoppingAssistant\Block\Frontend\ChatWidget;
@@ -126,6 +128,160 @@ final class ChatWidgetTest extends TestCase
         self::assertSame('', $block->toHtml());
     }
 
+    /**
+     * Task 44: the primary circuit alone being open is not enough to hide
+     * the widget — with fallback disabled there is genuinely no working
+     * path left, so the widget correctly hides.
+     */
+    public function testToHtmlIsEmptyWhenPrimaryCircuitIsOpenAndFallbackIsDisabled(): void
+    {
+        $circuitBreaker = $this->createMock(CircuitBreakerInterface::class);
+        $circuitBreaker->method('isOpen')->willReturnMap([
+            [self::STORE_ID, CircuitBreakerInterface::ROLE_PRIMARY, true],
+        ]);
+
+        $block = $this->block(
+            configurationReader: $this->configurationReader(fallbackEnabled: false),
+            circuitBreaker: $circuitBreaker
+        );
+
+        self::assertSame('', $block->toHtml());
+    }
+
+    /**
+     * Primary down AND fallback also confirmed down (its own circuit
+     * open) — genuinely no working path, widget correctly hides.
+     */
+    public function testToHtmlIsEmptyWhenPrimaryAndFallbackCircuitsAreBothOpen(): void
+    {
+        $circuitBreaker = $this->createMock(CircuitBreakerInterface::class);
+        $circuitBreaker->method('isOpen')->willReturnMap([
+            [self::STORE_ID, CircuitBreakerInterface::ROLE_PRIMARY, true],
+            [self::STORE_ID, CircuitBreakerInterface::ROLE_FALLBACK, true],
+        ]);
+
+        $block = $this->block(
+            configurationReader: $this->configurationReader(fallbackEnabled: true),
+            circuitBreaker: $circuitBreaker
+        );
+
+        self::assertSame('', $block->toHtml());
+    }
+
+    /**
+     * The case this task's own Part A fix (not this widget check) is
+     * responsible for: primary down but a real, enabled, healthy
+     * fallback is available. A real chat request in this exact state
+     * still gets a real AI response (via fallback), so the widget must
+     * keep rendering — hiding it here would be wrong, not merely
+     * over-cautious.
+     *
+     * Asserted against the private isAssistantConfirmedDown() check
+     * directly (via reflection) rather than the public toHtml(): a
+     * "does not hide" outcome falls through to Template's own real
+     * fetchView()/template-engine machinery, which — per this file's own
+     * documented convention above — a bare PHPUnit process cannot safely
+     * exercise. This still proves exactly the logic this test is about:
+     * whether the new safeguard itself decides to hide or not.
+     */
+    public function testDoesNotConsiderTheAssistantDownWhenPrimaryCircuitIsOpenButFallbackIsEnabledAndHealthy(): void
+    {
+        $circuitBreaker = $this->createMock(CircuitBreakerInterface::class);
+        $circuitBreaker->method('isOpen')->willReturnMap([
+            [self::STORE_ID, CircuitBreakerInterface::ROLE_PRIMARY, true],
+            [self::STORE_ID, CircuitBreakerInterface::ROLE_FALLBACK, false],
+        ]);
+
+        $block = $this->block(
+            configurationReader: $this->configurationReader(fallbackEnabled: true),
+            circuitBreaker: $circuitBreaker
+        );
+
+        self::assertFalse($this->isAssistantConfirmedDown($block));
+    }
+
+    /**
+     * Primary healthy (circuit closed) — not confirmed down regardless
+     * of fallback state, since there is nothing to be confirmed down
+     * about.
+     */
+    public function testDoesNotConsiderTheAssistantDownWhenPrimaryIsHealthy(): void
+    {
+        $circuitBreaker = $this->createMock(CircuitBreakerInterface::class);
+        $circuitBreaker->method('isOpen')->willReturnMap([
+            [self::STORE_ID, CircuitBreakerInterface::ROLE_PRIMARY, false],
+        ]);
+
+        $block = $this->block(
+            configurationReader: $this->configurationReader(fallbackEnabled: false),
+            circuitBreaker: $circuitBreaker
+        );
+
+        self::assertFalse($this->isAssistantConfirmedDown($block));
+    }
+
+    /**
+     * A single failed request never trips the circuit breaker on its
+     * own — CircuitBreakerInterface's own contract only opens it once
+     * failureThreshold CONSECUTIVE failures accumulate. Reading the
+     * circuit's own state (still closed here, representing "one bad
+     * call happened but the breaker hasn't tripped") rather than any
+     * single request's own outcome is what makes this naturally correct
+     * with no extra logic in this class — this test documents that
+     * guarantee explicitly rather than leaving it implicit.
+     */
+    public function testDoesNotConsiderTheAssistantDownAfterASingleTransientFailureThatHasNotTrippedTheCircuit(): void
+    {
+        $circuitBreaker = $this->createMock(CircuitBreakerInterface::class);
+        $circuitBreaker->method('isOpen')->willReturn(false);
+
+        $block = $this->block(
+            configurationReader: $this->configurationReader(fallbackEnabled: false),
+            circuitBreaker: $circuitBreaker
+        );
+
+        self::assertFalse($this->isAssistantConfirmedDown($block));
+    }
+
+    private function isAssistantConfirmedDown(ChatWidget $block): bool
+    {
+        $method = new \ReflectionMethod(ChatWidget::class, 'isAssistantConfirmedDown');
+        $method->setAccessible(true);
+
+        return $method->invoke($block);
+    }
+
+    /**
+     * Fails CLOSED (hides) on its own internal error — deliberately the
+     * opposite direction from the cost-cap check right next to it in
+     * _toHtml(), matching isAssistantEnabled()'s own fail-closed
+     * precedent in this same class instead.
+     */
+    public function testToHtmlIsEmptyWhenTheHealthCheckItselfThrows(): void
+    {
+        $circuitBreaker = $this->createMock(CircuitBreakerInterface::class);
+        $circuitBreaker->method('isOpen')->willThrowException(new \RuntimeException('cache unavailable'));
+
+        $block = $this->block(
+            configurationReader: $this->configurationReader(fallbackEnabled: false),
+            circuitBreaker: $circuitBreaker
+        );
+
+        self::assertSame('', $block->toHtml());
+    }
+
+    private function configurationReader(bool $fallbackEnabled): ConfigurationReaderInterface
+    {
+        $fallback = $this->createMock(FallbackConfigInterface::class);
+        $fallback->method('isEnabled')->willReturn($fallbackEnabled);
+
+        $configurationReader = $this->createMock(ConfigurationReaderInterface::class);
+        $configurationReader->method('readGeneral')->with(self::STORE_ID)->willReturn($this->enabledGeneral());
+        $configurationReader->method('readFallback')->with(self::STORE_ID)->willReturn($fallback);
+
+        return $configurationReader;
+    }
+
     public function testColorGettersReturnTheConfiguredValues(): void
     {
         $appearance = $this->createMock(AppearanceConfigInterface::class);
@@ -179,7 +335,8 @@ final class ChatWidgetTest extends TestCase
         bool $hyvaPresent = false,
         ?ConfigurationReaderInterface $configurationReader = null,
         ?UrlInterface $urlBuilder = null,
-        ?CostCapCheckerInterface $costCapChecker = null
+        ?CostCapCheckerInterface $costCapChecker = null,
+        ?CircuitBreakerInterface $circuitBreaker = null
     ): ChatWidget {
         $objectManager = new ObjectManager($this);
 
@@ -210,12 +367,18 @@ final class ChatWidgetTest extends TestCase
             $costCapChecker->method('isBlocking')->willReturn(false);
         }
 
+        if ($circuitBreaker === null) {
+            $circuitBreaker = $this->createMock(CircuitBreakerInterface::class);
+            $circuitBreaker->method('isOpen')->willReturn(false);
+        }
+
         return $objectManager->getObject(ChatWidget::class, [
             'context' => $context,
             'configurationReader' => $configurationReader,
             'storeManager' => $storeManager,
             'moduleManager' => $moduleManager,
             'costCapChecker' => $costCapChecker,
+            'circuitBreaker' => $circuitBreaker,
         ]);
     }
 }

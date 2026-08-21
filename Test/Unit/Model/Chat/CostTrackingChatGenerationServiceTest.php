@@ -161,6 +161,7 @@ final class CostTrackingChatGenerationServiceTest extends TestCase
             $this->providerResolver($primaryProvider),
             $secretReader,
             new \Aavirbhava\AiShoppingAssistant\Model\Provider\FallbackEligibilityPolicy(),
+            new \Aavirbhava\AiShoppingAssistant\Model\Provider\HardFailureClassifier(),
             $circuitBreaker,
             $this->createMock(BackoffSleeperInterface::class)
         );

@@ -192,6 +192,114 @@ final class AnthropicProviderTest extends TestCase
         self::assertSame(10, $response->usage->cachedInputTokens);
     }
 
+    /**
+     * A real, documented Anthropic behavior: the model can request
+     * several tools in one turn (e.g. check_price + check_inventory for
+     * the same product) — every tool_use block in the content array
+     * must become its own ToolCall, not just the first one.
+     */
+    public function testMultipleToolUseBlocksInOneResponseAllBecomeSeparateToolCalls(): void
+    {
+        $provider = $this->provider(
+            'HTTP/1.1 200 OK' . "\r\n\r\n" .
+            '{"content":[' .
+            '{"type":"tool_use","id":"toolu_1","name":"check_price","input":{"skus":["SKU-1"]}},' .
+            '{"type":"tool_use","id":"toolu_2","name":"check_inventory","input":{"skus":["SKU-1"]}}' .
+            ']}'
+        );
+
+        $response = $provider->chat($this->request());
+
+        self::assertCount(2, $response->toolCalls);
+        self::assertSame('toolu_1', $response->toolCalls[0]->id);
+        self::assertSame('check_price', $response->toolCalls[0]->name);
+        self::assertSame('toolu_2', $response->toolCalls[1]->id);
+        self::assertSame('check_inventory', $response->toolCalls[1]->name);
+    }
+
+    /**
+     * Multiple text blocks in one response is real, documented Anthropic
+     * behavior (e.g. text interleaved with tool_use blocks) — every text
+     * block must be concatenated, not just the first.
+     */
+    public function testMultipleTextBlocksAreConcatenated(): void
+    {
+        $provider = $this->provider(
+            'HTTP/1.1 200 OK' . "\r\n\r\n" .
+            '{"content":[{"type":"text","text":"Part one. "},{"type":"text","text":"Part two."}]}'
+        );
+
+        $response = $provider->chat($this->request());
+
+        self::assertSame('Part one. Part two.', $response->text);
+    }
+
+    /**
+     * `stop_reason: "max_tokens"` is a normal, real Anthropic outcome
+     * (the response was truncated by the configured max_tokens, not an
+     * error) — whatever text was generated before truncation must still
+     * be returned, not treated as a failure. This class deliberately
+     * doesn't branch on stop_reason at all for success/failure (only
+     * content emptiness matters), so this proves that design choice is
+     * correct for this specific, real, named case.
+     */
+    public function testMaxTokensStopReasonStillReturnsTheTruncatedText(): void
+    {
+        $provider = $this->provider(
+            'HTTP/1.1 200 OK' . "\r\n\r\n" .
+            '{"content":[{"type":"text","text":"This response got cut off becau"}],"stop_reason":"max_tokens"}'
+        );
+
+        $response = $provider->chat($this->request());
+
+        self::assertSame('This response got cut off becau', $response->text);
+    }
+
+    /**
+     * Anthropic's real prompt-caching usage shape can carry BOTH
+     * `cache_creation_input_tokens` (a cache write, this turn) and
+     * `cache_read_input_tokens` (a cache hit) in the same response —
+     * only cache_read maps onto this module's own cachedInputTokens
+     * concept (a genuine discount on this call's real cost); a cache
+     * write is not a discount and must never be double-counted as one.
+     */
+    public function testCacheCreationTokensAreNeverConflatedWithCacheReadTokens(): void
+    {
+        $provider = $this->provider(
+            'HTTP/1.1 200 OK' . "\r\n\r\n" .
+            '{"content":[{"type":"text","text":"ok"}],' .
+            '"usage":{"input_tokens":100,"output_tokens":5,"cache_creation_input_tokens":80,"cache_read_input_tokens":0}}'
+        );
+
+        $response = $provider->chat($this->request());
+
+        self::assertSame(100, $response->usage->inputTokens);
+        self::assertSame(0, $response->usage->cachedInputTokens);
+    }
+
+    public function testNoSystemRoleMessagesMeansTheSystemFieldIsOmittedEntirely(): void
+    {
+        $provider = $this->provider(
+            'HTTP/1.1 200 OK' . "\r\n\r\n" . '{"content":[{"type":"text","text":"ok"}]}'
+        );
+
+        $provider->chat($this->request());
+
+        $body = json_decode($this->client->getRequest()->getContent(), true);
+        self::assertArrayNotHasKey('system', $body);
+    }
+
+    public function testAToolUseBlockMissingAnIdIsRejected(): void
+    {
+        $provider = $this->provider(
+            'HTTP/1.1 200 OK' . "\r\n\r\n" .
+            '{"content":[{"type":"tool_use","name":"search_products","input":{}}]}'
+        );
+
+        $this->expectException(ProviderInvalidResponseException::class);
+        $provider->chat($this->request());
+    }
+
     public function testMissingApiKeyFailsClosedBeforeRequest(): void
     {
         $provider = $this->provider('HTTP/1.1 200 OK' . "\r\n\r\n" . '{}');

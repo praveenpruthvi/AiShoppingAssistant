@@ -16,7 +16,9 @@ final readonly class GuardrailConfig implements GuardrailConfigInterface
         private bool $requireCartConfirmation,
         private bool $blockExternalUrls,
         private bool $blockCodeGeneration,
-        private string $outOfScopeMessage
+        private string $outOfScopeMessage,
+        private string $assistantUnavailableMessage,
+        private string $assistantDownMessage
     ) {
         if ($maxInputCharacters < 1) {
             throw new InvalidArgumentException('Maximum input characters must be greater than zero.');
@@ -60,5 +62,15 @@ final readonly class GuardrailConfig implements GuardrailConfigInterface
     public function outOfScopeMessage(): string
     {
         return $this->outOfScopeMessage;
+    }
+
+    public function assistantUnavailableMessage(): string
+    {
+        return $this->assistantUnavailableMessage;
+    }
+
+    public function assistantDownMessage(): string
+    {
+        return $this->assistantDownMessage;
     }
 }

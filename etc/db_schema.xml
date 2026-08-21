@@ -168,4 +168,30 @@
             <column name="period_key"/>
         </constraint>
     </table>
+    <table name="aavirbhava_ai_attribute_indexing_selection" resource="default" engine="innodb"
+           comment="AI Shopping Assistant Attribute Indexing Selection">
+        <column xsi:type="varchar" name="attribute_code" nullable="false" length="64"
+                comment="Product EAV Attribute Code"/>
+        <column xsi:type="smallint" name="is_indexed" unsigned="true" nullable="false" identity="false"
+                default="0" comment="Selected For AI Assistant Indexing"/>
+        <column xsi:type="timestamp" name="updated_at" on_update="true" nullable="false"
+                default="CURRENT_TIMESTAMP" comment="Updated At"/>
+        <constraint xsi:type="primary" referenceId="PRIMARY">
+            <column name="attribute_code"/>
+        </constraint>
+    </table>
+    <table name="aavirbhava_ai_provider_cost" resource="default" engine="innodb"
+           comment="AI Shopping Assistant LLM Provider Cost Pricing">
+        <column xsi:type="varchar" name="provider_identifier" nullable="false" length="64"
+                comment="LLM Provider Identifier"/>
+        <column xsi:type="decimal" name="price_per_1k_input_tokens" scale="6" precision="18" unsigned="true"
+                nullable="false" default="0" comment="Price Per 1,000 Input Tokens"/>
+        <column xsi:type="decimal" name="price_per_1k_output_tokens" scale="6" precision="18" unsigned="true"
+                nullable="false" default="0" comment="Price Per 1,000 Output Tokens"/>
+        <column xsi:type="timestamp" name="updated_at" on_update="true" nullable="false"
+                default="CURRENT_TIMESTAMP" comment="Updated At"/>
+        <constraint xsi:type="primary" referenceId="PRIMARY">
+            <column name="provider_identifier"/>
+        </constraint>
+    </table>
 </schema>

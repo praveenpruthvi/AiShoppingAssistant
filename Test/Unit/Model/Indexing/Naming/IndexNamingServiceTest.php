@@ -58,6 +58,29 @@ final class IndexNamingServiceTest extends TestCase
         self::assertSame($token, strtolower($token));
     }
 
+    public function testRunIndexPatternMatchesEveryRunOwnedByTheStoreNeverTheAlias(): void
+    {
+        $scope = new StoreScope(2, 1, 'default');
+
+        self::assertSame(
+            'aavirbhava_ai_product_rag_store_2_run_*',
+            $this->service->runIndexPattern('aavirbhava_ai_product_rag', $scope)
+        );
+
+        $pattern = $this->service->runIndexPattern('aavirbhava_ai_product_rag', $scope);
+        self::assertTrue(fnmatch($pattern, 'aavirbhava_ai_product_rag_store_2_run_abc123'));
+        self::assertFalse(fnmatch($pattern, 'aavirbhava_ai_product_rag_store_2_current'));
+        self::assertFalse(fnmatch($pattern, 'aavirbhava_ai_product_rag_store_3_run_abc123'));
+    }
+
+    public function testRunIndexPatternRejectsInvalidPrefix(): void
+    {
+        $scope = new StoreScope(2, 1, 'default');
+
+        $this->expectException(ProductIndexNameInvalidException::class);
+        $this->service->runIndexPattern('Invalid-Prefix!', $scope);
+    }
+
     public function testRejectsInvalidPrefix(): void
     {
         $scope = new StoreScope(2, 1, 'default');

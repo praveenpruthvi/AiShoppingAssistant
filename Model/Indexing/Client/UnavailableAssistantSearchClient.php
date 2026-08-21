@@ -98,4 +98,19 @@ final class UnavailableAssistantSearchClient implements AssistantSearchClientInt
     {
         throw new OpenSearchBackendUnavailableException();
     }
+
+    public function listIndices(string $pattern): array
+    {
+        throw new OpenSearchBackendUnavailableException();
+    }
+
+    public function indexAliases(string $indexName): array
+    {
+        throw new OpenSearchBackendUnavailableException();
+    }
+
+    public function indexCreatedAt(string $indexName): int
+    {
+        throw new OpenSearchBackendUnavailableException();
+    }
 }

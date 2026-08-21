@@ -21,9 +21,25 @@
              title="Merchandising Boosts"
              translate="title"
              module="Aavirbhava_AiShoppingAssistant"
-             sortOrder="920"
-             parent="Magento_Backend::marketing"
+             sortOrder="20"
+             parent="Aavirbhava_AiShoppingAssistant::playground"
              action="aavirbhava_aishoppingassistant/boost/index"
              resource="Aavirbhava_AiShoppingAssistant::boost"/>
+        <add id="Aavirbhava_AiShoppingAssistant::attributeselection_index"
+             title="Attribute Indexing Selection"
+             translate="title"
+             module="Aavirbhava_AiShoppingAssistant"
+             sortOrder="30"
+             parent="Aavirbhava_AiShoppingAssistant::playground"
+             action="aavirbhava_aishoppingassistant/attributeselection/index"
+             resource="Aavirbhava_AiShoppingAssistant::attribute_selection"/>
+        <add id="Aavirbhava_AiShoppingAssistant::providercost_index"
+             title="Provider Cost Pricing"
+             translate="title"
+             module="Aavirbhava_AiShoppingAssistant"
+             sortOrder="40"
+             parent="Aavirbhava_AiShoppingAssistant::playground"
+             action="aavirbhava_aishoppingassistant/providercost/index"
+             resource="Aavirbhava_AiShoppingAssistant::provider_cost"/>
     </menu>
 </config>

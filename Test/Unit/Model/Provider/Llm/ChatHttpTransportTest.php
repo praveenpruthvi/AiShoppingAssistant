@@ -73,6 +73,28 @@ final class ChatHttpTransportTest extends TestCase
         self::assertSame(2, $transportOptions['verifyhost']);
     }
 
+    /**
+     * Regression guard for a real, live-confirmed bug: LaminasClient's own
+     * default adapter (Magento\Framework\HTTP\Adapter\Curl) passes headers
+     * to CURLOPT_HTTPHEADER as a raw associative array instead of
+     * "Key: Value" strings, so headers (including Content-Type and any
+     * provider auth header) silently fail to reach the server — confirmed
+     * against a real Google Gemini API call, which returned "Cannot bind
+     * query parameter" because it received the JSON body with no
+     * Content-Type at all. Laminas's own Curl adapter formats headers
+     * correctly and must be explicitly configured here.
+     */
+    public function testForcesLaminasOwnCurlAdapterSinceMagentosDefaultOneMishandlesHeaders(): void
+    {
+        $this->transport('HTTP/1.1 200 OK' . "\r\nContent-Type: application/json\r\n\r\n" . '{}')
+            ->post('https://api.openai.com/v1/chat/completions', [], '{}', 20.0);
+
+        self::assertSame(
+            \Laminas\Http\Client\Adapter\Curl::class,
+            $this->lastSetOptions()['adapter']
+        );
+    }
+
     public function testTimeoutIsRoundedUpToAtLeastOneSecond(): void
     {
         $this->transport('HTTP/1.1 200 OK' . "\r\n\r\n" . '{}')

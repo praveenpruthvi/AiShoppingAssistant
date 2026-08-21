@@ -12,6 +12,7 @@ use Aavirbhava\AiShoppingAssistant\Model\Dto\ChatResponse;
 use Aavirbhava\AiShoppingAssistant\Model\Dto\ConnectionResult;
 use Aavirbhava\AiShoppingAssistant\Model\Dto\TokenUsage;
 use Aavirbhava\AiShoppingAssistant\Model\Dto\ToolCall;
+use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderAuthenticationException;
 use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderConfigurationException;
 use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderException;
 use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderInvalidResponseException;
@@ -47,11 +48,18 @@ use Magento\Framework\Phrase;
  *   by ToolCall::id) rather than attempting to parse it back out of
  *   anything — the id/name pairing already exists in the conversation
  *   this module built; nothing needs to be invented or guessed.
- * - Gemini's own response never gives a tool call an id at all, so this
- *   adapter synthesizes one purely for this module's own internal
- *   ToolCall/tool_call_id round-tripping (never sent back to Gemini,
- *   never parsed back out of anything — see the request-side note above
- *   for why the round trip still works correctly).
+ * - Gemini's `functionCall` DOES include a real `id` for the "thinking"
+ *   model family (live-confirmed against gemini-3.6-flash, correcting
+ *   this class's own original built-to-spec assumption) — used when
+ *   present; a synthesized id (`gemini-call-<index>`) is only a fallback
+ *   for a response shape that ever genuinely omits it.
+ * - Gemini's "thinking" models require a `thoughtSignature` (a sibling
+ *   key of `functionCall` in the same response part) to be echoed back
+ *   verbatim, as a sibling key in the same request part, on any later
+ *   turn that replays that same function call — live-confirmed: omitting
+ *   it fails a multi-round tool call with a real 400 "missing
+ *   thought_signature" error. Carried on `ToolCall::$providerMetadata`,
+ *   a generic, provider-opaque field every other provider ignores.
  * - `max_tokens` lives inside a nested `generationConfig.maxOutputTokens`
  *   field, not a top-level field.
  * - Real, documented structured-output support exists
@@ -61,6 +69,13 @@ use Magento\Framework\Phrase;
  * - Usage field names differ again (`promptTokenCount`/
  *   `candidatesTokenCount`, plus a real `cachedContentTokenCount` mapped
  *   onto this module's own `cachedInputTokens` concept).
+ * - An invalid or revoked API key gets a genuine HTTP 400
+ *   ("INVALID_ARGUMENT"), not 401/403 — live-confirmed (Task 45) via a
+ *   direct `curl` against the real API. assertNotApiKeyFailure()
+ *   reclassifies specifically this case (body contains the documented
+ *   `API_KEY_INVALID` reason) to ProviderAuthenticationException before
+ *   HttpStatusMapper's generic, status-code-only mapping would otherwise
+ *   treat it as an ordinary malformed-request 400.
  */
 final class GeminiProvider implements LlmProviderInterface
 {
@@ -107,6 +122,7 @@ final class GeminiProvider implements LlmProviderInterface
 
         $latencyMilliseconds = (int) round((microtime(true) - $startedAt) * 1000);
 
+        $this->assertNotApiKeyFailure($response->statusCode(), $response->body());
         $this->statusMapper->assertSuccess($response->statusCode());
 
         return $this->parseResponse($response->body(), $request->model, $latencyMilliseconds);
@@ -149,6 +165,35 @@ final class GeminiProvider implements LlmProviderInterface
                 new Phrase('The chat model is not configured.')
             );
         }
+    }
+
+    /**
+     * Gemini's Generative Language API returns a genuine HTTP 400
+     * ("INVALID_ARGUMENT") for an invalid or revoked API key — live-
+     * confirmed against the real API (Task 45: `curl` directly against
+     * generateContent with a bad key returns
+     * `{"error":{"code":400,"status":"INVALID_ARGUMENT",
+     * "details":[{"reason":"API_KEY_INVALID", ...}]}}`) — rather than the
+     * 401/403 HttpStatusMapper otherwise expects for an authentication
+     * failure. Left unhandled, this was silently misclassified as
+     * ProviderInvalidResponseException (a retryable compliance problem)
+     * instead of ProviderAuthenticationException (a hard,
+     * non-retryable failure) — defeating HardFailureClassifier's
+     * "an invalid key stops the chat" safeguard entirely for this
+     * provider, since it never even saw the real cause. Only a 400 whose
+     * body carries this specific, documented Gemini error reason is
+     * reclassified; every other 400 (a genuine malformed request/schema
+     * issue) is left for HttpStatusMapper's normal handling.
+     */
+    private function assertNotApiKeyFailure(int $statusCode, string $body): void
+    {
+        if ($statusCode !== 400 || !str_contains($body, 'API_KEY_INVALID')) {
+            return;
+        }
+
+        throw new ProviderAuthenticationException(
+            new Phrase('The chat provider rejected the request.')
+        );
     }
 
     private function resolveEndpoint(string $configuredBaseUrl, string $model): string
@@ -210,7 +255,9 @@ final class GeminiProvider implements LlmProviderInterface
 
         if ($request->responseSchema !== null) {
             $body['generationConfig']['responseMimeType'] = 'application/json';
-            $body['generationConfig']['responseSchema'] = $request->responseSchema;
+            $body['generationConfig']['responseSchema'] = $this->stripUnsupportedSchemaKeywords(
+                $request->responseSchema
+            );
         }
 
         return $body;
@@ -288,7 +335,13 @@ final class GeminiProvider implements LlmProviderInterface
         }
 
         foreach ($message->toolCalls as $toolCall) {
-            $parts[] = ['functionCall' => ['name' => $toolCall->name, 'args' => $toolCall->arguments]];
+            $part = ['functionCall' => ['name' => $toolCall->name, 'args' => $toolCall->arguments]];
+
+            if ($toolCall->providerMetadata !== null) {
+                $part['thoughtSignature'] = $toolCall->providerMetadata;
+            }
+
+            $parts[] = $part;
         }
 
         return ['role' => $role, 'parts' => $parts];
@@ -335,9 +388,39 @@ final class GeminiProvider implements LlmProviderInterface
             'name' => $name,
             'description' => is_string($tool['description'] ?? null) ? $tool['description'] : '',
             'parameters' => is_array($tool['parameters'] ?? null)
-                ? $tool['parameters']
+                ? $this->stripUnsupportedSchemaKeywords($tool['parameters'])
                 : ['type' => 'object', 'properties' => new \stdClass()],
         ];
+    }
+
+    /**
+     * Gemini's schema dialect is a restricted subset of OpenAPI 3.0/JSON
+     * Schema — confirmed live against a real 400 response ("Unknown name
+     * additionalProperties ... Cannot find field") for both tool parameter
+     * schemas and the structured-output response schema. Every tool in
+     * this module (and the shared LlmResponseSchema) sets
+     * `additionalProperties: false` at every object level as a genuine,
+     * deliberate strict-mode convention other providers (OpenAI, in
+     * particular) rely on — that convention is correct and must not
+     * change; this only strips the one keyword Gemini's own API rejects
+     * from the COPY sent to Gemini, recursively, since it can appear at
+     * any nesting depth this module's schemas use.
+     *
+     * @param array<string, mixed> $schema
+     *
+     * @return array<string, mixed>
+     */
+    private function stripUnsupportedSchemaKeywords(array $schema): array
+    {
+        unset($schema['additionalProperties']);
+
+        foreach ($schema as $key => $value) {
+            if (is_array($value)) {
+                $schema[$key] = $this->stripUnsupportedSchemaKeywords($value);
+            }
+        }
+
+        return $schema;
     }
 
     /**
@@ -445,7 +528,12 @@ final class GeminiProvider implements LlmProviderInterface
             }
 
             if (isset($part['functionCall'])) {
-                $toolCalls[] = $this->parseFunctionCall($part['functionCall'], $callIndex);
+                $thoughtSignature = $part['thoughtSignature'] ?? null;
+                $toolCalls[] = $this->parseFunctionCall(
+                    $part['functionCall'],
+                    $callIndex,
+                    is_string($thoughtSignature) ? $thoughtSignature : null
+                );
                 $callIndex++;
             }
         }
@@ -456,7 +544,7 @@ final class GeminiProvider implements LlmProviderInterface
     /**
      * @param mixed $functionCall
      */
-    private function parseFunctionCall(mixed $functionCall, int $callIndex): ToolCall
+    private function parseFunctionCall(mixed $functionCall, int $callIndex, ?string $thoughtSignature): ToolCall
     {
         if (!is_array($functionCall)) {
             throw new ProviderInvalidResponseException(
@@ -473,11 +561,18 @@ final class GeminiProvider implements LlmProviderInterface
             );
         }
 
+        // Live-confirmed against a real response: Gemini's "thinking" model
+        // family (gemini-3.6-flash) DOES include a real `id` on
+        // `functionCall` — this module's earlier build-to-spec assumption
+        // that Gemini never provides one was wrong (no live key existed to
+        // check at the time). Prefer the real id when present; fall back to
+        // a synthesized one only if it's ever genuinely absent, rather than
+        // assuming every Gemini model/response shape always includes it.
+        $rawId = $functionCall['id'] ?? null;
+        $id = is_string($rawId) && $rawId !== '' ? $rawId : 'gemini-call-' . $callIndex;
+
         try {
-            // Gemini gives function calls no id at all — synthesized
-            // purely for this module's own internal round-tripping, never
-            // sent back to Gemini (see this class's own docblock).
-            return new ToolCall('gemini-call-' . $callIndex, $name, $args);
+            return new ToolCall($id, $name, $args, $thoughtSignature);
         } catch (InvalidArgumentException $cause) {
             throw new ProviderInvalidResponseException(
                 new Phrase('The chat provider response contains an invalid tool call.'),

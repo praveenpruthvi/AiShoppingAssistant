@@ -56,6 +56,18 @@ final class ProviderHttpTransport
             'timeout' => $timeout,
             'verifypeer' => true,
             'verifyhost' => 2,
+            // Magento\Framework\HTTP\Adapter\Curl (LaminasClient's own
+            // default) passes headers to CURLOPT_HTTPHEADER as a raw
+            // associative array instead of "Key: Value" strings, so every
+            // header (including Content-Type and any provider auth header)
+            // silently fails to reach the server — see ChatHttpTransport's
+            // own copy of this comment for the real, live-confirmed failure
+            // this caused against Google's Gemini API. The same shared
+            // client/adapter is used here for embedding providers, so the
+            // same risk applies the first time a real (not local) embedding
+            // provider is used. Laminas's own Curl adapter formats headers
+            // correctly and is a safe drop-in replacement.
+            'adapter' => \Laminas\Http\Client\Adapter\Curl::class,
         ]);
 
         $this->client->setMethod('POST');

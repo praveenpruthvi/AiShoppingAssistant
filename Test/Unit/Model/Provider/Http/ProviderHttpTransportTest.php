@@ -78,6 +78,26 @@ final class ProviderHttpTransportTest extends TestCase
         self::assertSame(2, $transportOptions['verifyhost']);
     }
 
+    /**
+     * Regression guard for a real, live-confirmed bug (see
+     * ChatHttpTransportTest's own copy of this test for the full
+     * explanation): LaminasClient's own default adapter mishandles
+     * CURLOPT_HTTPHEADER, silently dropping every header. This shared
+     * client/adapter is used here for embedding providers too, so the
+     * same risk applies the first time a real (not local) embedding
+     * provider is used.
+     */
+    public function testForcesLaminasOwnCurlAdapterSinceMagentosDefaultOneMishandlesHeaders(): void
+    {
+        $this->transport('HTTP/1.1 200 OK' . "\r\nContent-Type: application/json\r\n\r\n" . '{}')
+            ->post('https://api.openai.com/v1/embeddings', [], '{}', 20.0);
+
+        self::assertSame(
+            \Laminas\Http\Client\Adapter\Curl::class,
+            $this->lastSetOptions()['adapter']
+        );
+    }
+
     public function testTimeoutIsRoundedUpToAtLeastOneSecond(): void
     {
         $this->transport('HTTP/1.1 200 OK' . "\r\n\r\n" . '{}')

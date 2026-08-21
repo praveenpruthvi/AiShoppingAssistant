@@ -20,6 +20,12 @@
                     <resource id="Aavirbhava_AiShoppingAssistant::boost"
                               title="AI Shopping Assistant Merchandising Boosts"
                               sortOrder="920"/>
+                    <resource id="Aavirbhava_AiShoppingAssistant::attribute_selection"
+                              title="AI Shopping Assistant Attribute Indexing Selection"
+                              sortOrder="930"/>
+                    <resource id="Aavirbhava_AiShoppingAssistant::provider_cost"
+                              title="AI Shopping Assistant Provider Cost Pricing"
+                              sortOrder="940"/>
                 </resource>
             </resource>
         </resources>

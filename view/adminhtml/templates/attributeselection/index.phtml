@@ -1,0 +1,75 @@
+<?php
+/**
+ * @var \Aavirbhava\AiShoppingAssistant\Block\Adminhtml\AttributeSelection\Index $block
+ */
+$attributes = $block->getEligibleAttributes();
+?>
+<div class="admin__fieldset-wrapper aavirbhava-attribute-selection">
+    <div class="admin__fieldset-wrapper-title">
+        <strong><?= $block->escapeHtml(__('Attribute Indexing Selection')) ?></strong>
+    </div>
+    <div class="admin__field-note" style="padding: 0 2.4rem 1.6rem;">
+        <span><?= $block->escapeHtml(__(
+            'Select which product attributes feed the AI Shopping Assistant\'s search index and the '
+            . 'facts it can state about a product. Only real, merchant-defined attributes are listed '
+            . '(system/internal attributes are never shown here). Saving here or via the "Indexed for '
+            . 'AI Assistant" column on Stores > Attributes > Product updates the same selection — either '
+            . 'always reflects the other immediately. A full reindex is required for a changed selection '
+            . 'to take effect in search results.'
+        )) ?></span>
+    </div>
+
+    <?php if ($attributes === []): ?>
+        <div class="message message-notice notice" style="margin: 0 2.4rem 1.6rem;">
+            <?= $block->escapeHtml(__('No eligible product attributes were found.')) ?>
+        </div>
+    <?php else: ?>
+        <form method="post" action="<?= $block->escapeUrl($block->getSaveUrl()) ?>">
+            <input name="form_key" type="hidden" value="<?= $block->escapeHtmlAttr($block->getFormKey()) ?>"/>
+            <input type="hidden" name="all_codes" value="<?= $block->escapeHtmlAttr($block->getAllEligibleCodesCsv()) ?>"/>
+
+            <fieldset class="admin__fieldset">
+                <div class="admin__field aavirbhava-attribute-selection-grid" style="padding:0 2.4rem;">
+                    <?php foreach ($attributes as $attribute): ?>
+                        <?php $inputId = 'aavirbhava-attr-' . $block->escapeHtmlAttr($attribute['code']); ?>
+                        <div class="admin__field-option">
+                            <input type="checkbox" id="<?= $inputId ?>" name="selected_codes[]"
+                                   value="<?= $block->escapeHtmlAttr($attribute['code']) ?>"
+                                   class="admin__control-checkbox"
+                                <?= $attribute['isIndexed'] ? 'checked="checked"' : '' ?>/>
+                            <label class="admin__field-label" for="<?= $inputId ?>">
+                                <?= $block->escapeHtml($attribute['label']) ?>
+                                <span class="aavirbhava-attribute-code"> (<?= $block->escapeHtml($attribute['code']) ?>)</span>
+                            </label>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
+                <div class="admin__field" style="padding:1.6rem 2.4rem 0;">
+                    <button type="submit" class="action-primary">
+                        <span><?= $block->escapeHtml(__('Save Selection')) ?></span>
+                    </button>
+                </div>
+            </fieldset>
+        </form>
+    <?php endif; ?>
+</div>
+
+<style>
+/*
+ * The checkbox grid below relies on Magento's own native
+ * .admin__field-option + .admin__field-label pairing (the same classes
+ * core admin forms use for a checkbox-with-text row) so the checkbox
+ * renders and aligns correctly, including a label that wraps onto a
+ * second line staying indented under the first rather than dropping
+ * back to the grid cell's left edge.
+ */
+.aavirbhava-attribute-selection-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 1.2rem 2.4rem;
+}
+
+.aavirbhava-attribute-code {
+    color: #767676;
+}
+</style>

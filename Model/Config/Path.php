@@ -52,6 +52,8 @@ final class Path
     public const GUARDRAILS_BLOCK_EXTERNAL_URLS = self::PREFIX . 'guardrails/block_external_urls';
     public const GUARDRAILS_BLOCK_CODE_GENERATION = self::PREFIX . 'guardrails/block_code_generation';
     public const GUARDRAILS_OUT_OF_SCOPE_MESSAGE = self::PREFIX . 'guardrails/out_of_scope_message';
+    public const GUARDRAILS_ASSISTANT_UNAVAILABLE_MESSAGE = self::PREFIX . 'guardrails/assistant_unavailable_message';
+    public const GUARDRAILS_ASSISTANT_DOWN_MESSAGE = self::PREFIX . 'guardrails/assistant_down_message';
 
     public const CAPABILITIES_PRODUCT_DISCOVERY_ENABLED = self::PREFIX . 'capabilities/product_discovery_enabled';
     public const CAPABILITIES_PRODUCT_DETAILS_ENABLED = self::PREFIX . 'capabilities/product_details_enabled';
@@ -67,13 +69,7 @@ final class Path
     public const COST_CAP_ALLOW_OVERRIDE = self::PREFIX . 'cost_cap/allow_override';
     public const COST_CAP_NOTIFICATION_EMAILS = self::PREFIX . 'cost_cap/notification_emails';
 
-    public const PROVIDER_COST_OPENAI_PRICE_PER_1K_INPUT_TOKENS = self::PREFIX . 'provider_cost/openai_price_per_1k_input_tokens';
-    public const PROVIDER_COST_OPENAI_PRICE_PER_1K_OUTPUT_TOKENS = self::PREFIX . 'provider_cost/openai_price_per_1k_output_tokens';
-    public const PROVIDER_COST_OPENAI_COMPATIBLE_PRICE_PER_1K_INPUT_TOKENS = self::PREFIX . 'provider_cost/openai_compatible_price_per_1k_input_tokens';
-    public const PROVIDER_COST_OPENAI_COMPATIBLE_PRICE_PER_1K_OUTPUT_TOKENS = self::PREFIX . 'provider_cost/openai_compatible_price_per_1k_output_tokens';
-
     public const INDEXING_BATCH_SIZE = self::PREFIX . 'indexing/batch_size';
-    public const INDEXING_SEARCHABLE_ATTRIBUTE_CODES = self::PREFIX . 'indexing/searchable_attribute_codes';
     public const INDEXING_INCLUDE_SHORT_DESCRIPTION = self::PREFIX . 'indexing/include_short_description';
     public const INDEXING_INCLUDE_LONG_DESCRIPTION = self::PREFIX . 'indexing/include_long_description';
     public const INDEXING_AGGREGATE_CONFIGURABLE_VARIANTS = self::PREFIX . 'indexing/aggregate_configurable_variants';

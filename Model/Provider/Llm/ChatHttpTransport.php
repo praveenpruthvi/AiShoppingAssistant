@@ -59,6 +59,18 @@ final class ChatHttpTransport
             'timeout' => $timeout,
             'verifypeer' => true,
             'verifyhost' => 2,
+            // Magento\Framework\HTTP\Adapter\Curl (LaminasClient's own
+            // default) passes headers to CURLOPT_HTTPHEADER as a raw
+            // associative array instead of "Key: Value" strings, so every
+            // header (including Content-Type and any provider auth header)
+            // silently fails to reach the server. Confirmed live against
+            // Google's real Gemini API: with the default adapter, the JSON
+            // body arrives with no Content-Type at all and Google's gateway
+            // tries to parse it as a query string ("Cannot bind query
+            // parameter"). Ollama/local providers tolerate a missing
+            // Content-Type; Google's does not. Laminas's own Curl adapter
+            // formats headers correctly and is a safe drop-in replacement.
+            'adapter' => \Laminas\Http\Client\Adapter\Curl::class,
         ]);
 
         $this->client->setMethod('POST');

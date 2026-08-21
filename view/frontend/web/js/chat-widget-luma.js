@@ -64,6 +64,7 @@
         var loading = false;
         var isOpen = false;
         var isMinimized = false;
+        var stopped = false;
 
         function persistState() {
             writePersistedState({open: isOpen, minimized: isMinimized});
@@ -89,8 +90,25 @@
 
         function setLoading(isLoading) {
             loading = isLoading;
-            input.disabled = isLoading;
-            sendButton.disabled = isLoading;
+            input.disabled = isLoading || stopped;
+            sendButton.disabled = isLoading || stopped;
+        }
+
+        /**
+         * A confirmed-down (reason_code assistant_down, Task 45) response
+         * ends the conversation for the rest of this visit: retrying
+         * cannot help, since the underlying failure is confirmed to recur
+         * identically, so input/send are permanently disabled rather than
+         * inviting the customer to keep typing. The widget itself stays
+         * open/closeable — only the ability to send another message is
+         * removed. A page reload re-evaluates ChatWidget's own server-side
+         * render gate (Task 44), which hides the widget entirely once the
+         * same confirmed-down circuit-breaker state is visible there too.
+         */
+        function stopChat() {
+            stopped = true;
+            input.placeholder = 'This conversation has ended.';
+            setLoading(false);
         }
 
         function appendBubble(role, html) {
@@ -198,7 +216,7 @@
 
         function submitMessage(text) {
             var message = (text || '').trim();
-            if (message === '' || loading) {
+            if (message === '' || loading || stopped) {
                 return;
             }
 
@@ -209,8 +227,13 @@
 
             core.sendMessage(sendUrl, message).then(function (result) {
                 thinkingBubble.remove();
-                setLoading(false);
                 var normalized = core.normalizeResponse(result.data);
+
+                if (normalized.reasonCode === core.REASON_ASSISTANT_DOWN) {
+                    stopChat();
+                } else {
+                    setLoading(false);
+                }
 
                 if (!result.ok && normalized.message === '') {
                     appendBubble('assistant', '<p>Sorry, something went wrong. Please try again.</p>');

@@ -60,9 +60,10 @@
             <group id="llm" translate="label" type="text" sortOrder="20"
                    showInDefault="1" showInWebsite="1" showInStore="1">
                 <label>Primary LLM</label>
-                <field id="provider" translate="label" type="select" sortOrder="10"
+                <field id="provider" translate="label comment" type="select" sortOrder="10"
                        showInDefault="1" showInWebsite="1" showInStore="1">
                     <label>Provider</label>
+                    <comment>Per-provider pricing for the cost cap is managed on Marketing > AI Shopping Assistant > Provider Cost Pricing, not here.</comment>
                     <source_model>Aavirbhava\AiShoppingAssistant\Model\Config\Source\Provider</source_model>
                 </field>
                 <field id="api_key" translate="label comment" type="obscure" sortOrder="20"
@@ -102,9 +103,10 @@
                     <label>Enable Fallback</label>
                     <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
                 </field>
-                <field id="provider" translate="label" type="select" sortOrder="20"
+                <field id="provider" translate="label comment" type="select" sortOrder="20"
                        showInDefault="1" showInWebsite="1" showInStore="1">
                     <label>Provider</label>
+                    <comment>Per-provider pricing for the cost cap is managed on Marketing > AI Shopping Assistant > Provider Cost Pricing, not here.</comment>
                     <source_model>Aavirbhava\AiShoppingAssistant\Model\Config\Source\Provider</source_model>
                 </field>
                 <field id="api_key" translate="label" type="obscure" sortOrder="30"
@@ -245,6 +247,16 @@
                        showInDefault="1" showInWebsite="1" showInStore="1">
                     <label>Out-of-Scope Response</label>
                 </field>
+                <field id="assistant_unavailable_message" translate="label comment" type="textarea" sortOrder="70"
+                       showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Assistant Temporarily Unavailable Response</label>
+                    <comment>Shown instead of the Out-of-Scope Response when a chat provider call fails for a reason expected to be momentary (a slow response, a dropped connection, one malformed reply) — the customer can reasonably try again right away.</comment>
+                </field>
+                <field id="assistant_down_message" translate="label comment" type="textarea" sortOrder="80"
+                       showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Assistant Down Response</label>
+                    <comment>Shown, and the storefront chat is then stopped for the rest of that visit, when a chat provider call fails for a reason that will keep failing identically (an exhausted quota, an invalid or revoked API key) — retrying immediately cannot help, so the customer is told plainly rather than invited to keep typing.</comment>
+                </field>
             </group>
 
             <group id="capabilities" translate="label" type="text" sortOrder="65"
@@ -327,33 +339,6 @@
                 </field>
             </group>
 
-            <group id="provider_cost" translate="label" type="text" sortOrder="69"
-                   showInDefault="1" showInWebsite="1" showInStore="1">
-                <label>Provider Pricing (Cost Cap)</label>
-                <field id="openai_price_per_1k_input_tokens" translate="label comment" type="text" sortOrder="10"
-                       showInDefault="1" showInWebsite="1" showInStore="1">
-                    <label>OpenAI: Price per 1K Input Tokens</label>
-                    <comment>Used only to compute spend against the cost cap above. Leave at 0 if this provider isn't in use.</comment>
-                    <validate>validate-number</validate>
-                </field>
-                <field id="openai_price_per_1k_output_tokens" translate="label" type="text" sortOrder="20"
-                       showInDefault="1" showInWebsite="1" showInStore="1">
-                    <label>OpenAI: Price per 1K Output Tokens</label>
-                    <validate>validate-number</validate>
-                </field>
-                <field id="openai_compatible_price_per_1k_input_tokens" translate="label comment" type="text" sortOrder="30"
-                       showInDefault="1" showInWebsite="1" showInStore="1">
-                    <label>Local / Ollama (OpenAI-Compatible): Price per 1K Input Tokens</label>
-                    <comment>Defaults to 0 — a self-hosted server typically has no per-token API cost, so local usage doesn't count toward the cost cap.</comment>
-                    <validate>validate-number</validate>
-                </field>
-                <field id="openai_compatible_price_per_1k_output_tokens" translate="label" type="text" sortOrder="40"
-                       showInDefault="1" showInWebsite="1" showInStore="1">
-                    <label>Local / Ollama (OpenAI-Compatible): Price per 1K Output Tokens</label>
-                    <validate>validate-number</validate>
-                </field>
-            </group>
-
             <group id="indexing" translate="label" type="text" sortOrder="70"
                    showInDefault="1" showInWebsite="1" showInStore="1">
                 <label>Indexing</label>
@@ -362,12 +347,6 @@
                     <label>Batch Size</label>
                     <comment>Number of products loaded per indexing batch (10-500).</comment>
                     <validate>validate-digits validate-greater-than-zero</validate>
-                </field>
-                <field id="searchable_attribute_codes" translate="label comment" type="textarea" sortOrder="20"
-                       showInDefault="1" showInWebsite="1" showInStore="1">
-                    <label>Searchable Attribute Codes</label>
-                    <comment>Comma-separated attribute codes normalized into the assistant index. Leave blank to index no custom attributes. Changing this requires a full index rebuild.</comment>
-                    <backend_model>Aavirbhava\AiShoppingAssistant\Model\Config\Backend\InvalidateProductIndex</backend_model>
                 </field>
                 <field id="include_short_description" translate="label" type="select" sortOrder="30"
                        showInDefault="1" showInWebsite="1" showInStore="1">

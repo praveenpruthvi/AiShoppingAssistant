@@ -21,6 +21,20 @@
     var LOG_PREFIX = '[Aavirbhava AI Assistant]';
 
     /**
+     * Mirrors ChatEntryPipeline::REASON_ASSISTANT_DOWN (Task 45) — a
+     * provider failure confirmed to recur identically on every next
+     * message (an exhausted quota, an invalid/revoked API key), as
+     * opposed to a merely transient one. Both presentation layers use
+     * this to stop accepting further input for the rest of the visit
+     * rather than inviting the customer to keep typing into a
+     * conversation that cannot proceed; a reload re-evaluates the
+     * widget's own server-side render gate (Task 44), which will hide it
+     * entirely once the confirmed-down circuit-breaker state is visible
+     * there too.
+     */
+    var REASON_ASSISTANT_DOWN = 'assistant_down';
+
+    /**
      * Always-on console.debug logging of each request/response cycle —
      * this module has no `general.debug_logging` admin toggle threaded to
      * the frontend (checked; it doesn't exist), and unlike customer-
@@ -290,6 +304,7 @@
     }
 
     global.AavirbhavaChatCore = {
+        REASON_ASSISTANT_DOWN: REASON_ASSISTANT_DOWN,
         sendMessage: sendMessage,
         fetchHistory: fetchHistory,
         normalizeResponse: normalizeResponse,

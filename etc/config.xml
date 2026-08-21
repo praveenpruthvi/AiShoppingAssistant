@@ -46,6 +46,8 @@
                 <block_external_urls>1</block_external_urls>
                 <block_code_generation>1</block_code_generation>
                 <out_of_scope_message>I can help you search, compare, and learn about products and services available on this store. What are you looking for?</out_of_scope_message>
+                <assistant_unavailable_message>I'm having trouble answering right now. Please try again in a moment.</assistant_unavailable_message>
+                <assistant_down_message>Our shopping assistant is temporarily unavailable due to a technical issue. Please try again later, or contact us directly for help.</assistant_down_message>
             </guardrails>
             <capabilities>
                 <product_discovery_enabled>1</product_discovery_enabled>
@@ -63,15 +65,8 @@
                 <allow_override>0</allow_override>
                 <notification_emails></notification_emails>
             </cost_cap>
-            <provider_cost>
-                <openai_price_per_1k_input_tokens>0</openai_price_per_1k_input_tokens>
-                <openai_price_per_1k_output_tokens>0</openai_price_per_1k_output_tokens>
-                <openai_compatible_price_per_1k_input_tokens>0</openai_compatible_price_per_1k_input_tokens>
-                <openai_compatible_price_per_1k_output_tokens>0</openai_compatible_price_per_1k_output_tokens>
-            </provider_cost>
             <indexing>
                 <batch_size>100</batch_size>
-                <searchable_attribute_codes>manufacturer,color,size,material,climate,pattern,style_general,style_bottom,activity,collar,sleeve</searchable_attribute_codes>
                 <include_short_description>1</include_short_description>
                 <include_long_description>1</include_long_description>
                 <aggregate_configurable_variants>0</aggregate_configurable_variants>

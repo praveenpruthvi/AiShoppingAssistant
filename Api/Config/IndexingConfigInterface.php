@@ -18,8 +18,12 @@ interface IndexingConfigInterface
     public function batchSize(): int;
 
     /**
-     * Explicit allowlist of attribute codes normalized into the assistant index.
-     * An empty list means no custom attributes are indexed.
+     * Explicit allowlist of attribute codes normalized into the assistant index
+     * — sourced from AttributeIndexingSelectionRepositoryInterface (the
+     * admin-controlled, global attribute selection both the native
+     * product-attribute grid and this module's own bulk-select screen
+     * read/write), not a per-store config field. An empty list means no
+     * custom attributes are indexed.
      *
      * @return list<string>
      */

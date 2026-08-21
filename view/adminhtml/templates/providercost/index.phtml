@@ -1,0 +1,112 @@
+<?php
+/**
+ * @var \Aavirbhava\AiShoppingAssistant\Block\Adminhtml\ProviderCost\Index $block
+ */
+$providers = $block->getProviderOptions();
+$configured = $block->getConfiguredProviders();
+$notices = $block->getUnconfiguredProviderNotices();
+$editingIdentifier = $block->getEditingProviderIdentifier();
+?>
+<div class="admin__fieldset-wrapper aavirbhava-provider-cost">
+    <div class="admin__fieldset-wrapper-title">
+        <strong><?= $block->escapeHtml(__('Provider Cost Pricing')) ?></strong>
+    </div>
+    <div class="admin__field-note" style="padding: 0 2.4rem 1.6rem;">
+        <span><?= $block->escapeHtml(__(
+            'Set the real per-1,000-token price for each LLM provider, used only to compute spend '
+            . 'against the LLM Usage Cost Cap. A provider with no pricing set here is tracked as $0.00 '
+            . '— correct for a free/self-hosted provider, but worth confirming for a paid one.'
+        )) ?></span>
+    </div>
+
+    <?php foreach ($notices as $notice): ?>
+        <div class="message message-warning warning" style="margin: 0 2.4rem 1.6rem;">
+            <?= $block->escapeHtml($notice) ?>
+        </div>
+    <?php endforeach; ?>
+
+    <form method="post" action="<?= $block->escapeUrl($block->getSaveUrl()) ?>">
+        <input name="form_key" type="hidden" value="<?= $block->escapeHtmlAttr($block->getFormKey()) ?>"/>
+
+        <fieldset class="admin__fieldset" style="padding: 0 2.4rem;">
+            <div class="admin__field _required">
+                <label class="admin__field-label" for="aavirbhava-provider-cost-provider">
+                    <span><?= $block->escapeHtml(__('Provider')) ?></span>
+                </label>
+                <div class="admin__field-control">
+                    <select id="aavirbhava-provider-cost-provider" name="provider" class="admin__control-select" required="required">
+                        <option value=""><?= $block->escapeHtml(__('-- Select a Provider --')) ?></option>
+                        <?php foreach ($providers as $option): ?>
+                            <option value="<?= $block->escapeHtmlAttr($option['value']) ?>"
+                                <?= $option['value'] === $editingIdentifier ? 'selected="selected"' : '' ?>>
+                                <?= $block->escapeHtml($option['label']) ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+            </div>
+            <div class="admin__field _required">
+                <label class="admin__field-label" for="aavirbhava-provider-cost-input">
+                    <span><?= $block->escapeHtml(__('Price per 1,000 Input Tokens')) ?></span>
+                </label>
+                <div class="admin__field-control">
+                    <input type="text" id="aavirbhava-provider-cost-input" name="price_per_1k_input_tokens"
+                           class="admin__control-text validate-number validate-zero-or-greater"
+                           value="<?= $block->escapeHtmlAttr((string) $block->getEditingInputPrice()) ?>"/>
+                </div>
+            </div>
+            <div class="admin__field _required">
+                <label class="admin__field-label" for="aavirbhava-provider-cost-output">
+                    <span><?= $block->escapeHtml(__('Price per 1,000 Output Tokens')) ?></span>
+                </label>
+                <div class="admin__field-control">
+                    <input type="text" id="aavirbhava-provider-cost-output" name="price_per_1k_output_tokens"
+                           class="admin__control-text validate-number validate-zero-or-greater"
+                           value="<?= $block->escapeHtmlAttr((string) $block->getEditingOutputPrice()) ?>"/>
+                </div>
+            </div>
+            <div class="admin__field" style="padding-top: 0.8rem;">
+                <button type="submit" class="action-primary">
+                    <span><?= $block->escapeHtml(__('Save Pricing')) ?></span>
+                </button>
+            </div>
+        </fieldset>
+    </form>
+
+    <div class="admin__fieldset-wrapper-title" style="margin-top: 1.6rem;">
+        <strong><?= $block->escapeHtml(__('Currently Configured Providers')) ?></strong>
+    </div>
+
+    <?php if ($configured === []): ?>
+        <div class="message message-notice notice" style="margin: 0 2.4rem 1.6rem;">
+            <?= $block->escapeHtml(__('No provider has pricing configured yet.')) ?>
+        </div>
+    <?php else: ?>
+        <table class="data-grid" style="margin: 0 2.4rem 1.6rem; width: calc(100% - 4.8rem);">
+            <thead>
+                <tr class="data-grid-tr">
+                    <th class="data-grid-th"><?= $block->escapeHtml(__('Provider')) ?></th>
+                    <th class="data-grid-th"><?= $block->escapeHtml(__('Price per 1K Input Tokens')) ?></th>
+                    <th class="data-grid-th"><?= $block->escapeHtml(__('Price per 1K Output Tokens')) ?></th>
+                    <th class="data-grid-th"><?= $block->escapeHtml(__('Action')) ?></th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php foreach ($configured as $row): ?>
+                    <tr class="data-grid-tr">
+                        <td class="data-grid-td"><?= $block->escapeHtml($row['label']) ?>
+                            <span style="color:#767676;"> (<?= $block->escapeHtml($row['identifier']) ?>)</span>
+                        </td>
+                        <td class="data-grid-td"><?= $block->escapeHtml((string) $row['input']) ?></td>
+                        <td class="data-grid-td"><?= $block->escapeHtml((string) $row['output']) ?></td>
+                        <td class="data-grid-td">
+                            <a href="<?= $block->escapeUrl($block->getEditUrl($row['identifier'])) ?>">
+                                <?= $block->escapeHtml(__('Edit')) ?>
+                            </a>
+                        </td>
+                    </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+    <?php endif; ?>
+</div>

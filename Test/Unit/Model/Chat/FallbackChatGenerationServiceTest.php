@@ -7,6 +7,7 @@ namespace Aavirbhava\AiShoppingAssistant\Test\Unit\Model\Chat;
 use Aavirbhava\AiShoppingAssistant\Api\Chat\CircuitBreakerInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\ConfigurationReaderInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\FallbackConfigInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Config\GuardrailConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\LlmConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\SecretReaderInterface;
 use Aavirbhava\AiShoppingAssistant\Api\LlmProviderInterface;
@@ -14,18 +15,22 @@ use Aavirbhava\AiShoppingAssistant\Api\Provider\ConfiguredProviderResolverInterf
 use Aavirbhava\AiShoppingAssistant\Api\Provider\FallbackEligibilityPolicyInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Store\StoreScopeInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Store\StoreScopeProviderInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Tool\CommerceToolRegistryInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Chat\ChatGenerationService;
 use Aavirbhava\AiShoppingAssistant\Model\Chat\Fallback\BackoffSleeperInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Chat\FallbackChatGenerationService;
+use Aavirbhava\AiShoppingAssistant\Model\Chat\ToolCallingChatService;
 use Aavirbhava\AiShoppingAssistant\Model\Config\SecretValue;
 use Aavirbhava\AiShoppingAssistant\Model\Dto\ChatMessage;
 use Aavirbhava\AiShoppingAssistant\Model\Dto\ChatResponse;
 use Aavirbhava\AiShoppingAssistant\Model\Dto\TokenUsage;
 use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderAuthenticationException;
 use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderConfigurationException;
+use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderRateLimitException;
 use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderTimeoutException;
 use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderUnavailableException;
 use Aavirbhava\AiShoppingAssistant\Model\Provider\FallbackEligibilityPolicy;
+use Aavirbhava\AiShoppingAssistant\Model\Provider\HardFailureClassifier;
 use Magento\Framework\Phrase;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
@@ -121,7 +126,19 @@ final class FallbackChatGenerationServiceTest extends TestCase
         self::assertTrue($response->usedFallback);
     }
 
-    public function testNonEligibleFailureNeverRetriesAndNeverConsultsFallback(): void
+    /**
+     * Authentication is deliberately never fallback-eligible (a bad
+     * primary key must never itself trigger a fallback attempt — see
+     * this class's own docblock), and that still holds: the fallback
+     * provider is never called and the original exception still
+     * propagates unchanged. But since Task 45, recordFailure IS now
+     * still called — with threshold 1, forcing the circuit open on this
+     * single occurrence — because the circuit breaker is also
+     * ChatWidget's only health signal (Task 44) and an invalid key must
+     * be visible there, even though, as a safety boundary, it must never
+     * cause a fallback provider to be consulted.
+     */
+    public function testAuthenticationFailureNeverConsultsFallbackButStillForcesTheCircuitOpenImmediately(): void
     {
         $primaryProvider = $this->createMock(LlmProviderInterface::class);
         $primaryProvider->expects(self::once())
@@ -133,7 +150,9 @@ final class FallbackChatGenerationServiceTest extends TestCase
 
         $circuitBreaker = $this->createMock(CircuitBreakerInterface::class);
         $circuitBreaker->method('isOpen')->willReturn(false);
-        $circuitBreaker->expects(self::never())->method('recordFailure');
+        $circuitBreaker->expects(self::once())
+            ->method('recordFailure')
+            ->with(self::STORE_ID, CircuitBreakerInterface::ROLE_PRIMARY, 1, 60);
         $circuitBreaker->expects(self::never())->method('recordSuccess');
 
         $service = $this->service(
@@ -143,6 +162,73 @@ final class FallbackChatGenerationServiceTest extends TestCase
 
         $this->expectException(ProviderAuthenticationException::class);
         $service->chat(self::STORE_ID, $this->messages);
+    }
+
+    public function testRateLimitFailureSkipsTheLocalRetryLoopButRemainsFallbackEligible(): void
+    {
+        $primaryProvider = $this->createMock(LlmProviderInterface::class);
+        $primaryProvider->expects(self::once())
+            ->method('chat')
+            ->willThrowException(new ProviderRateLimitException(new Phrase('rate limited')));
+
+        $fallbackProvider = $this->createMock(LlmProviderInterface::class);
+        $fallbackProvider->expects(self::once())->method('chat')->willReturn($this->response('from fallback', 'openai_compatible'));
+
+        $sleeper = $this->createMock(BackoffSleeperInterface::class);
+        $sleeper->expects(self::never())->method('sleepMilliseconds');
+
+        $circuitBreaker = $this->createMock(CircuitBreakerInterface::class);
+        $circuitBreaker->method('isOpen')->willReturn(false);
+        $circuitBreaker->expects(self::once())
+            ->method('recordFailure')
+            ->with(self::STORE_ID, CircuitBreakerInterface::ROLE_PRIMARY, 1, 60);
+
+        $service = $this->service(
+            $this->providerResolver($primaryProvider, $fallbackProvider),
+            circuitBreaker: $circuitBreaker,
+            sleeper: $sleeper
+        );
+
+        $response = $service->chat(self::STORE_ID, $this->messages);
+
+        self::assertTrue($response->usedFallback);
+    }
+
+    public function testFallbackProviderRateLimitAlsoForcesTheFallbackCircuitOpenImmediately(): void
+    {
+        $primaryProvider = $this->createMock(LlmProviderInterface::class);
+        $primaryProvider->method('chat')->willThrowException($this->timeoutException());
+
+        $fallbackProvider = $this->createMock(LlmProviderInterface::class);
+        $fallbackProvider->expects(self::once())
+            ->method('chat')
+            ->willThrowException(new ProviderRateLimitException(new Phrase('fallback also rate limited')));
+
+        $recordedFailures = [];
+        $circuitBreaker = $this->createMock(CircuitBreakerInterface::class);
+        $circuitBreaker->method('isOpen')->willReturn(false);
+        $circuitBreaker->expects(self::exactly(2))
+            ->method('recordFailure')
+            ->willReturnCallback(function (int $storeId, string $role, int $threshold, int $cooldown) use (&$recordedFailures): void {
+                $recordedFailures[] = [$storeId, $role, $threshold, $cooldown];
+            });
+
+        $service = $this->service(
+            $this->providerResolver($primaryProvider, $fallbackProvider),
+            circuitBreaker: $circuitBreaker
+        );
+
+        try {
+            $service->chat(self::STORE_ID, $this->messages);
+            self::fail('Expected a ProviderRateLimitException.');
+        } catch (ProviderRateLimitException) {
+            // Expected — assert the recorded failures below.
+        }
+
+        self::assertSame([
+            [self::STORE_ID, CircuitBreakerInterface::ROLE_PRIMARY, 3, 60],
+            [self::STORE_ID, CircuitBreakerInterface::ROLE_FALLBACK, 1, 60],
+        ], $recordedFailures);
     }
 
     public function testBothPrimaryAndFallbackFailingPropagatesTheFallbackFailure(): void
@@ -171,6 +257,44 @@ final class FallbackChatGenerationServiceTest extends TestCase
 
         $this->expectException(ProviderTimeoutException::class);
         $service->chat(self::STORE_ID, $this->messages);
+    }
+
+    /**
+     * Task 44 regression test: closes the one real integration gap left
+     * between this class (already proven above to correctly propagate,
+     * never swallow, a primary failure when fallback isn't configured —
+     * see testNoFallbackConfiguredPropagatesThePrimaryFailure) and
+     * ToolCallingChatService, the thin wrapper every real caller
+     * (ChatEntryPipeline, the Admin Playground) actually goes through.
+     * Live investigation for this task found no reproducible bug in the
+     * current code — every real path already produces a proper
+     * SafeResponse — but this specific layer combination (a REAL
+     * FallbackChatGenerationService, with fallback genuinely disabled,
+     * wired into a REAL, un-mocked ToolCallingChatService) had no direct
+     * test of its own before now, so this locks it in.
+     */
+    public function testConverseNeverSwallowsAPrimaryFailurePropagatedFromFallbackChatGenerationServiceWhenFallbackIsDisabled(): void
+    {
+        $primaryProvider = $this->createMock(LlmProviderInterface::class);
+        $primaryProvider->method('chat')->willThrowException($this->timeoutException());
+
+        $fallbackDisabledService = $this->service(
+            $this->providerResolver($primaryProvider, null, fallbackEnabled: false)
+        );
+
+        $toolRegistry = $this->createMock(CommerceToolRegistryInterface::class);
+        $toolRegistry->method('all')->willReturn([]);
+
+        $guardrails = $this->createMock(GuardrailConfigInterface::class);
+        $guardrails->method('maxToolCalls')->willReturn(4);
+
+        $configReader = $this->createMock(ConfigurationReaderInterface::class);
+        $configReader->method('readGuardrails')->with(self::STORE_ID)->willReturn($guardrails);
+
+        $toolCallingChatService = new ToolCallingChatService($fallbackDisabledService, $toolRegistry, $configReader);
+
+        $this->expectException(ProviderTimeoutException::class);
+        $toolCallingChatService->converse(self::STORE_ID, null, null, $this->messages, null);
     }
 
     public function testCircuitBreakerOpenSkipsPrimaryEntirely(): void
@@ -302,6 +426,7 @@ final class FallbackChatGenerationServiceTest extends TestCase
             $providerResolver,
             $secretReader,
             new FallbackEligibilityPolicy(),
+            new HardFailureClassifier(),
             $circuitBreaker,
             $sleeper
         );

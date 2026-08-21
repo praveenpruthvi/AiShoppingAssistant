@@ -747,6 +747,103 @@ final class OpenSearchAssistantClientTest extends TestCase
         }
     }
 
+    public function testListIndicesReturnsMatchedIndexNames(): void
+    {
+        $this->indices->method('get')->willReturn([
+            'prefix_store_2_run_a' => ['settings' => []],
+            'prefix_store_2_run_b' => ['settings' => []],
+        ]);
+
+        self::assertSame(
+            ['prefix_store_2_run_a', 'prefix_store_2_run_b'],
+            $this->client->listIndices('prefix_store_2_run_*')
+        );
+    }
+
+    public function testListIndicesReturnsEmptyWhenNothingMatchesRatherThanFailing(): void
+    {
+        $this->indices->method('get')->willThrowException(new Missing404Exception('missing', 404));
+
+        self::assertSame([], $this->client->listIndices('prefix_store_2_run_*'));
+    }
+
+    public function testListIndicesFailureIsSanitized(): void
+    {
+        $this->indices->method('get')->willThrowException(new \RuntimeException(self::SECRET_HOST));
+
+        try {
+            $this->client->listIndices('prefix_store_2_run_*');
+            self::fail('Expected OpenSearchBackendUnavailableException');
+        } catch (OpenSearchBackendUnavailableException $exception) {
+            self::assertSanitized($exception);
+        }
+    }
+
+    public function testIndexAliasesReturnsAliasNamesForExactIndex(): void
+    {
+        $this->indices->method('getAlias')->willReturn([
+            self::INDEX => ['aliases' => ['prefix_store_2_current' => []]],
+        ]);
+
+        self::assertSame(['prefix_store_2_current'], $this->client->indexAliases(self::INDEX));
+    }
+
+    public function testIndexAliasesReturnsEmptyWhenIndexHasNoAliases(): void
+    {
+        $this->indices->method('getAlias')->willThrowException(new Missing404Exception('missing', 404));
+
+        self::assertSame([], $this->client->indexAliases(self::INDEX));
+    }
+
+    public function testIndexAliasesRejectsMalformedResponse(): void
+    {
+        $this->indices->method('getAlias')->willReturn([self::INDEX => ['aliases' => 'invalid']]);
+
+        $this->expectException(OpenSearchBackendUnavailableException::class);
+        $this->client->indexAliases(self::INDEX);
+    }
+
+    public function testIndexAliasesFailureIsSanitized(): void
+    {
+        $this->indices->method('getAlias')->willThrowException(new \RuntimeException(self::SECRET_HOST));
+
+        try {
+            $this->client->indexAliases(self::INDEX);
+            self::fail('Expected OpenSearchBackendUnavailableException');
+        } catch (OpenSearchBackendUnavailableException $exception) {
+            self::assertSanitized($exception);
+        }
+    }
+
+    public function testIndexCreatedAtReturnsCreationDateAsInt(): void
+    {
+        $this->indices->method('getSettings')->willReturn([
+            self::INDEX => ['settings' => ['index' => ['creation_date' => '1699999999123']]],
+        ]);
+
+        self::assertSame(1699999999123, $this->client->indexCreatedAt(self::INDEX));
+    }
+
+    public function testIndexCreatedAtRejectsMissingCreationDate(): void
+    {
+        $this->indices->method('getSettings')->willReturn([self::INDEX => ['settings' => ['index' => []]]]);
+
+        $this->expectException(OpenSearchBackendUnavailableException::class);
+        $this->client->indexCreatedAt(self::INDEX);
+    }
+
+    public function testIndexCreatedAtFailureIsSanitized(): void
+    {
+        $this->indices->method('getSettings')->willThrowException(new \RuntimeException(self::SECRET_HOST));
+
+        try {
+            $this->client->indexCreatedAt(self::INDEX);
+            self::fail('Expected OpenSearchBackendUnavailableException');
+        } catch (OpenSearchBackendUnavailableException $exception) {
+            self::assertSanitized($exception);
+        }
+    }
+
     public function testClientBuildFailureIsSanitizedConfigurationError(): void
     {
         $this->factory->method('create')->willThrowException(

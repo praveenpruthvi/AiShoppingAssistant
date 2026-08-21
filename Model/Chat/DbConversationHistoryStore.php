@@ -264,6 +264,7 @@ final class DbConversationHistoryStore implements ConversationHistoryStoreInterf
                 'id' => $toolCall->id,
                 'name' => $toolCall->name,
                 'arguments' => $toolCall->arguments,
+                'providerMetadata' => $toolCall->providerMetadata,
             ],
             $toolCalls
         );
@@ -302,8 +303,15 @@ final class DbConversationHistoryStore implements ConversationHistoryStoreInterf
                 return null;
             }
 
+            $providerMetadata = $entry['providerMetadata'] ?? null;
+
             try {
-                $toolCalls[] = new ToolCall($entry['id'], $entry['name'], $entry['arguments']);
+                $toolCalls[] = new ToolCall(
+                    $entry['id'],
+                    $entry['name'],
+                    $entry['arguments'],
+                    is_string($providerMetadata) ? $providerMetadata : null
+                );
             } catch (InvalidArgumentException) {
                 return null;
             }

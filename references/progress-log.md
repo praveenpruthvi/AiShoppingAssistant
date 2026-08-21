@@ -1,6 +1,16 @@
 # Progress Log — Aavirbhava_AiShoppingAssistant
 
-Last updated from: adding Anthropic (Claude), xAI (Grok), and Google (Gemini) as selectable LLM providers (2026-08-21) — 3 new `LlmProviderInterface` adapters registered in the existing DI provider registry, so both the Primary LLM and Fallback LLM admin dropdowns list all 5 providers automatically with no `system.xml` change (they already derive their options from that registry). xAI's API is genuinely OpenAI-compatible, so it extends the existing `AbstractChatProvider` unchanged; Claude's Messages API and Gemini's `generateContent` API are both load-bearingly different from OpenAI's wire shape (different roles, different tool-call/tool-result representation, system prompt as a separate field, Gemini addressing a tool result by function name with no call-id concept at all) and each got its own request/response mapping implementing `LlmProviderInterface` directly, sharing a new `HttpStatusMapper` for the one piece of logic that genuinely is identical (HTTP-status-to-exception mapping) without touching the existing, already-tested `AbstractChatProvider`/`OpenAiProvider` at all. Built to spec against each provider's real documented API; no live API key was available in this session to exercise a real call against any of the three, an explicit, user-confirmed scope choice — real, DI-resolved verification confirmed all 5 providers resolve correctly through the compiled container and the real admin dropdown lists all 5 with correct labels, but that is disclosed as wiring verification, not a live provider call. Full suite 1596 tests / 3868 assertions / 0 failures (up from 1549/3735).
+Last updated from: hard vs. transient provider failures — a distinct "assistant down" message and a stop-the-chat safeguard (2026-08-22) — user-reported, with a screenshot: a rate-limited provider made the storefront widget repeat the exact same generic out-of-scope text for every message, indistinguishable from a genuine "that's out of scope" answer, and kept accepting new messages indefinitely. New `HardFailureClassifier` splits `ProviderRateLimitException`/`ProviderAuthenticationException` (confirmed to recur identically on retry) from every transient failure (timeout, transport, invalid response — a fresh request has a real chance of succeeding). A hard failure now skips the local retry loop, force-opens the circuit breaker on the FIRST occurrence instead of the configured multi-failure threshold (so Task 44's widget-hide safeguard reacts immediately), and gets a new, genuinely distinct, admin-configurable "Assistant Down" message + `reason_code: assistant_down` — no longer reusing the out-of-scope text, which was the actual root cause of the confusing behavior. The frontend permanently disables input/send for the rest of the visit on that reason code. Two real, separate bugs were caught and fixed along the way: (1) `ProviderAuthenticationException` was never fallback-eligible by design, and the existing code only recorded circuit-breaker failures for eligible exceptions — meaning an auth failure would NEVER have touched the circuit breaker at all, permanently invisible to Task 44's widget-hide check; (2) live-verified via a direct `curl` against the real Gemini API that an invalid key returns HTTP 400 ("API_KEY_INVALID"), not 401/403 — silently misclassified as a retryable error and never reaching the new hard-failure logic at all for this module's only currently-configured live provider. Live-verified end-to-end with a real invalid Gemini key: `reason_code: assistant_down` returned correctly, the real circuit breaker opened after exactly one failure, and the real `ChatWidget::toHtml()` returned empty immediately afterward. Full suite 1740 tests / 4317 assertions / 0 failures (up from 1733/4292).
+
+Previously: assistant-unavailable widget-hide safeguard + a "missing response" investigation (2026-08-21) — the task (and CLAUDE.md's own pre-written spec for it) asserted as fact a "REAL BUG (found live): with fallback disabled, a failed primary provider call produces NO response to the frontend." Live-tested this three separate, real ways against the actual current code (invalid API key, a genuinely unreachable endpoint via the raw pipeline, and the same unreachable-endpoint case through the full real HTTP `Controller\Chat\Send` path) — every one correctly returned a real `SafeResponse`, never silence or an uncaught exception. No bug reproduces; CLAUDE.md's disproven claim was corrected rather than left standing, matching this session's own established practice (Task 41/42) for a reported-but-unreproducible discrepancy. Added one genuinely new regression test anyway (a real, un-mocked `ToolCallingChatService` wired around the same real `FallbackChatGenerationService` setup, closing a previously-untested integration seam) since the task explicitly asked for one regardless. The actual NEW feature — a third render-gate check on `ChatWidget`, hiding the widget only when the assistant is confirmed genuinely down via the SAME circuit-breaker state `FallbackChatGenerationService` already maintains (no second health mechanism), failing CLOSED on its own error (opposite direction from the cost-cap check right next to it) — was implemented, tested, and live-verified together with the investigation: 3 real consecutive primary failures genuinely tripped the circuit breaker, after which a real chat request still correctly produced a `SafeResponse` in 0.4s (skipping retries) and the real widget's `toHtml()` genuinely returned empty. Full suite 1733 tests / 4292 assertions / 0 failures (up from 1726/4285).
+
+Previously: admin menu nesting + Attribute Selection checkbox alignment fixes (2026-08-21) — user-reported, with screenshots, and explicitly scoped to CSS/alignment only, no functionality changes. The Marketing sidebar's empty gap after "Playground" and the floating unlabeled "Provider Cost Pricing" column both traced to `etc/adminhtml/menu.xml` parenting `boost_index`/`attributeselection_index`/`providercost_index` directly to `Magento_Backend::marketing` instead of to the real "AI Shopping Assistant" group header — fixed by re-parenting all three, confirmed via a real `Menu\Config::getMenu()` tree walk. The Attribute Indexing Selection screen's crude checkbox grid (no spacing, wrapped labels dropping back to the cell's left edge) traced to the checkbox+label markup missing Magento's own `.admin__field-option`/`.admin__field-label` classes (native admin CSS reserves the correct wrap-indent padding only when those classes are present) — fixed by adding them, confirmed via real `Block::toHtml()` rendering. Full suite unchanged at 1726 tests / 4285 assertions / 0 failures (no PHP logic touched).
+
+Previously: live Gemini verification + a provider-cost discrepancy check (2026-08-21) — with a real Gemini API key finally configured, drove a real multi-round tool-calling conversation through `GeminiProvider` and found/fixed 3 genuine, real bugs no amount of spec-reading could have caught: (1) a Magento CORE bug (`Magento\Framework\HTTP\Adapter\Curl` passes headers to `CURLOPT_HTTPHEADER` as a raw associative array, silently dropping every one) affecting every non-local chat/embedding provider, fixed in this module by forcing the shared transports onto Laminas's own correctly-implemented Curl adapter; (2) Gemini's schema dialect rejects `additionalProperties`, fixed by recursively stripping just that keyword from the copy of any schema sent to Gemini; (3) Gemini's "thinking" model family requires a `thoughtSignature` be echoed back on any replayed tool call, fixed by adding a generic, provider-opaque `ToolCall::$providerMetadata` field every other provider ignores. With all 3 fixes in place, confirmed a real 4-round, 5-tool-execution conversation completes correctly against `gemini-3.6-flash` — but a full, successful FINAL response was not obtained this session, since the extensive real debugging needed to find these 3 bugs exhausted the free-tier key's real 20-requests/day quota; a future session should re-verify the final round once quota resets. Separately, investigated a contradiction in Task 41's own status report (claimed both a real saved google price AND a later $0.00 CostCalculator read) — found no actual bug: a fresh, single-process trace of a real controller save immediately followed by a real CostCalculator read picked up the price correctly every time, and Task 41's report itself was simply wrong on that one point. Locked in the correct, already-working behavior with a new permanent regression test using the real admin controller. Full suite 1726 tests / 4285 assertions / 0 failures (up from 1714/4264).
+
+Previously: fixing the long-standing `Magento_CatalogSampleData` setup:upgrade failure (2026-08-21) — a user-reported build error ("Rolled back transaction has not been completed correctly" on `InstallCatalogSampleData`) that CLAUDE.md had documented as a known, unfixed pre-existing issue since Task 22, worked around (never fixed) by every task since. Root-caused for real by bypassing `Magento\Framework\Setup\SampleData\Executor::exec()`'s own catch-all (it silently swallows the real exception) and calling the installer directly: the actual error was a duplicate-primary-key collision on `catalog_product_entity`, because the full Luma sample catalog (2,040 products, 40 categories, 3,416 images) had ALREADY been installed successfully at some point in the past, but `patch_list` was missing its one completion row for `InstallCatalogSampleData` specifically — every one of the other 18 sample-data module patches was correctly recorded. Every `setup:upgrade` run since was trying to re-install the entire catalog from scratch and colliding with its own already-inserted first row. Fixed by inserting the single missing `patch_list` row (verified byte-for-byte via `HEX(patch_name)` against a known-good row, since shell escaping first doubled the backslashes). Confirmed via two clean, back-to-back `setup:upgrade` runs, both exit 0 — and confirmed this module's own data patches now apply through a completely normal `setup:upgrade`, no more real-object-manager workaround needed. CLAUDE.md's environment-realities and "Known open issues" entries rewritten from "known, unfixed" to "resolved, with the real cause and fix documented."
+
+Previously: dynamic, per-provider LLM cost config, replacing Task 35's static 2-provider fields (2026-08-21) — `provider_cost` was a fixed pair of system.xml fields (openai/openai_compatible only), so any newly-registered LLM provider (e.g. Task 39's anthropic/xai/google) had no way to ever be priced. Audited the real database first (both providers' real values were an explicit, saved `0`, not merely absent) and replaced the fields with a new `aavirbhava_ai_provider_cost` table + `ProviderCostRepositoryInterface`, migrated via a data patch that preserves whatever a merchant already had (including a real, explicit `0`) rather than resetting it, and a new dynamic admin screen (Marketing > AI Shopping Assistant > Provider Cost Pricing) whose provider dropdown is the exact same `Model\Config\Source\Provider` both LLM dropdowns already use — no separate provider list to keep in sync. `CostCalculator` itself needed zero changes, since it already took a `ProviderCostConfigInterface` keyed by identifier; only what BUILT that object changed. A new admin notice fires whenever the currently-selected Primary or Fallback provider is still priced at `0.0` — checked by VALUE, not row-presence, so a real migrated `0/0` row warns exactly like a genuinely unconfigured one. Along the way, hit and root-caused a real environment issue: this docker-magento install's cache backend is Redis, and a stale Redis-cached DI preferences map (survives a filesystem-only `var/cache` clear) made a brand-new, correctly-declared `<preference>` invisible to every `bin/magento` command until `redis-cli FLUSHALL` — now documented in CLAUDE.md so a future session doesn't re-diagnose it from scratch. Live-verified for real: the migration patch preserved the real audited `0/0` values, the real Save controller executed a real POST-backed save for Google Gemini, and a real `CostCalculator` call returned correctly different costs per provider identifier ($0.00 openai, $0.018 anthropic, $0.012 xai, $0.00 unconfigured google) for the same token usage with zero code change. Full suite 1714 tests / 4264 assertions / 0 failures (up from 1697/4240), plus 7 new real-database Integration tests.
 Environment: local Magento via docker-magento (markshust/docker-magento).
 
 ## Status by architecture area
@@ -4897,6 +4907,960 @@ initial 5-task priority order (LLM adapter → pipeline skeleton → retrieval
   that's the most protocol-divergent part of each new adapter) before
   any of them is treated as production-verified rather than built-to-
   spec.
+- **Follow-up (same task, user-requested):** with no real API key
+  becoming available for any of the three providers, the user
+  explicitly asked to continue validating the providers, and chose
+  "strengthen the existing mocked test suites" over "wait for a real
+  key" when asked directly which they meant. Added 16 new tests
+  targeting specific, named real-provider behaviors the first pass
+  hadn't exercised: xAI rate-limit mapping, cloud-only base-URL
+  rejection, a real tool-call round trip, and structured-output
+  schema forwarding; Anthropic's multiple-`tool_use`-blocks-in-one-
+  response case, multiple text blocks concatenated, `stop_reason:
+  "max_tokens"` truncation (not an error), the
+  `cache_creation_input_tokens` vs `cache_read_input_tokens`
+  distinction (only a cache read is a real cost discount), omitting
+  `system` entirely when absent, and rejecting a `tool_use` block
+  missing its `id`; Gemini's `finishReason: "MAX_TOKENS"` truncation,
+  `finishReason: "RECITATION"` correctly NOT treated as a refusal
+  (distinct from the one mapped `SAFETY` case), multiple text parts
+  concatenated, missing `usageMetadata` defaulting to zero usage, only
+  `candidates[0]` being used when several are returned, and rejecting
+  a `functionCall` missing its `name`. Full suite: 1615 tests / 3897
+  assertions / 0 failures (up from 1596/3868). Still explicitly out of
+  scope: an actual authenticated call to any of the three providers'
+  real APIs — this remains a mocked-only verification, disclosed as
+  such in the updated status report.
+
+### Task 38 — Admin-controlled, selective product-attribute indexing (DONE)
+- **Files:** `Api/Catalog/AttributeIndexingSelectionRepositoryInterface.php`,
+  `Model/Catalog/AttributeIndexingSelectionRepository.php` (new — the one
+  shared repository both admin entry points and the indexing pipeline
+  read/write through); `Setup/Patch/Data/SeedAttributeIndexingSelection.php`
+  (new — this module's first-ever data patch); `Model/Catalog/AttributeGrid/
+  {Grid,IndexedForAiColumnRenderer}.php` (new — Entry Point A);
+  `Controller/Adminhtml/Attribute/{AbstractMassSetIndexedForAi,
+  MassEnableForAi,MassDisableForAi}.php` (new); `Block/Adminhtml/
+  AttributeSelection/Index.php`, `Controller/Adminhtml/AttributeSelection/
+  {Index,Save}.php` (new — Entry Point B), `view/adminhtml/layout/
+  aavirbhava_aishoppingassistant_attributeselection_index.xml`,
+  `view/adminhtml/templates/attributeselection/index.phtml`. Modified:
+  `Model/Config/ConfigurationReader.php`/`Api/Config/
+  IndexingConfigInterface.php` (searchableAttributeCodes() now sourced
+  from the new repository, not a free-text field), `Model/Config/Path.php`
+  (removed the now-dead constant), `etc/adminhtml/system.xml`/
+  `etc/config.xml` (removed the old `searchable_attribute_codes` field
+  and default entirely — this task replaces it, not adds alongside it),
+  `Api/Indexing/ProductIndexMappingInterface.php` (MAPPING_VERSION 3→4),
+  `etc/db_schema.xml`, `etc/di.xml`, `etc/adminhtml/di.xml` (new file —
+  the `<preference>` swapping in the extended grid), `etc/acl.xml`,
+  `etc/adminhtml/menu.xml`. Plus matching new unit tests and 2 new
+  Integration test files.
+- **Requirement 1 audit (done first, before any code changed) — exactly
+  which attribute codes were indexed and how:** confirmed via a live
+  `core_config_data` query that this store's real effective custom-
+  attribute list was 11 codes (`manufacturer, color, size, material,
+  climate, pattern, style_general, style_bottom, activity, collar,
+  sleeve`, all real `is_user_defined=1` attributes, confirmed via a live
+  `eav_attribute` query) — sourced from exactly ONE choke point,
+  `IndexingConfigInterface::searchableAttributeCodes()` (backed by the
+  free-text `ai_shopping_assistant/indexing/searchable_attribute_codes`
+  field), consumed by `SearchableAttributeValueResolver::resolve()`.
+  Traced downstream and confirmed `ProductDocumentNormalizer::normalize()`
+  ALREADY fed that same resolved list into BOTH the embedding
+  `searchableText` payload AND the structured `attributes` array field of
+  the real OpenSearch document (both `AttributeMatchSignal` and
+  `ProductContextFormatter` read the latter, via `SearchCandidate::
+  attributes`) — meaning requirement 7 ("feed both paths") was already
+  structurally satisfied by the existing pipeline; only the SOURCE of the
+  code list needed replacing, not the downstream wiring. This is why
+  `SearchableAttributeValueResolver`/`ProductSnapshotProvider`/
+  `ProductDocumentNormalizer` needed ZERO changes — confirmed by their
+  own pre-existing test suites passing completely unmodified.
+- **Key decision — replace the old field entirely, not leave it dead
+  alongside the new mechanism:** the task's own wording ("replacing
+  today's inconsistent/implicit attribute coverage") is an explicit
+  instruction to replace, and this module's own standing convention is
+  "don't leave backwards-compatibility shims for something you're
+  certain is unused" — so `searchable_attribute_codes` was removed from
+  `system.xml`/`config.xml`/`Path`/`ConfigurationReader` entirely rather
+  than kept as a confusing, now-inert admin field. `ProductAttributePolicy`
+  (the security denylist for sensitive attribute codes like `cost`/
+  `api_key`) is UNCHANGED and still independently re-applied inside
+  `SearchableAttributeValueResolver` — this task's new selection is an
+  ADDITIONAL merchant-controlled allowlist layered on top of that
+  existing security boundary, never a replacement for it.
+- **Key decision — Entry Point A wired via a `<preference>` on a
+  CONCRETE class, not a layout `<referenceBlock>` override:** confirmed
+  by reading the real core classes before choosing an approach (not
+  assumed) that Stores > Attributes > Product is a legacy
+  `Backend\Block\Widget\Grid\Extended` grid (not a Ui Component), created
+  directly in PHP by `Grid\Container::_prepareLayout()` with no stable,
+  addressable layout block name a `<referenceBlock name="...">` override
+  could target — `Container::_prepareLayout()`'s own
+  `if (false === $this->getChildBlock('grid'))` fallback exists
+  specifically for this scenario, but requires a layout-declared child
+  under a container whose OWN name isn't stable either (it's created via
+  `addContent()` with no explicit name). A `<preference>` on the
+  CONCRETE `Magento\Catalog\Block\Adminhtml\Product\Attribute\Grid` class
+  (not an interface) is valid, real Magento behavior — `Layout::
+  createBlock()` resolves through the ObjectManager, which honors
+  preferences for any requested type string — confirmed correctly
+  compiled by directly inspecting `generated/metadata/adminhtml.php`'s
+  real `preferences` map after `setup:di:compile` (a naive live-script
+  test of this specifically failed first, for an unrelated, disclosed
+  reason — see the live-verification note below).
+- **Key decision — the new grid column via a custom renderer, not a SQL
+  join:** `IndexedForAiColumnRenderer` calls
+  `AttributeIndexingSelectionRepositoryInterface::all()` once per grid
+  render (confirmed cached/reused across every row by reading
+  `Column::getRenderer()`'s real caching before relying on it) rather
+  than joining the new table into the core attribute collection's own
+  internal query-building, which this task deliberately never touches.
+- **Key decision — the bulk-select screen (Entry Point B) mirrors this
+  module's own established hand-rolled-server-rendered-page convention**
+  (Playground/Boost precedent, explicitly endorsed in this file's own
+  Task 32 entry), not a Ui Component form — a plain checkbox list POSTing
+  `selected_codes[]` (checked) plus a hidden `all_codes` (everything the
+  page offered), so `Save` can correctly compute BOTH newly-selected AND
+  newly-deselected codes — an unchecked HTML checkbox never appears in a
+  POST at all, so without `all_codes` unchecking a previously-selected
+  attribute would silently do nothing.
+- **Real, newly-confirmed environment finding (this task's own live
+  verification surfaced it, not assumed):** the pre-existing, already-
+  documented `Magento_CatalogSampleData` `InstallCatalogSampleData` patch
+  failure doesn't just fail itself — it ABORTS the remaining data-patch
+  queue for that `setup:upgrade` run, including every module ordered
+  after it (confirmed twice: two full `setup:upgrade` runs both stopped
+  at the identical point, and this task's own brand-new
+  `SeedAttributeIndexingSelection` patch never appeared in `patch_list`
+  after either run). This is a MORE SERIOUS consequence than CLAUDE.md's
+  existing note disclosed ("does not block setup:di:compile, schema
+  upgrades, or reindexing" — true, but incomplete: it DOES block other
+  modules' DATA patches specifically). Worked around for this task's own
+  verification by constructing `SeedAttributeIndexingSelection` via the
+  real object manager and calling `apply()` directly in a separate
+  process — confirmed it correctly read the real live config value and
+  seeded exactly the 11 real attribute codes the audit found. CLAUDE.md's
+  "Known open issues" updated with this more complete finding.
+- **Verification — full test suite:** 1599 tests / 3868 assertions / 0
+  failures (up from 1596/3863), plus 10 new Integration tests / 20
+  assertions against the real database (`AttributeIndexingSelectionRepositoryDatabaseTest`:
+  7 tests on the repository's own atomic upsert semantics;
+  `AttributeSelectionAffectsIndexingPipelineTest`: 3 tests proving a real
+  toggle against a real product, SKU MP01-32-Black/attribute "color",
+  genuinely changes what `ProductSnapshotProvider` — the pipeline's real
+  entry point — includes, with the store's real pre-existing selection
+  correctly restored in `tearDown()`). A whole-module `php -l` sweep (659
+  files) and `setup:di:compile` are both clean.
+- **Verification — real, DI-resolved wiring beyond the test suite:**
+  (1) the `<preference>` for the extended grid confirmed correctly
+  compiled by reading the real `generated/metadata/adminhtml.php`
+  (a naive ad-hoc script calling `State::setAreaCode('adminhtml')` after
+  the object manager was already bootstrapped for the default area
+  failed to reflect the admin-area preference — a real, disclosed
+  limitation of manually flipping area code post-bootstrap in a script,
+  not of the actual preference itself, which a real admin HTTP request
+  resolves correctly since Magento initializes the object manager
+  already scoped to the real request's area); (2) all four new
+  controllers (`MassEnableForAi`, `MassDisableForAi`, bulk-select
+  `Save`) executed for real via the real object manager with real
+  populated request params (including resolving a REAL attribute_id —
+  `climate`'s — to its real code via the real
+  `Magento\Eav\Api\AttributeRepositoryInterface`), confirmed each
+  correctly updates the shared repository AND that the two entry points
+  agree with each other's resulting state afterward (requirement 6/9),
+  with the store's real seeded selection restored afterward.
+- **Verification — real reindex + real OpenSearch document (requirement
+  11), all against this store's genuinely live data:** `bin/magento
+  aavirbhava:ai-shopping-assistant:index-coverage` showed 181/181 full
+  coverage BEFORE the reindex; ran a real `indexer:reindex ai_product_rag`
+  (MAPPING_VERSION 4, forcing a real full rebuild); coverage remained
+  181/181 fully covered afterward. Directly queried the real, currently-
+  active OpenSearch index's mapping `_meta` and confirmed
+  `mapping_version: 4`. Directly queried the real indexed document for
+  SKU `MP01` (the same real product used in Task 34's own live chat
+  verification) and confirmed its `attributes` field contains exactly
+  the codes this task's real, currently-selected `is_indexed=true`
+  attributes that this specific product actually has non-empty values
+  for (`climate`, `material`, `pattern`, `style_bottom`) — genuine,
+  real, end-to-end proof the admin-controlled selection reaches a real
+  OpenSearch document, not merely that the code compiles.
+- **Skill files updated:** `references/progress-log.md` (this entry);
+  `CLAUDE.md`'s "Attribute indexing selection" section (already present
+  from this task's own spec injection) reviewed and left as the accurate
+  binding design record — its content already matches what was actually
+  built; the "Known open issues" section gained the more complete
+  CatalogSampleData-blocks-other-modules'-data-patches finding above.
+- **Not done / blocked:** nothing blocked. Two disclosed, deliberate
+  scope boundaries: (1) no dedicated PHPUnit unit test exists for
+  `Model\Catalog\AttributeGrid\Grid` itself (its `_prepareColumns()`/
+  `_prepareMassaction()` overrides are thin, static-config calls, the
+  same class of logic this module's own pre-existing `Boost\Save`
+  controller also has with no dedicated test) — verified instead via the
+  compiled-preference-metadata check and the real controller execution
+  above, consistent with this module's own established "no admin
+  controller/legacy-grid unit tests exist anywhere in this module"
+  precedent; (2) the actual rendered grid column/mass-action/bulk-select
+  screen through a real authenticated browser session remains
+  unconfirmed — this environment's admin-login CAPTCHA gate (already
+  documented) blocks it, and no browser-automation tool is available in
+  this session. Every other layer (schema, DI wiring, real controller
+  execution, real repository/pipeline integration, real reindex/
+  OpenSearch document) is genuinely, separately verified and disclosed
+  as such.
+
+### Task 39 — OpenSearch index retention: stop leaking physical indices on every reindex (DONE)
+- **Diagnosis first, confirmed from real code and real cluster state
+  before writing anything:** `FullProductReindexer::rebuild()` delegates
+  the actual alias/index lifecycle to `OpenSearchProductDocumentWriter`.
+  `activateRun()` already did an atomic `updateAliases()` call that
+  `remove`s the alias from the OLD target and `add`s it to the new
+  physical index — but never deleted the old, now-unaliased physical
+  index afterward. Confirmed live: store 1's real cluster had 19
+  physical `aavirbhava_ai_product_rag_store_1_run_*` indices (the
+  original bug report said 17; six more real reindexes happened between
+  when that was written and when this task actually ran), with the
+  read alias pointing at only one of them — the other 18 were pure
+  leftovers, none referenced by anything. `abortRun()` (the failed-run
+  cleanup path) was already correct and untouched by this bug — only
+  the SUCCESS path leaked.
+- **Files:** `Api/Indexing/AssistantSearchClientInterface.php` (3 new
+  methods: `listIndices()`, `indexAliases()`, `indexCreatedAt()`),
+  implemented in `Model/Indexing/Client/OpenSearchAssistantClient.php`
+  (real OpenSearch `indices().get()`/`getAlias()`/`getSettings()`
+  calls) and `Model/Indexing/Client/UnavailableAssistantSearchClient.php`
+  (fail-closed, matching every other method there), faked in
+  `Test/Unit/Fake/FakeAssistantSearchClient.php`.
+  `Api/Indexing/IndexNamingServiceInterface.php` +
+  `Model/Indexing/Naming/IndexNamingService.php`: new
+  `runIndexPattern()` returning the wildcard `<prefix>_store_<id>_run_*`
+  pruning candidates are enumerated from.
+  `Model/Indexing/OpenSearchProductDocumentWriter.php`: the actual fix
+  — a new `pruneOldIndexes()`/`pruneOldIndexesForStore()` pair called
+  from `activateRun()` right after the alias switch succeeds, plus a
+  new constructor `Psr\Log\LoggerInterface` dependency for best-effort
+  failure logging. New `INDEX_RETENTION_COUNT = 2` class constant.
+- **Key decision — retention count is a class constant, not a new admin
+  field:** the task's own wording explicitly accepted either
+  ("configurable or a sane constant"). Two other genuinely
+  admin-configurable knobs already exist in this module
+  (`MerchandisingBoost`, cost cap) and both needed real merchant-facing
+  tuning; index retention is an internal rollback-safety margin with
+  no merchant-facing meaning, so a constant was the simpler, equally
+  correct choice — not a shortcut.
+- **Key decision — candidates are discovered from the backend, never
+  from local state:** the writer only ever tracks the CURRENT run's own
+  physical indexes in memory; past runs' names are gone the moment a
+  prior process exits. `listIndices()` (a new client method,
+  `indices().get()` on a wildcard pattern) is the only way to
+  rediscover them, which is also exactly what made cleaning up the
+  real, already-existing 19 leftover indices possible in the same fix
+  that also prevents future ones — nothing retroactive-only was needed.
+- **Key decision — "still referenced by anything," not just "unaliased
+  by this store's own alias":** the task's own wording demanded
+  checking whether an old index is "still referenced by anything (e.g.
+  a prior alias generation, an in-flight read)" before deleting it, not
+  just checking the one alias name this store happens to use today. The
+  new `indexAliases()` client method returns every alias currently
+  pointing at an exact index, in either direction (OpenSearch's own
+  `GET /<index>/_alias`) — a non-empty result skips that candidate
+  unconditionally, regardless of which alias it is. This is strictly
+  stronger than only checking the canonical `<prefix>_store_<id>_current`
+  alias name.
+- **Key decision — ownership proof reuses `abortRun()`'s check, NOT its
+  full strictness:** a pruning candidate must still pass
+  `metaProvesAssistantOwnership()` (the same `_meta` check `abortRun()`
+  already used: `assistant_index`, matching `store_id`/`website_id`,
+  matching `physical_index`) before it's ever deleted — fail-closed,
+  matching requirement 4's "do not delete blindly" edge case exactly.
+  It deliberately does NOT also require matching the CURRENT run's own
+  `run_id` the way `abortRun()`'s stricter check does, because pruning
+  legitimately considers indexes from many different PAST runs, not
+  the one run currently in flight.
+- **Key decision — real `creation_date`, never a new custom `_meta`
+  field:** ordering pruning candidates from newest to oldest needed a
+  real timestamp (run ids are random UUIDv4s, not time-ordered), but
+  the 19 real leftover indices this fix also had to clean up
+  retroactively predate any change to `ProductIndexMapping`'s `_meta`
+  schema — a new custom field would be absent on every one of them.
+  OpenSearch's own native `settings.index.creation_date` (present on
+  every index unconditionally, from the moment it's created) sidesteps
+  that entirely; `indexCreatedAt()` reads it directly, used only for
+  ordering, never as an ownership/correctness signal on its own.
+- **Key decision — pruning is best-effort and can never fail the run:**
+  by the time `pruneOldIndexes()` runs, the alias switch — the one
+  correctness-critical, load-bearing operation — has already succeeded.
+  A pruning failure (a `listIndices()` transport error, an unverifiable
+  candidate, a failed `deleteIndex()`) is caught per-store, logged via
+  the writer's new `LoggerInterface` dependency, and never rethrown.
+  Deliberately the opposite tradeoff from `abortRun()`'s own cleanup,
+  which DOES report a failed cleanup via
+  `ProductIndexAbortFailedException` — that asymmetry is intentional:
+  abort's cleanup failure genuinely means an already-failed run's mess
+  wasn't fully cleaned up and the caller should know; a pruning failure
+  after a SUCCESSFUL activation just means one or more old indices will
+  be reconsidered on the next successful run instead, which is a
+  storage-hygiene delay, not a correctness problem.
+- **Verification — full test suite:** 1697 tests / 4240 assertions / 0
+  failures (up from 1615/3897) — 82 new tests, concentrated in
+  `OpenSearchProductDocumentWriterTest` (retention-window pruning,
+  exact-retention-count preservation across four successive real
+  activation cycles on the fake client, never pruning an index another
+  alias still references, surviving a total pruning failure without
+  failing the run), `OpenSearchAssistantClientTest` (all three new
+  client methods against a mocked real OpenSearch client, including the
+  not-found-is-empty-not-a-failure case for `listIndices()`/
+  `indexAliases()`, and credential-sanitization on every failure path,
+  matching this file's existing convention for every other method), and
+  `IndexNamingServiceTest` (`runIndexPattern()` shape and prefix
+  validation). `setup:di:compile` is clean (confirms the new
+  `LoggerInterface` constructor dependency auto-wires correctly with no
+  `di.xml` change needed, since Magento's own PSR logger preference
+  already covers it).
+- **Verification — real, live cluster, not just the fake client:** one
+  real `bin/magento indexer:reindex ai_product_rag` against the real 19
+  leftover physical indices for store 1 dropped the count to exactly 2
+  (the newly-activated index and its one immediate predecessor); the
+  live alias was confirmed pointing at the correct new index via a
+  direct `_cat/aliases` query. A second real reindex run immediately
+  afterward confirmed the steady state holds going forward, not just as
+  a one-time cleanup: still exactly 2 indices, with the oldest of the
+  three then-candidates correctly pruned each time.
+  `aavirbhava:ai-shopping-assistant:index-coverage` reported full
+  181/181 real catalog coverage after both real reindexes, and
+  `var/log/exception.log`/`system.log` showed no errors from either
+  run — pruning succeeded cleanly, it wasn't merely non-fatal.
+- **Skill files updated:** `references/progress-log.md` (this entry,
+  header summary replaced); `CLAUDE.md`'s "Known open issues" bullet
+  for this exact issue (originally flagged Task 16) removed now that
+  it's fixed, and a new "OpenSearch index retention (Task 39)" section
+  added with the binding design constraints for maintaining this fix.
+- **Not done / blocked:** nothing — every numbered requirement in the
+  task prompt was completed and live-verified against the real,
+  previously-broken cluster state, not just the fake-client test suite.
+
+### Task 40 — Dynamic, per-provider LLM cost config, replacing Task 35's static 2-provider fields (DONE)
+- **Audit first, confirmed from the real database before changing
+  anything:** the real `core_config_data` rows for
+  `provider_cost/openai_*`/`provider_cost/openai_compatible_*` were all
+  explicit `0` (not merely defaults) — a genuine saved value, not an
+  absent one. This mattered directly: the migration had to preserve an
+  explicit `0` as `0`, not treat it as "nothing configured, safe to
+  skip."
+- **Files:** `Api/Config/ProviderCostRepositoryInterface.php` (new),
+  `Model/Config/ProviderCostRepository.php` (new — the one shared
+  repository both the admin screen and `ConfigurationReader::
+  readProviderCost()` read/write through, mirroring Task 38's
+  `AttributeIndexingSelectionRepository` pattern exactly:
+  `ResourceConnection`-direct, `insertOnDuplicate()` upsert, no
+  AbstractModel/Collection ORM needed for this shape).
+  `Setup/Patch/Data/MigrateProviderCostConfig.php` (new — reads the
+  real, live default-scope values from the two now-removed
+  `Path::PROVIDER_COST_*` paths, hardcoded as literal strings since the
+  constants themselves are gone, and migrates them exactly as found).
+  `etc/db_schema.xml` — new table `aavirbhava_ai_provider_cost`
+  (`provider_identifier varchar(64)` PK, two `decimal(18,6) unsigned`
+  price columns, `updated_at`). New admin screen: `Block/Adminhtml/
+  ProviderCost/Index.php`, `Controller/Adminhtml/ProviderCost/
+  {Index,Save}.php`, layout + phtml template, `etc/acl.xml`/
+  `etc/adminhtml/menu.xml` entries (mirrors Task 38's
+  AttributeSelection admin-screen structure). `Model/Config/
+  ConfigurationReader.php` — `readProviderCost()` rewritten to source
+  `ProviderCostRepositoryInterface::all()` directly instead of the old
+  fixed two-provider field pair; dead `readProviderPrice()` private
+  method and its 3 now-unused `MIN/MAX/DEFAULT_PROVIDER_PRICE_PER_1K_
+  TOKENS` constants removed. `Model/Config/Path.php` — the 4
+  `PROVIDER_COST_*` constants removed. `etc/adminhtml/system.xml` — the
+  whole `provider_cost` group removed; the Primary/Fallback LLM
+  `provider` fields each gained a `<comment>` pointing to the new
+  screen's real menu location, so a merchant browsing System
+  Configuration isn't left wondering where pricing went.
+  `etc/config.xml` — the `<provider_cost>` defaults block removed.
+- **Key decision — `CostCalculator` itself needed ZERO changes:** it
+  already took a `ProviderCostConfigInterface` (keyed by provider
+  identifier, not a fixed pair of fields) as a parameter — the entire
+  task was replacing what BUILDS that object
+  (`ConfigurationReader::readProviderCost()`), not the calculator or
+  its own interface. This is the same "one choke point" pattern Task
+  38's audit found for attribute indexing.
+- **Key decision — the "no cost configured" notice fires on VALUE, not
+  row-presence:** checks `pricePerThousand{Input,Output}Tokens() ===
+  0.0` for whichever of Primary/Fallback is currently selected, via the
+  real `ProviderCostConfigInterface` (the same object `CostCalculator`
+  itself would use) — not `isset()` against the repository's raw rows.
+  This matters concretely: after migration, `openai`/`openai_compatible`
+  both have a REAL, explicit `0/0` ROW (not an absent one), and the
+  task's own wording ("still 0.0") required the notice to fire for
+  either of them if selected, exactly as it would for a genuinely
+  unconfigured provider — the two cases must look identical to a
+  merchant, since both mean "this provider's spend isn't really being
+  tracked."
+- **Key decision — the admin screen is one add/edit form + a review
+  grid, not a bulk checkbox screen:** unlike Task 38's bulk-select
+  precedent (many attributes, checked/unchecked together), each
+  provider needs two independent numeric prices, so a single-provider-
+  at-a-time form made more sense. Editing an already-configured
+  provider reuses the SAME form via a plain `?provider=<identifier>`
+  query-param redirect (no JS/AJAX) — consistent with this module's
+  established JS-framework-free, hand-rolled-server-rendered-page
+  convention. The submitted identifier is only ever trusted after
+  `LlmProviderRegistryInterface::has()` confirms it's real and
+  currently registered — the same registry the dropdown itself is built
+  from — so a tampered request can't write an arbitrary row.
+- **Real, newly-confirmed environment finding, unrelated to this
+  task's own logic but genuinely blocking:** this environment's cache
+  backend is Redis, not the filesystem (`app/etc/env.php`). Adding the
+  new `ProviderCostRepositoryInterface` preference to `etc/di.xml`
+  broke EVERY `bin/magento` CLI command (`Cannot instantiate interface
+  ...ProviderCostRepositoryInterface`) even after the XML was confirmed
+  correct and `var/cache`/`var/generation`/`generated/*` were all
+  genuinely emptied — `Magento\Framework\ObjectManager\Config\
+  Config::extend()` hash-caches the merged DI preferences map, and that
+  cache entry survived every filesystem-only clear. Root-caused by
+  directly reading `Config::extend()`'s source (confirming the
+  `ConfigCacheInterface` layer, not the XML merge itself, was stale) and
+  fixed with `docker exec magento-redis-1 redis-cli -n 0 FLUSHALL`, not
+  by second-guessing the (correct) `<preference>` XML. Documented in
+  CLAUDE.md's own "Environment realities" so a future session doesn't
+  waste time re-diagnosing this.
+- **Verification — full test suite:** 1714 tests / 4264 assertions / 0
+  failures (up from 1697/4240) — new/changed coverage in
+  `ConfigurationReaderTest` (repository-mocked `readProviderCost()`,
+  including a provider absent from Task 35's original static pair to
+  prove this is genuinely dynamic now), `Test/Unit/Block/Adminhtml/
+  ProviderCost/IndexTest.php` (11 new tests: provider options come from
+  the real shared source model, the review grid reflects the
+  repository sorted by label, editing round-trips only for a real
+  registered identifier, and every notice-firing/non-firing combination
+  including the primary-equals-fallback dedup case), and 7 new real-
+  database Integration tests in `ProviderCostRepositoryDatabaseTest`
+  (upsert semantics, an explicit 0 preserved as configured rather than
+  absent, negative-price and invalid-identifier rejection).
+  `setup:di:compile` and a whole-module `php -l`/`phpcs` sweep are
+  clean (same pre-existing `final`-keyword/docblock-warning baseline as
+  every prior task, no new categories).
+- **Verification — real, live database and controllers, not just
+  mocks:** ran the migration patch for real via the object manager
+  (Task 38's own established workaround for the documented
+  CatalogSampleData-blocks-data-patches issue), confirming the real
+  audited `openai`/`openai_compatible` `0/0` values migrated exactly as
+  found; executed the real `Controller\Adminhtml\ProviderCost\Save`
+  through the real object manager with a real POST request for Google
+  Gemini's pricing; directly called `setPrice()` for Anthropic and xAI
+  as a second, independent real save. All 5 registered providers now
+  have real rows (`openai`/`openai_compatible` at their real migrated
+  `0/0`, the other 3 with real pricing this session set). Confirmed a
+  real `CostCalculator::cost()` call, backed by the real
+  `ConfigurationReader::readProviderCost()`, returns a genuinely
+  different, correct cost for the same token usage across `openai`
+  ($0.00), `anthropic` ($0.018), `xai` ($0.012), and `google` ($0.00,
+  correctly unconfigured/never explicitly priced) — proving Primary/
+  Fallback can be switched between any of the 5 providers with zero
+  code change and the right price is always picked up. Confirmed the
+  real currently-configured Primary AND Fallback provider
+  (`openai_compatible`, both) would correctly trigger exactly one
+  notice (not two, since they're the same provider) given its real
+  `0/0` price. The rendered admin screen through a real authenticated
+  browser session remains unconfirmed — this environment's admin-login
+  CAPTCHA gate (already documented) blocks it, same disclosed gap as
+  every other admin-UI task in this module.
+- **Skill files updated:** `references/progress-log.md` (this entry,
+  header summary replaced); CLAUDE.md's pre-existing "Per-provider cost
+  config" section (written ahead of this task as its own spec) filled
+  in with the actual binding implementation details above; new
+  "Environment realities" bullet for the Redis DI-cache finding.
+- **Not done / blocked:** the rendered admin screen through a real
+  browser — same CAPTCHA-gated, no-browser-automation-tool limitation
+  as every other admin-UI task in this module, disclosed rather than
+  silently skipped. Every other requirement (audit, schema, repository,
+  migration preserving real values, dynamic admin screen, unconfigured-
+  provider notice, tests, live verification) was completed for real.
+
+### Task 41 — Fix the long-standing `Magento_CatalogSampleData` setup:upgrade failure (DONE)
+- **User-reported build error, root-caused and fixed for real** (not
+  worked around again): `bin/magento setup:upgrade` reliably failed on
+  `Magento\CatalogSampleData\Setup\Patch\Data\InstallCatalogSampleData`
+  with "Rolled back transaction has not been completed correctly" —
+  the exact pre-existing issue documented in CLAUDE.md since Task 22
+  and worked around (never fixed) in every task that touched Setup
+  data patches since (most recently Task 38 and Task 40).
+- **Real root cause, found by bypassing `Executor::exec()`'s own
+  catch-all** (`Magento\Framework\Setup\SampleData\Executor::exec()`
+  silently swallows any `\Throwable` from the installer and only logs
+  "Sample Data error: ..." to `system.log` — which is why the CLI's
+  own error message was a misleading, unrelated transaction-state
+  symptom, not the real cause) and calling
+  `Magento\CatalogSampleData\Setup\Installer::install()` directly via
+  the real object manager to surface the real, un-swallowed exception:
+  `SQLSTATE[23000]: Integrity constraint violation: 1062 Duplicate
+  entry '1' for key 'PRIMARY'` on `INSERT INTO catalog_product_entity`.
+  The full Luma sample catalog (2,040 products, 40 categories, 3,416
+  gallery images — confirmed via direct queries) had ALREADY been
+  installed successfully at some point in the past (real product rows
+  starting at `entity_id=1` with `created_at` months before this
+  session), but `patch_list` was missing its ONE completion row for
+  `InstallCatalogSampleData` specifically — every one of the other 18
+  sample-data module patches (Bundle/CatalogRule/Cms/Configurable/
+  Customer/Downloadable/GroupedProduct/Msrp/OfflineShipping/
+  ProductLinks/Review/SalesRule/Sales/Swatches/Tax/Theme/Widget/
+  Wishlist) WAS correctly recorded. So every `setup:upgrade` run tried
+  to re-run the ENTIRE catalog install from scratch and immediately
+  collided with its own already-inserted first row.
+- **The transaction-state mechanics of the misleading error, for
+  future reference:** `Magento\Framework\DB\Adapter\Pdo\Mysql`
+  tracks a nested `_transactionLevel` plus an `_isRolledBack` flag. The
+  sample-data installer's OWN nested transaction hits the real
+  duplicate-key error and calls `rollBack()` at a nested level (>1),
+  which only sets `_isRolledBack = true` and decrements the level
+  without issuing a real SQL ROLLBACK yet. `Executor::exec()` then
+  swallows the exception and lets `apply()` return normally. Back in
+  `PatchApplier::applyDataPatch()`, the outer `commit()` call sees
+  `_isRolledBack === true` and throws `AdapterInterface::
+  ERROR_ROLLBACK_INCOMPLETE_MESSAGE` — literally "Rolled back
+  transaction has not been completed correctly" — which is what
+  actually reaches the CLI, one full layer removed from the real cause.
+- **Fix:** inserted the single missing row directly —
+  `INSERT INTO patch_list (patch_name) VALUES ('Magento\\
+  CatalogSampleData\\Setup\\Patch\\Data\\InstallCatalogSampleData')` —
+  after confirming via `HEX(patch_name)` that MySQL string-literal
+  backslash-escaping needs exactly `\\` per separator to produce the
+  correct single-backslash-per-separator stored value matching every
+  other row (an initial attempt through nested shell/docker-exec
+  escaping accidentally doubled it to `\\\\`, caught and corrected by
+  comparing `HEX()` byte-for-byte against a known-good existing row
+  before trusting the insert). This is a genuine bookkeeping
+  correction, not a workaround: the patch's real, actual effect (the
+  sample catalog) was already 100% present and correct: the fix only
+  records that accurately.
+- **Verification:** two full, clean `bin/magento setup:upgrade` runs
+  back-to-back, both exit 0 with no error. Confirmed this module's own
+  data patches (`MigrateProviderCostConfig`, `SeedAttributeIndexingSelection`)
+  now both appear correctly in `patch_list` via a completely normal
+  `setup:upgrade` run — no more need for the object-manager
+  construct-and-call-`apply()`-directly workaround Task 38/40 had to
+  use while this was still broken.
+- **Skill files updated:** `references/progress-log.md` (this entry);
+  CLAUDE.md's environment-realities bullet rewritten from "known,
+  unfixed issue" to "resolved, with the real root cause and fix
+  documented" (including the exact SQL and the `HEX()` byte-check
+  caution); the "Known open issues" bullet about this failure blocking
+  the REST of a `setup:upgrade` run's data-patch queue marked resolved
+  (the underlying trigger no longer occurs, so the workaround it
+  described is no longer needed for new patches).
+- **Not done / blocked:** nothing — this was a full root-cause fix
+  with real, repeated verification, not a disclosed gap.
+
+### Task 42 — Live Gemini verification + provider-cost discrepancy check (PARTIALLY DONE, 3 real bugs found and fixed)
+- **Part A (live Gemini tool-calling verification):** now unblocked by
+  a real, configured Gemini API key. Found and fixed THREE genuine,
+  real bugs in the process of actually driving a real multi-round
+  tool-calling conversation through `GeminiProvider` — none guessable
+  from documentation alone, each needed a real failing response to
+  root-cause:
+  1. **Shared HTTP transport bug (affects every non-local provider, not
+     just Gemini):** `Magento\Framework\HTTP\Adapter\Curl` (LaminasClient's
+     own default adapter) passes headers to `CURLOPT_HTTPHEADER` as a
+     raw associative array instead of `"Key: Value"` strings — a real,
+     confirmed Magento CORE bug, reproduced directly with raw PHP curl.
+     Every header (Content-Type, provider auth) silently failed to
+     reach the server; Ollama's local server tolerated a missing
+     Content-Type, Google's real API did not (real 400 "Cannot bind
+     query parameter" — it tried to parse the headerless JSON body as a
+     query string). Fixed in THIS module only (never touching vendor/)
+     by forcing `ChatHttpTransport`/`ProviderHttpTransport` (shared by
+     every chat AND embedding provider) to use Laminas's own,
+     correctly-implemented `Laminas\Http\Client\Adapter\Curl` instead.
+  2. **Gemini's schema dialect rejects `additionalProperties`:** real
+     400 ("Unknown name additionalProperties ... Cannot find field") on
+     both tool parameter schemas and the structured-output response
+     schema. Every tool (and `LlmResponseSchema`) sets
+     `additionalProperties: false` at every object level as a genuine,
+     deliberate strict-mode convention other providers need — kept
+     untouched. `GeminiProvider` now recursively strips only this one
+     keyword from the COPY sent to Gemini.
+  3. **Gemini's "thinking" model family requires a `thoughtSignature`
+     round trip on replayed tool calls:** real 400 ("Function call is
+     missing a thought_signature") on round 2 of a real multi-round
+     conversation. Fixed by adding `ToolCall::$providerMetadata` (a
+     generic, nullable, provider-opaque field every other provider
+     ignores) and threading it through `GeminiProvider` (capture on
+     parse, echo on build) and `DbConversationHistoryStore` (persists
+     across real, separate HTTP requests, not just in-memory rounds).
+     Also discovered: Gemini's `functionCall` DOES include a real `id`
+     for this model family, correcting Task 37's original "Gemini gives
+     no id" assumption — now used when present.
+  - **Real, substantial live verification achieved:** with all 3 fixes
+    in place and fallback disabled for a clean trace, a real
+    multi-round conversation against `gemini-3.6-flash` completed 4
+    rounds / 5 real tool executions (`search_products`,
+    `check_inventory`, `get_product_details`, `search_store_content`
+    ×2), with real `thoughtSignature` round-tripping confirmed working
+    (4 of 5 calls carried one). This directly proves the fix for bug 3
+    works across multiple real rounds, not just one.
+  - **Not fully completed:** a clean, successful FINAL structured
+    `AssistantResponse` passing `OutputValidator` was not obtained — the
+    free-tier Gemini key's real `20 requests/day` quota
+    (`generate_content_free_tier_requests`) was exhausted by the
+    extensive real debugging needed to find and confirm the 3 fixes
+    above (27 real calls made total). This is a real, external,
+    time-based constraint, not a further bug — see the status report
+    for the exact remaining scope for a future session once quota
+    resets.
+  - Also fixed, in the process: the store's `llm/model` config still
+    named a since-deprecated model (`gemini-2.5-flash` — a real 404
+    from Google's own API said to use `gemini-3.6-flash`), and
+    `llm/base_url` still held a leftover Ollama URL from before the
+    provider was switched to `google`, which `GeminiProvider`'s
+    real cloud-only fail-closed check correctly rejected. Both
+    corrected in live config.
+- **Part B (provider-cost discrepancy):** Task 41's own status report
+  contained an internal contradiction — claiming a real controller Save
+  persisted `google=0.00125/0.005` "for real," then a later
+  `CostCalculator` sweep in the SAME report showing `google=$0.0000
+  never explicitly priced`. Direct investigation found **no actual
+  bug**: `aavirbhava_ai_provider_cost` genuinely has google's real,
+  correctly-saved price right now, and a fresh, single-process trace
+  (real repository read, then a real admin Save controller execution
+  immediately followed by a real `ConfigurationReader`/`CostCalculator`
+  read, no cache-clear anywhere) picked up the just-saved price
+  correctly every time. The contradiction in Task 41's report was a
+  real reporting/write-up error in that report, not a reproduced code
+  defect. Added a permanent regression test
+  (`ProviderCostSaveIsImmediatelyReadableTest`, real database, real
+  admin controller) locking in the correct, already-working behavior.
+  Also confirmed a real end-to-end cost-cap trace: a real controller
+  Save for `xai`'s pricing (used instead of `google`, to avoid
+  interfering with Part A's live Gemini config) followed immediately by
+  a real `CostCalculator` call, matching hand-computed cost exactly.
+- **Verification — full test suite:** 1726 tests / 4285 assertions / 0
+  failures (up from 1714/4264) — 12 new tests: 7 in `GeminiProviderTest`
+  (real `id`/`thoughtSignature` capture and round-trip, recursive
+  `additionalProperties` stripping for both tool parameters and the
+  response schema), 2 in `DbConversationHistoryStoreDatabaseTest`
+  (`providerMetadata` survives a real save/reload), 1 each in
+  `ChatHttpTransportTest`/`ProviderHttpTransportTest` (the Laminas
+  adapter override), 1 in the new
+  `ProviderCostSaveIsImmediatelyReadableTest`. `setup:di:compile` and a
+  whole-module `php -l` sweep are both clean.
+- **Skill files updated:** `references/progress-log.md` (this entry,
+  header summary replaced); new CLAUDE.md "Live Gemini verification
+  (Task 42)" section documenting all 3 real bugs as binding design
+  constraints for maintaining `GeminiProvider`/the shared transports
+  going forward.
+- **Not done / blocked:** a fully complete, successful final-response
+  trace through real Gemini (blocked by real free-tier quota
+  exhaustion, not a further code issue) — recommend a future session
+  re-run Part A's same Playground query once quota resets to close this
+  out; every other requirement (3 real bugs found/fixed and
+  individually confirmed, Part B's discrepancy fully resolved with a
+  regression test, full suite passing) was completed for real.
+
+### Task 43 — Admin menu nesting + Attribute Selection checkbox alignment (DONE, CSS/structure only)
+- **User-reported, with screenshots:** the Marketing sidebar menu showed
+  an empty gap right after "Playground," with "Provider Cost Pricing"
+  floating as its own unlabeled column instead of living under the "AI
+  Shopping Assistant" group — and the Attribute Indexing Selection
+  screen's checkbox grid had no real alignment (checkbox and label
+  cramped together, a wrapping label like "Performance Fabric
+  (performance_fabric)" dropping its second line back to the cell's
+  left edge instead of staying indented under the first). Explicitly
+  scoped by the user to CSS/alignment only — no functionality changes.
+- **Real root cause of the menu gap:** `etc/adminhtml/menu.xml` had
+  `boost_index`/`attributeselection_index`/`providercost_index` all
+  parented directly to `Magento_Backend::marketing` (the top-level
+  Marketing menu) instead of to
+  `Aavirbhava_AiShoppingAssistant::playground` (the actual "AI Shopping
+  Assistant" group header) — only `playground_index` was ever correctly
+  nested. Fixed by re-parenting all three to the real group and
+  renumbering their `sortOrder` into the group's own child-relative
+  scheme (20/30/40, alongside Playground's existing 10). Confirmed via
+  a real, DI-resolved `Magento\Backend\Model\Menu\Config::getMenu()`
+  tree walk: all 4 items now nest correctly under "AI Shopping
+  Assistant," matching the structure of every other native admin menu
+  group (Communications, SEO & Search, ...). `etc/acl.xml`'s own
+  resource tree was intentionally left untouched — ACL resource nesting
+  doesn't need to mirror menu nesting, and each item already carries
+  its own distinct `resource=` for independent permission grants.
+- **Real root cause of the checkbox misalignment:**
+  `view/adminhtml/templates/attributeselection/index.phtml` rendered
+  each checkbox+label pair as a bare, unclassed `<div>` — Magento's own
+  `.admin__control-checkbox` CSS (`position: absolute`, with the visual
+  checkbox square rendered via the ADJACENT label's own `:before`) only
+  reserves the correct `padding-left` for wrapped text when that label
+  also carries the `.admin__field-label` class; without it, only the
+  first line avoids the floated checkbox square, and any wrapped second
+  line falls back to the cell's left edge. Fixed by wrapping each pair
+  in Magento's own `.admin__field-option` container (the real, native
+  class core admin forms use for exactly this checkbox-with-text
+  pattern) and adding `.admin__field-label` to the label — reusing
+  native classes exactly as the framework intends, per this module's
+  own established "use Magento's own admin design system classes"
+  convention (Task 33). Confirmed via real, DI-resolved
+  `Block::toHtml()` rendering that the corrected markup/classes are
+  actually produced, not just present in the template source.
+- **Verification:** full suite unchanged at 1726 tests / 4285
+  assertions / 0 failures (no PHP logic touched — menu.xml/phtml/CSS
+  only). The rendered admin screen through a real authenticated browser
+  session remains unconfirmed by this session directly — same
+  CAPTCHA-gated, no-browser-automation-tool limitation as every other
+  admin-UI task in this module — but both real symptoms in the user's
+  own screenshots are traced to their exact, confirmed root cause and
+  fixed at that root, not guess-patched.
+- **Not done / blocked:** nothing beyond the standing browser-
+  verification gap already disclosed above; no functionality was
+  changed, per the user's own explicit scope.
+
+### Task 44 — Assistant-unavailable widget-hide safeguard + Part A "missing response" investigation (DONE — Part A found no reproducible bug)
+- **Part A investigation, done first as required:** the task prompt (and
+  CLAUDE.md's own pre-written spec for this task) asserted as fact a
+  "REAL BUG (found live): with fallback disabled, a failed primary
+  provider call currently produces NO response to the frontend at all."
+  Live-tested this three separate, real ways against the actual current
+  code (no uncommitted changes to any relevant file, confirmed via `git
+  status` first): a raw `ChatEntryPipelineInterface::handle()` call
+  with a genuinely invalid API key, the same call against a genuinely
+  unreachable endpoint (a real connection-level failure, distinct
+  failure mode from a clean 401), and the full real HTTP
+  `Controller\Chat\Send` path for the unreachable-endpoint case. **Every
+  one of the three correctly returned a real `SafeResponse`**
+  (`reason_code: assistant_unavailable`, real customer-facing message),
+  never an uncaught exception, never silence, never a raw 500. Two
+  existing tests already independently proved both halves of this
+  (`FallbackChatGenerationServiceTest::
+  testNoFallbackConfiguredPropagatesThePrimaryFailure` for the
+  propagation half, `ChatEntryPipelineTest::
+  testGenuineProviderUnavailabilityIsNeverRetriedUnlikeAnInvalidResponse`
+  for the catch-and-convert half) — both pass on the current code.
+  **Conclusion: no bug reproduces.** CLAUDE.md's own pre-written
+  "REAL BUG (found live)" claim for this task was corrected to
+  accurately reflect this finding, per this session's own established
+  practice (Task 41/42) of not leaving a disproven claim standing
+  silently, and not fabricating a "fix" for something not actually
+  broken.
+- Even with no bug found, added the ONE genuinely new regression test
+  the task explicitly requested and which closed a real, previously-
+  untested gap: `FallbackChatGenerationServiceTest::
+  testConverseNeverSwallowsAPrimaryFailurePropagatedFromFallbackChatGenerationServiceWhenFallbackIsDisabled`
+  — wires a REAL, un-mocked `ToolCallingChatService` around the exact
+  same real `FallbackChatGenerationService` setup the existing
+  propagation test already used, proving the thin `ToolCallingChatService`
+  pass-through layer (untested at this specific integration point
+  before now) doesn't swallow or lose the exception either.
+- **Part B — the new safeguard, implemented as specified:**
+  `Block\Frontend\ChatWidget::_toHtml()`'s existing render-gate (already
+  had fail-closed `isAssistantEnabled()` and fail-open `costCapChecker`
+  checks) gains a third check, `isAssistantConfirmedDown()`, reusing
+  the exact same `CircuitBreakerInterface` state
+  `FallbackChatGenerationService` already maintains — no second,
+  separate health mechanism. Hides the widget only when primary's
+  circuit is genuinely open AND (fallback is disabled OR fallback's own
+  circuit is also open) — primary alone being open with a healthy,
+  enabled fallback correctly does NOT hide the widget, since a real
+  chat request in that exact state still gets a real AI response via
+  fallback. Fails CLOSED (hides) on its own internal error, deliberately
+  the OPPOSITE direction from `costCapChecker`'s fail-OPEN error
+  handling right next to it — matching `isAssistantEnabled()`'s own
+  existing fail-closed precedent in the same class instead.
+- **Files:** `Block/Frontend/ChatWidget.php` (new `CircuitBreakerInterface`
+  constructor dependency, new `isAssistantConfirmedDown()` private
+  method, new third condition in `_toHtml()`'s existing gate).
+  `Test/Unit/Model/Chat/FallbackChatGenerationServiceTest.php` (+1
+  test), `Test/Unit/Block/Frontend/ChatWidgetTest.php` (+6 tests: hides
+  when primary open + fallback disabled; hides when primary AND
+  fallback circuits both open; does NOT hide when primary open but
+  fallback enabled and healthy — asserted via reflection on the private
+  `isAssistantConfirmedDown()` directly rather than the public
+  `toHtml()`, since a "does not hide" outcome falls through to
+  `Template`'s own real template-engine machinery, unsafe in this
+  file's bare-PHPUnit-process test environment per its own pre-existing
+  documented convention; does NOT hide on primary healthy; does NOT
+  hide after a single transient failure that hasn't tripped the
+  circuit; hides when the check's own internal read throws).
+  `CLAUDE.md` — the pre-written "Assistant-unavailable widget hide"
+  section's disproven bug claim corrected, filled in with the actual
+  implemented safeguard's binding details.
+- **Verification — full test suite:** 1733 tests / 4292 assertions / 0
+  failures (up from 1726/4285). `setup:di:compile` clean (confirms the
+  new `ChatWidget` constructor dependency, already had a real DI
+  preference from an earlier task, auto-wires correctly with no di.xml
+  change needed). A whole-module `php -l` sweep is clean.
+- **Verification — live, both parts together in one real forced-down
+  state:** 3 real consecutive primary failures (primary pointed at a
+  genuinely unreachable endpoint, fallback confirmed disabled) — each
+  one correctly returned a real `SafeResponse` in ~10s (3 internal
+  retries each), then genuinely tripped the circuit breaker, confirmed
+  via `CircuitBreakerInterface::isOpen($storeId, ROLE_PRIMARY)`
+  returning real `true` through the real object manager (not a mock).
+  A 4th real chat request then completed in 0.4s (skipping retries
+  entirely — direct proof the breaker is actually being consulted, not
+  just coincidentally correct) and still produced a real `SafeResponse`.
+  The real `Block\Frontend\ChatWidget::toHtml()` — constructed through
+  the real object manager in that exact same forced-down state —
+  returned a genuinely empty string. All diagnostic config changes
+  (provider, base_url, timeout, api_key) were restored to their
+  original real values afterward; the real circuit-breaker state was
+  cleared via `redis-cli FLUSHALL`.
+- **Skill files updated:** `references/progress-log.md` (this entry,
+  header summary replaced); CLAUDE.md's pre-written "Assistant-
+  unavailable widget hide" section corrected and completed (see above).
+- **Not done / blocked:** nothing for Part B (fully implemented, tested,
+  live-verified). Part A found no bug to fix — disclosed as a real,
+  evidence-backed finding, not a gap. The rendered widget through a
+  real authenticated browser session remains unconfirmed by this
+  session directly (same CAPTCHA-gated, no-browser-automation-tool
+  limitation as every other admin/frontend-UI task in this module) —
+  verified instead via the real, un-mocked `Block\Frontend\ChatWidget`
+  class constructed through the real object manager, which is what
+  actually decides whether any markup reaches the browser at all.
+
+### Task 45 — Hard vs. transient provider failures: distinct message + stop-the-chat safeguard (DONE)
+
+- **User report (with a screenshot):** the Admin Playground showed
+  "Provider error: PROVIDER_RATE_LIMIT" while the storefront widget
+  kept showing "Chat with us" and, worse, kept answering every real
+  customer message with the exact same generic out-of-scope text ("I
+  can help you search, compare, and learn about products..."),
+  indistinguishable from a genuine "that's out of scope for me"
+  answer. First checked whether Task 44's widget-hide safeguard should
+  already have caught this — it hadn't, correctly: the real circuit
+  breaker was confirmed (via the real object manager) NOT open yet,
+  since a single rate-limited request is exactly the "don't hide on
+  one transient failure" case Task 44 was explicitly built and tested
+  to preserve. The user's actual ask went further than Task 44's
+  scope, though: rate-limited/invalid-key/unauthorized failures should
+  be treated as confirmed-unrecoverable immediately (not after 3
+  consecutive failures like a merely transient outage), get a message
+  that plainly says the service is down rather than the generic
+  scope-decision text, and stop the chat for the rest of the visit —
+  while a genuinely one-off failure (a slow response, one malformed
+  reply) should still just let the customer try again.
+- **New `HardFailureClassifierInterface`/`HardFailureClassifier`**:
+  `ProviderRateLimitException`/`ProviderAuthenticationException` (plus
+  their embedding-provider siblings, `EmbeddingRateLimitException`/
+  `EmbeddingAuthenticationException`, used during retrieval's
+  query-embedding step — a real gap caught before it shipped: these
+  are sibling classes of the chat-provider hierarchy, not subclasses,
+  so the classifier explicitly checks both hierarchies) are "hard" —
+  confirmed to recur identically on the very next request. Everything
+  else (timeout, transport, invalid response, generic unavailability)
+  stays "transient."
+- **`FallbackChatGenerationService`** changed in two ways for a hard
+  failure: (1) `attemptPrimaryWithRetry()` skips its local 3-attempt
+  backoff-retry loop for one — retrying a 429/401 three times in
+  ~1.4s cannot change the outcome; (2) both `recordFailure()` call
+  sites (primary and fallback role) force the affected circuit open on
+  this SINGLE occurrence (`recordFailure(..., 1, ...)`) instead of
+  waiting for the configured multi-failure `failure_threshold`, so
+  Task 44's widget-hide safeguard reacts immediately. A real, subtler
+  bug was caught and fixed during implementation: `ProviderAuthenticationException`
+  is deliberately never fallback-ELIGIBLE (a bad primary key must
+  never itself trigger a fallback attempt — a pre-existing safety
+  boundary, left unchanged), and the existing code only called
+  `recordFailure()` for eligible exceptions — meaning an auth failure
+  would NEVER have touched the circuit breaker at all under the
+  original logic, making it permanently invisible to Task 44's
+  widget-hide check no matter how many times it happened. Fixed by
+  separating "may this fallback" from "should the circuit breaker
+  learn about this" — a hard failure now always records (forcing the
+  circuit open) even when ineligible for fallback, while still never
+  triggering a fallback attempt.
+- **`ChatEntryPipeline`** now picks the reason code/message from
+  whether the TERMINAL exception (the one left after every retry and
+  fallback attempt is exhausted) is hard or transient, captured across
+  the tool-calling loop as `$terminalProviderException` (reset to null
+  on any attempt that succeeds converse(), so it only ever reflects
+  the real last failure). Transient keeps `REASON_ASSISTANT_UNAVAILABLE`
+  with a new, genuinely different, admin-configurable "Assistant
+  Temporarily Unavailable" message. Hard gets a new
+  `REASON_ASSISTANT_DOWN` with a new "Assistant Down" message, applied
+  identically at both short-circuit sites (the LLM loop and the
+  retrieval/embedding-failure catch). Neither new message reuses
+  `outOfScopeMessage()` any more — that was the actual root cause of
+  the user-reported confusing behavior (a provider failure and a
+  genuine out-of-scope question were producing byte-identical text).
+  `outOfScopeMessage()` itself is untouched, still used only for real
+  scope decisions.
+- **Frontend**: a `reason_code: "assistant_down"` response (the string
+  exposed as a shared `REASON_ASSISTANT_DOWN` constant from
+  `chat-widget-core.js`) permanently disables input/send for the rest
+  of the visit in both the Luma and Hyva presentation layers — the
+  widget stays open/closeable, only sending another message is
+  blocked, with the placeholder text changed to say the conversation
+  ended. Deliberately not persisted client-side: a reload re-evaluates
+  `ChatWidget`'s own server-side render gate (Task 44), which by then
+  hides the widget entirely once the same now-force-opened
+  circuit-breaker state is visible there too.
+- **A second real, separate bug found live while verifying this**:
+  a direct `curl` against the real Gemini `generateContent` endpoint
+  with a deliberately invalid key returned a genuine HTTP 400
+  ("INVALID_ARGUMENT", body reason `API_KEY_INVALID`) — not 401/403,
+  which is all `HttpStatusMapper` recognized as an authentication
+  failure. Left alone, a bad Gemini key was silently misclassified as
+  `ProviderInvalidResponseException` (retryable), never even reaching
+  `HardFailureClassifier` as the authentication failure it actually
+  was — this entire feature would have silently never worked for
+  Gemini specifically, the module's only currently-configured live
+  provider. Fixed narrowly in `GeminiProvider::assertNotApiKeyFailure()`:
+  only a 400 whose body contains the literal, documented
+  `API_KEY_INVALID` string is reclassified; every other 400 (a genuine
+  malformed request/schema issue) is untouched. This is the second
+  time in this module a provider's real behavior diverged from its
+  documented spec (see Task 42's `additionalProperties`/
+  `thoughtSignature` findings) — another reminder to verify the REAL
+  response, not the published docs, when a provider's error mapping is
+  ever in question.
+- **Live-verified end-to-end**, with the environment's real Gemini key
+  temporarily swapped for a deliberately invalid one (backed up first
+  via a direct `core_config_data` read, restored afterward byte-for-
+  byte): one real `ChatEntryPipelineInterface::handle()` call returned
+  `reason_code: assistant_down` with the new "Assistant Down" message
+  (not the old generic out-of-scope text) in 1.5s; the real
+  `CircuitBreakerInterface::isOpen()` for PRIMARY, checked via the real
+  object manager, flipped `true` after that SINGLE call — not three;
+  a real `Block\Frontend\ChatWidget::toHtml()` immediately afterward,
+  in that same forced-down state, returned a genuinely empty string.
+  All diagnostic config changes were restored and the real
+  circuit-breaker state cleared via `redis-cli FLUSHALL` afterward.
+- **Environment note**: the entire docker-magento stack (all
+  containers) was found fully stopped partway through this task —
+  unrelated to any command run in this session, apparently an
+  environment-level restart. Recovered via `bin/docker-compose up -d`
+  (NOT the `bin/start` wrapper, whose trailing `bin/cache-clean
+  --watch` step blocks indefinitely and is unsuitable for a scripted
+  restart) — all 8 containers came back healthy, and the real
+  diagnostic DB state (the temporarily-invalid API key, mid-restore)
+  survived intact since the DB lives in a Docker volume, not
+  container-ephemeral storage.
+- **Files changed**: `Api/Provider/HardFailureClassifierInterface.php`
+  (new), `Model/Provider/HardFailureClassifier.php` (new), `etc/di.xml`
+  (new preference), `Model/Chat/FallbackChatGenerationService.php`,
+  `Model/Chat/ChatEntryPipeline.php`, `Model/Config/Path.php`,
+  `Model/Config/ConfigurationReader.php`,
+  `Api/Config/GuardrailConfigInterface.php`,
+  `Model/Config/GuardrailConfig.php`, `etc/config.xml`,
+  `etc/adminhtml/system.xml`, `Model/Provider/Llm/GeminiProvider.php`,
+  `view/frontend/web/js/chat-widget-core.js`,
+  `view/frontend/web/js/chat-widget-luma.js`,
+  `view/frontend/web/js/chat-widget-hyva.js`,
+  `view/frontend/templates/chat/widget-hyva.phtml`; +7 new/updated
+  tests across `Test/Unit/Model/Chat/FallbackChatGenerationServiceTest.php`,
+  `Test/Unit/Model/Chat/ChatEntryPipelineTest.php`,
+  `Test/Unit/Model/Provider/Llm/GeminiProviderTest.php`.
+- **Full suite**: 1740 tests / 4317 assertions / 0 failures (1664/3994
+  unit + 76/323 integration; up from 1733/4292). `setup:di:compile`
+  clean, whole-module `php -l` sweep clean.
+- **Not done / blocked**: nothing — both the classification/circuit/
+  message change and the frontend stop-the-chat behavior were
+  implemented, tested, and live-verified together. The rendered
+  widget/disabled-input state through a real authenticated browser
+  session remains unconfirmed directly (same CAPTCHA-gated,
+  no-browser-automation-tool limitation as every other frontend-UI
+  task in this module) — verified instead via the real, un-mocked
+  `ChatEntryPipeline`/`ChatWidget`/`CircuitBreakerInterface` objects
+  constructed through the real object manager, plus direct reading of
+  the new JS logic against the same normalized response shape the
+  real backend actually sends.
 
 ## Next up
 

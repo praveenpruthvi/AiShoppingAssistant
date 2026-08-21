@@ -12,6 +12,14 @@ three providers, built to spec against each one's real documented API,
 with no live API key available in this session to exercise a real
 call — disclosed here and in every new class's own docblock.
 
+**Follow-up (same task, user-requested continued validation):** with
+no real API key becoming available for any of the three providers, the
+user explicitly chose to strengthen the existing mocked test suites
+rather than leave them at their original, first-pass coverage — see
+the expanded "Verification — full test suite" section below for what
+was added and why each case is a real, named provider behavior, not an
+arbitrary addition.
+
 ## Files
 
 New: `Model/Provider/Llm/{XaiProvider,AnthropicProvider,GeminiProvider,
@@ -64,14 +72,57 @@ field already covers whichever provider is selected in that role.
 
 ## Verification — full test suite
 
-**1596 tests / 3868 assertions / 0 failures** (up from 1549/3735) — 51
-new tests covering endpoint/header/auth shape, request-body mapping for
-every role (system extraction, tool-call/tool-result round-tripping,
-Gemini's role renaming and by-name tool-result resolution), response
-parsing (text, tool calls, provider-specific usage/caching field
-names), and the full HTTP-status/transport-failure/fail-closed-config
-matrix already proven for `OpenAiProvider`. A whole-module `php -l`
-sweep (646 files) and `setup:di:compile` are both clean.
+**1615 tests / 3897 assertions / 0 failures** (up from 1549/3735 before
+this task; 1596/3868 at this task's original first pass) — 67 new
+tests total across the three new provider adapters, covering
+endpoint/header/auth shape, request-body mapping for every role
+(system extraction, tool-call/tool-result round-tripping, Gemini's role
+renaming and by-name tool-result resolution), response parsing (text,
+tool calls, provider-specific usage/caching field names), and the full
+HTTP-status/transport-failure/fail-closed-config matrix already proven
+for `OpenAiProvider`. A whole-module `php -l` sweep (646 files) and
+`setup:di:compile` are both clean.
+
+### Expanded coverage (follow-up round, 16 new tests)
+
+With no live key available, the follow-up round targeted specific,
+*named* real-provider behaviors from each API's own documentation that
+the first pass hadn't exercised yet — not arbitrary additional cases:
+
+- **`XaiProviderTest`** (4→8 tests): rate-limit status mapping,
+  cloud-only base-URL rejection, a real tool-call round trip through
+  xAI's own endpoint/headers (not just assumed via
+  `AbstractChatProvider` inheritance), and `response_format`/
+  JSON-schema forwarding matching the `structuredOutput: true`
+  capability this adapter claims.
+- **`AnthropicProviderTest`** (17→23 tests): **multiple `tool_use`
+  blocks in one response** (a real, documented case — the model
+  requesting several tools in one turn, e.g. `check_price` +
+  `check_inventory` together) all becoming separate `ToolCall`s, not
+  just the first; **multiple text blocks concatenated** (real when text
+  is interleaved with `tool_use` blocks); **`stop_reason: "max_tokens"`**
+  — a normal truncation outcome, not an error, still returns the
+  truncated text (proves this class's own deliberate choice not to
+  branch on `stop_reason` for success/failure is correct for this named
+  case); **`cache_creation_input_tokens` vs `cache_read_input_tokens`**
+  — Anthropic's real prompt-caching usage shape can carry both in the
+  same response, and only a cache *read* is a genuine cost discount
+  this module's `cachedInputTokens` should reflect — a cache *write*
+  must never be conflated with one; no-system-message correctly omits
+  the `system` field entirely; a `tool_use` block missing its `id` is
+  rejected.
+- **`GeminiProviderTest`** (20→26 tests): **`finishReason: "MAX_TOKENS"`**
+  — the same real truncation-is-not-an-error case as Anthropic's
+  `max_tokens`; **`finishReason: "RECITATION"`** — a real, documented,
+  distinct-from-`SAFETY` finish reason, proving this class's own
+  deliberate choice to map only the one well-documented `SAFETY` signal
+  (not guess at others) behaves correctly — it falls through to the
+  normal empty-content rejection rather than a fabricated refusal;
+  multiple text parts concatenated; missing `usageMetadata` defaults to
+  zero usage rather than failing; **only `candidates[0]` is used when
+  Gemini returns several** (real, happens when `candidateCount` is
+  raised above its default of 1 — this module never requests more than
+  one); a `functionCall` missing its `name` is rejected.
 
 ## Verification — real DI-resolved wiring (not a live provider call)
 

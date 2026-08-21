@@ -11,6 +11,7 @@ use Aavirbhava\AiShoppingAssistant\Api\Chat\OutputValidatorInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Chat\ToolCallingChatServiceInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\ConfigurationReaderInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Promotion\ActivePromotionReaderInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Provider\HardFailureClassifierInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Revalidation\LiveRevalidationServiceInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Store\StoreScopeProviderInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Chat\Debug\ChatDebugLogger;
@@ -40,17 +41,22 @@ use Psr\Log\LoggerInterface;
  * config is read. The assistant-disabled check runs before input
  * validation and classification so a disabled store never processes
  * customer text at all. An invalid provider response, or every LLM
- * provider (primary and fallback) failing outright, both reuse the exact
- * same SafeResponse shortCircuit path as an out-of-scope message — one
- * consistent safe-fallback outcome in the whole pipeline, not several.
- * Product search / the safe-response mechanism therefore keeps working
- * even when every configured LLM provider is down. **A retrieval/ranking
- * failure (Task 12) reuses the identical shortCircuit shape** — the
- * customer always sees the same generic safe message regardless of which
- * backend failed, while the reason code stays distinct
- * (`retrieval_unavailable` vs. `assistant_unavailable`) so logs/metrics
- * can still tell an OpenSearch/embedding-provider outage apart from an
- * LLM-provider outage. Only the sanitized ProductIndexingException/
+ * provider (primary and fallback) failing outright, both short-circuit
+ * to a SafeResponse rather than propagating — product search / the
+ * safe-response mechanism therefore keeps working even when every
+ * configured LLM provider is down. **A retrieval/ranking failure
+ * (Task 12) reuses the identical shortCircuit shape.** Which message a
+ * customer actually sees, and whether the storefront then stops
+ * accepting further messages, depends on HardFailureClassifier
+ * (Task 45): a transient failure (timeout, dropped connection, one
+ * malformed completion) gets `assistant_unavailable`/
+ * `retrieval_unavailable` and the guardrails "Assistant Temporarily
+ * Unavailable" message — a subsequent message may well succeed. A hard
+ * failure (an exhausted quota, an invalid/revoked API key — confirmed to
+ * recur identically on every next attempt) instead gets
+ * `assistant_down` and the guardrails "Assistant Down" message, and the
+ * widget stops accepting further input for the rest of the visit, since
+ * a retry cannot help. Only the sanitized ProductIndexingException/
  * ProviderException taxonomies are caught here — anything else (a real
  * programming bug: a TypeError, an unexpected InvalidArgumentException)
  * still propagates uncaught, the same "only catch what's actually
@@ -167,6 +173,17 @@ final class ChatEntryPipeline implements ChatEntryPipelineInterface
     public const REASON_RETRIEVAL_UNAVAILABLE = 'retrieval_unavailable';
 
     /**
+     * A HardFailureClassifier-confirmed hard failure (an exhausted quota,
+     * an invalid/revoked API key) reached this pipeline with every retry
+     * and fallback already exhausted. Unlike REASON_ASSISTANT_UNAVAILABLE/
+     * REASON_RETRIEVAL_UNAVAILABLE, this is the frontend's signal to stop
+     * offering the chat for the rest of the visit, not only to show a
+     * different message — the underlying problem is confirmed to recur on
+     * every subsequent message, not just this one.
+     */
+    public const REASON_ASSISTANT_DOWN = 'assistant_down';
+
+    /**
      * One initial attempt plus one self-correction retry. Live-verified
      * against this environment's real local/Ollama chat provider that a
      * single corrective round-trip reliably recovers a response the model
@@ -251,7 +268,8 @@ TEXT;
         private readonly PriceConstraintReconciler $priceConstraintReconciler,
         private readonly PriorTurnProductCarryOver $priorTurnProductCarryOver,
         private readonly ChatDebugLogger $debugLogger,
-        private readonly LoggerInterface $logger
+        private readonly LoggerInterface $logger,
+        private readonly HardFailureClassifierInterface $hardFailureClassifier
     ) {
     }
 
@@ -311,10 +329,19 @@ TEXT;
                 $candidates = $this->productContextResolver->resolve($storeId, $message);
             } catch (ProductIndexingException | ProviderException $exception) {
                 $this->logRetrievalFailure($storeId, $exception);
+
+                if ($exception instanceof ProviderException && $this->hardFailureClassifier->isHardFailure($exception)) {
+                    $trace->outcome = self::REASON_ASSISTANT_DOWN;
+
+                    return ChatPipelineResult::shortCircuit(
+                        new SafeResponse($guardrails->assistantDownMessage(), self::REASON_ASSISTANT_DOWN)
+                    );
+                }
+
                 $trace->outcome = self::REASON_RETRIEVAL_UNAVAILABLE;
 
                 return ChatPipelineResult::shortCircuit(
-                    new SafeResponse($guardrails->outOfScopeMessage(), self::REASON_RETRIEVAL_UNAVAILABLE)
+                    new SafeResponse($guardrails->assistantUnavailableMessage(), self::REASON_RETRIEVAL_UNAVAILABLE)
                 );
             }
 
@@ -390,6 +417,7 @@ TEXT;
             $bestValidValidation = null;
             $bestValidToolResult = null;
             $completenessRetryUsed = false;
+            $terminalProviderException = null;
 
             for ($attempt = 1; $attempt <= self::MAX_TOTAL_ATTEMPTS; $attempt++) {
                 $complianceAttemptsRemain = $attempt < self::MAX_STRUCTURED_OUTPUT_ATTEMPTS;
@@ -413,6 +441,7 @@ TEXT;
                     // nudge treatment as a malformed response, instead of
                     // failing the turn outright on the first occurrence.
                     $this->logProviderFailure($storeId, $exception, $attempt);
+                    $terminalProviderException = $exception;
 
                     if (!$complianceAttemptsRemain) {
                         break;
@@ -422,8 +451,11 @@ TEXT;
                     continue;
                 } catch (ProviderException $exception) {
                     $this->logProviderFailure($storeId, $exception, $attempt);
+                    $terminalProviderException = $exception;
                     break;
                 }
+
+                $terminalProviderException = null;
 
                 $validation = $this->outputValidator->validate(
                     $toolResult->response,
@@ -492,11 +524,17 @@ TEXT;
                 return ChatPipelineResult::shortCircuit(
                     new SafeResponse($guardrails->outOfScopeMessage(), (string) $validation->reasonCode())
                 );
+            } elseif ($terminalProviderException !== null && $this->hardFailureClassifier->isHardFailure($terminalProviderException)) {
+                $trace->outcome = self::REASON_ASSISTANT_DOWN;
+
+                return ChatPipelineResult::shortCircuit(
+                    new SafeResponse($guardrails->assistantDownMessage(), self::REASON_ASSISTANT_DOWN)
+                );
             } else {
                 $trace->outcome = self::REASON_ASSISTANT_UNAVAILABLE;
 
                 return ChatPipelineResult::shortCircuit(
-                    new SafeResponse($guardrails->outOfScopeMessage(), self::REASON_ASSISTANT_UNAVAILABLE)
+                    new SafeResponse($guardrails->assistantUnavailableMessage(), self::REASON_ASSISTANT_UNAVAILABLE)
                 );
             }
 

@@ -70,6 +70,20 @@ interface IndexNamingServiceInterface
     ): string;
 
     /**
+     * Returns the wildcard pattern matching every physical run index this
+     * store view could ever own, across every past and future run:
+     *
+     *   <prefix>_store_<storeId>_run_*
+     *
+     * Used by retention cleanup to enumerate candidate physical indexes to
+     * prune; never matches the store's read alias, which has a different,
+     * non-run-shaped suffix.
+     *
+     * @throws ProductIndexingException when the prefix is invalid
+     */
+    public function runIndexPattern(string $prefix, StoreScopeInterface $scope): string;
+
+    /**
      * True when an index name is owned by the assistant for the given prefix.
      *
      * Used to decide which targets an alias may safely drop during activation

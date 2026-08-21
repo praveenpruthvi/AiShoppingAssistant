@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Aavirbhava\AiShoppingAssistant\Model\Config;
 
-use Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductAttributePolicyInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Catalog\AttributeIndexingSelectionRepositoryInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\AppearanceConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\CapabilitiesConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\ConfigurationReaderInterface;
@@ -16,10 +16,10 @@ use Aavirbhava\AiShoppingAssistant\Api\Config\GuardrailConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\IndexingConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\LlmConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\ProviderCostConfigInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Config\ProviderCostRepositoryInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\RetrievalConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Config\Exception\ConfigurationException;
 use Aavirbhava\AiShoppingAssistant\Model\Config\Source\CapPeriod;
-use Aavirbhava\AiShoppingAssistant\Model\Provider\ProviderIdentifiers;
 use Magento\Framework\App\Config\ScopeConfigInterface;
 use Magento\Framework\Phrase;
 use Magento\Store\Model\ScopeInterface;
@@ -115,23 +115,18 @@ final class ConfigurationReader implements ConfigurationReaderInterface
     public const DEFAULT_MAX_CONVERSATION_MESSAGES = 40;
 
     public const DEFAULT_OUT_OF_SCOPE_MESSAGE = 'I can help you search, compare, and learn about products and services available on this store. What are you looking for?';
+    public const DEFAULT_ASSISTANT_UNAVAILABLE_MESSAGE = "I'm having trouble answering right now. Please try again in a moment.";
+    public const DEFAULT_ASSISTANT_DOWN_MESSAGE = 'Our shopping assistant is temporarily unavailable due to a technical issue. Please try again later, or contact us directly for help.';
 
     public const MIN_BATCH_SIZE = 10;
     public const MAX_BATCH_SIZE = 500;
     public const DEFAULT_BATCH_SIZE = 100;
-
-    public const MAX_SEARCHABLE_ATTRIBUTE_CODES = 50;
 
     public const MIN_MAX_ATTRIBUTE_VALUES = 1;
     public const MAX_MAX_ATTRIBUTE_VALUES = 500;
     public const DEFAULT_MAX_ATTRIBUTE_VALUES = 100;
 
     public const DEFAULT_INDEX_PREFIX = 'aavirbhava_ai_product_rag';
-
-    /**
-     * @var list<string>
-     */
-    public const DEFAULT_SEARCHABLE_ATTRIBUTE_CODES = ['manufacturer', 'color', 'size', 'material'];
 
     public const MIN_COST_CAP_AMOUNT = 0.0;
     public const MAX_COST_CAP_AMOUNT = 1000000.0;
@@ -143,18 +138,15 @@ final class ConfigurationReader implements ConfigurationReaderInterface
 
     public const DEFAULT_COST_CAP_PERIOD = CapPeriod::DAILY;
 
-    public const MIN_PROVIDER_PRICE_PER_1K_TOKENS = 0.0;
-    public const MAX_PROVIDER_PRICE_PER_1K_TOKENS = 1000.0;
-    public const DEFAULT_PROVIDER_PRICE_PER_1K_TOKENS = 0.0;
-
     public const DEFAULT_PRIMARY_COLOR = '#1979c3';
     public const DEFAULT_MESSAGE_BUBBLE_COLOR = '#f2f2f2';
     public const DEFAULT_MESSAGE_TEXT_COLOR = '#222222';
 
     public function __construct(
         private readonly ScopeConfigInterface $scopeConfig,
-        private readonly ProductAttributePolicyInterface $attributePolicy,
-        private readonly ColorContrast $colorContrast
+        private readonly ColorContrast $colorContrast,
+        private readonly AttributeIndexingSelectionRepositoryInterface $attributeIndexingSelectionRepository,
+        private readonly ProviderCostRepositoryInterface $providerCostRepository
     ) {
     }
 
@@ -355,7 +347,13 @@ final class ConfigurationReader implements ConfigurationReaderInterface
             $this->readBool(Path::GUARDRAILS_REQUIRE_CART_CONFIRMATION, $storeId, true),
             $this->readBool(Path::GUARDRAILS_BLOCK_EXTERNAL_URLS, $storeId, true),
             $this->readBool(Path::GUARDRAILS_BLOCK_CODE_GENERATION, $storeId, true),
-            $this->readString(Path::GUARDRAILS_OUT_OF_SCOPE_MESSAGE, $storeId, self::DEFAULT_OUT_OF_SCOPE_MESSAGE)
+            $this->readString(Path::GUARDRAILS_OUT_OF_SCOPE_MESSAGE, $storeId, self::DEFAULT_OUT_OF_SCOPE_MESSAGE),
+            $this->readString(
+                Path::GUARDRAILS_ASSISTANT_UNAVAILABLE_MESSAGE,
+                $storeId,
+                self::DEFAULT_ASSISTANT_UNAVAILABLE_MESSAGE
+            ),
+            $this->readString(Path::GUARDRAILS_ASSISTANT_DOWN_MESSAGE, $storeId, self::DEFAULT_ASSISTANT_DOWN_MESSAGE)
         );
     }
 
@@ -395,27 +393,33 @@ final class ConfigurationReader implements ConfigurationReaderInterface
         );
     }
 
+    /**
+     * Provider pricing is no longer a fixed, two-provider pair of
+     * per-store free-text config fields — it's sourced from
+     * ProviderCostRepositoryInterface, the same global, admin-controlled
+     * pricing table both the dynamic cost-config admin screen and this
+     * reader use. Global by design (mirrors readIndexing()'s own
+     * AttributeIndexingSelectionRepository precedent), so $storeId plays
+     * no part in resolving it; a provider absent from the table
+     * correctly defaults to 0.0 via ProviderCostConfig's own fallback.
+     */
     public function readProviderCost(int $storeId): ProviderCostConfigInterface
     {
-        return new ProviderCostConfig([
-            ProviderIdentifiers::LLM_OPENAI => [
-                'input' => $this->readProviderPrice(Path::PROVIDER_COST_OPENAI_PRICE_PER_1K_INPUT_TOKENS, $storeId),
-                'output' => $this->readProviderPrice(Path::PROVIDER_COST_OPENAI_PRICE_PER_1K_OUTPUT_TOKENS, $storeId),
-            ],
-            ProviderIdentifiers::LLM_OPENAI_COMPATIBLE => [
-                'input' => $this->readProviderPrice(Path::PROVIDER_COST_OPENAI_COMPATIBLE_PRICE_PER_1K_INPUT_TOKENS, $storeId),
-                'output' => $this->readProviderPrice(Path::PROVIDER_COST_OPENAI_COMPATIBLE_PRICE_PER_1K_OUTPUT_TOKENS, $storeId),
-            ],
-        ]);
+        return new ProviderCostConfig($this->providerCostRepository->all());
     }
 
+    /**
+     * The searchable-attribute-code list this returns is no longer a
+     * per-store free-text config field — it's sourced from
+     * AttributeIndexingSelectionRepositoryInterface, the same global,
+     * admin-controlled selection both the native product-attribute grid
+     * and this module's own bulk-select screen read/write. Global by
+     * design (mirrors MerchandisingBoost's own no-store_id precedent),
+     * so $storeId plays no part in resolving it.
+     */
     public function readIndexing(int $storeId): IndexingConfigInterface
     {
-        $codes = $this->readAttributeCodeList(
-            Path::INDEXING_SEARCHABLE_ATTRIBUTE_CODES,
-            $storeId,
-            self::DEFAULT_SEARCHABLE_ATTRIBUTE_CODES
-        );
+        $codes = $this->attributeIndexingSelectionRepository->indexedCodes();
 
         $aggregate = $this->readBool(Path::INDEXING_AGGREGATE_CONFIGURABLE_VARIANTS, $storeId, false);
 
@@ -445,70 +449,6 @@ final class ConfigurationReader implements ConfigurationReaderInterface
                 self::DEFAULT_MAX_ATTRIBUTE_VALUES
             ),
             $this->readString(Path::INDEXING_INDEX_PREFIX, $storeId, self::DEFAULT_INDEX_PREFIX)
-        );
-    }
-
-    /**
-     * Reads the explicit searchable attribute allowlist and validates it fail closed.
-     *
-     * - An empty or null value resolves to the default list.
-     * - A raw empty string (explicit blank) resolves to an empty explicit allowlist.
-     * - Invalid tokens (bad attribute-code format) throw a sanitized ConfigurationException.
-     * - Policy-denied codes are silently dropped (fail closed) before sorting and slicing.
-     *
-     * @param list<string> $defaults
-     *
-     * @return list<string>
-     */
-    private function readAttributeCodeList(string $path, int $storeId, array $defaults): array
-    {
-        $raw = $this->scopeConfig->getValue($path, ScopeInterface::SCOPE_STORE, (string) $storeId);
-
-        if ($raw === null) {
-            return $defaults;
-        }
-
-        $rawString = trim((string) $raw);
-
-        if ($rawString === '') {
-            return [];
-        }
-
-        $codes = [];
-        foreach (explode(',', $rawString) as $token) {
-            $code = strtolower(trim($token));
-            if ($code === '') {
-                continue;
-            }
-            if (preg_match('/^[a-z][a-z0-9_]{0,63}$/', $code) !== 1) {
-                throw new ConfigurationException(
-                    new Phrase('The searchable attribute list contains an invalid attribute code.')
-                );
-            }
-            $codes[] = $code;
-        }
-
-        $allowed = [];
-        foreach ($codes as $code) {
-            if ($this->attributePolicy->isAllowed($code)) {
-                $allowed[] = $code;
-            }
-        }
-
-        $allowed = array_values(array_unique($allowed));
-        sort($allowed);
-
-        return array_slice($allowed, 0, self::MAX_SEARCHABLE_ATTRIBUTE_CODES);
-    }
-
-    private function readProviderPrice(string $path, int $storeId): float
-    {
-        return $this->readFloat(
-            $path,
-            $storeId,
-            self::MIN_PROVIDER_PRICE_PER_1K_TOKENS,
-            self::MAX_PROVIDER_PRICE_PER_1K_TOKENS,
-            self::DEFAULT_PROVIDER_PRICE_PER_1K_TOKENS
         );
     }
 

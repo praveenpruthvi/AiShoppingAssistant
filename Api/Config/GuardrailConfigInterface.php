@@ -24,4 +24,19 @@ interface GuardrailConfigInterface
     public function blocksCodeGeneration(): bool;
 
     public function outOfScopeMessage(): string;
+
+    /**
+     * Shown for a provider failure expected to be momentary — the customer
+     * can reasonably keep chatting after seeing it.
+     */
+    public function assistantUnavailableMessage(): string;
+
+    /**
+     * Shown for a provider failure that will keep recurring identically
+     * (an exhausted quota, an invalid/revoked API key) — after this
+     * message, the storefront chat stops accepting further input for the
+     * rest of the visit rather than inviting a customer to keep typing
+     * into a conversation that cannot proceed.
+     */
+    public function assistantDownMessage(): string;
 }

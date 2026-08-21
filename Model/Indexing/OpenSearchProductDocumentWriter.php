@@ -28,6 +28,7 @@ use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchConfigurat
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexAbortFailedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexCreateFailedException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexingException;
+use Psr\Log\LoggerInterface;
 
 /**
  * OpenSearch-backed product document writer implementing the two-phase
@@ -43,6 +44,18 @@ use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\ProductIndexingExcep
  * physical indexes and drops only assistant-owned run targets; activation is
  * the only moment the live index changes.
  *
+ * After every store's alias is switched, activateRun also prunes each store's
+ * OLDER physical indexes down to INDEX_RETENTION_COUNT (the just-activated
+ * index plus a small rollback margin), so successful reindexes stop
+ * accumulating unreferenced physical indexes forever. Pruning candidates are
+ * discovered from the backend itself (never a locally-remembered list, since
+ * this writer only ever tracks the current run's own indexes), verified via
+ * the same assistant-ownership _meta proof abortRun already uses, and skipped
+ * entirely if any alias still references them for any reason. A pruning
+ * failure is logged and never fails the run: the alias switch is the
+ * correctness-critical step and has already succeeded by the time pruning
+ * runs.
+ *
  * abortRun is idempotent: it deletes only run-owned physical indexes whose
  * mapping _meta proves assistant ownership and that are not currently aliased.
  * If any cleanup step fails the run state is still reset and a sanitized
@@ -53,6 +66,13 @@ final class OpenSearchProductDocumentWriter implements ProductDocumentWriterInte
 {
     /** Maximum storage payloads written in one bulk request. */
     public const MAX_BULK_CHUNK = 100;
+
+    /**
+     * Physical indexes kept per store after a successful activation,
+     * including the newly-activated one. Never lower than 2: deleting down to
+     * just the live index removes any ability to roll back a bad activation.
+     */
+    private const INDEX_RETENTION_COUNT = 2;
 
     private ?RebuildRunContextInterface $context = null;
 
@@ -80,7 +100,8 @@ final class OpenSearchProductDocumentWriter implements ProductDocumentWriterInte
         private readonly ProductIndexMappingInterface $mapping,
         private readonly EmbeddingEnrichmentServiceInterface $enrichment,
         private readonly IndexedDocumentPayloadBuilder $payloadBuilder,
-        private readonly EmbeddingConfigSnapshotServiceInterface $configSnapshot
+        private readonly EmbeddingConfigSnapshotServiceInterface $configSnapshot,
+        private readonly LoggerInterface $logger
     ) {
     }
 
@@ -243,7 +264,95 @@ final class OpenSearchProductDocumentWriter implements ProductDocumentWriterInte
 
         $this->client->updateAliases($actions);
 
+        $this->pruneOldIndexes();
+
         $this->resetState();
+    }
+
+    /**
+     * Best-effort retention cleanup for every store just activated. Never
+     * throws: the alias switch that just happened is the correctness-critical
+     * operation, and a cleanup failure here must not undo it or fail the run.
+     */
+    private function pruneOldIndexes(): void
+    {
+        foreach ($this->stores as $store) {
+            try {
+                $this->pruneOldIndexesForStore($store);
+            } catch (\Throwable $throwable) {
+                $this->logger->error(
+                    'AI shopping assistant: failed to prune old assistant search indexes for a store.',
+                    ['store_id' => $store['scope']->storeId(), 'exception' => $throwable->getMessage()]
+                );
+            }
+        }
+    }
+
+    /**
+     * @param array{
+     *   scope: StoreScopeInterface,
+     *   prefix: string,
+     *   indexName: string,
+     *   embedding: FrozenEmbeddingConfigInterface,
+     *   finished: bool
+     * } $store
+     */
+    private function pruneOldIndexesForStore(array $store): void
+    {
+        $pattern = $this->namingService->runIndexPattern($store['prefix'], $store['scope']);
+        $candidates = $this->client->listIndices($pattern);
+
+        $prunable = [];
+        foreach ($candidates as $indexName) {
+            if ($indexName === $store['indexName']) {
+                continue;
+            }
+
+            $parsed = $this->namingService->parseAssistantIndex($store['prefix'], $indexName);
+            if ($parsed === null || $parsed['store_id'] !== $store['scope']->storeId()) {
+                continue;
+            }
+
+            try {
+                if ($this->client->indexAliases($indexName) !== []) {
+                    // Still referenced by some alias (this store's, a foreign
+                    // one, or a leftover generation) - never delete blindly.
+                    continue;
+                }
+
+                $meta = $this->client->indexMeta($indexName);
+            } catch (\Throwable $throwable) {
+                // Ownership can't be verified right now - leave it alone; a
+                // future successful activation will reconsider it.
+                continue;
+            }
+
+            if (!$this->metaProvesAssistantOwnership($indexName, $store, $meta)) {
+                continue;
+            }
+
+            try {
+                $prunable[$indexName] = $this->client->indexCreatedAt($indexName);
+            } catch (\Throwable $throwable) {
+                continue;
+            }
+        }
+
+        if ($prunable === []) {
+            return;
+        }
+
+        arsort($prunable);
+        $keepPrevious = max(0, self::INDEX_RETENTION_COUNT - 1);
+        $toDelete = array_slice(array_keys($prunable), $keepPrevious);
+
+        foreach ($toDelete as $indexName) {
+            try {
+                $this->client->deleteIndex($indexName);
+            } catch (\Throwable $throwable) {
+                continue;
+            }
+        }
     }
 
     public function abortRun(): void

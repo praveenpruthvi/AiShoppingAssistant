@@ -47,6 +47,18 @@ final class FakeAssistantSearchClient implements AssistantSearchClientInterface
     public array $metaByIndex = [];
 
     /**
+     * Creation-order timestamp per index (epoch-milliseconds-shaped, but only
+     * ever compared to each other, never to a wall clock). Indexes created via
+     * createIndex() get the next value automatically; tests simulating
+     * pre-existing leftover indexes may set this directly.
+     *
+     * @var array<string, int>
+     */
+    public array $createdAt = [];
+
+    private int $creationSequence = 0;
+
+    /**
      * @var array<string, list<string>>
      */
     public array $aliases = [];
@@ -138,6 +150,7 @@ final class FakeAssistantSearchClient implements AssistantSearchClientInterface
         $this->documentSources[$indexName] = [];
         $meta = $createBody['mappings']['_meta'] ?? null;
         $this->metaByIndex[$indexName] = is_array($meta) ? $meta : [];
+        $this->createdAt[$indexName] = ++$this->creationSequence;
     }
 
     public function writeDocuments(string $indexName, array $documents): void
@@ -256,6 +269,41 @@ final class FakeAssistantSearchClient implements AssistantSearchClientInterface
         $this->searchCalls[] = ['index' => $indexName, 'body' => $queryBody];
 
         return array_shift($this->searchResults[$indexName]) ?? [];
+    }
+
+    public function listIndices(string $pattern): array
+    {
+        $this->assertNoFailure('listIndices');
+
+        $matched = [];
+        foreach (array_keys($this->indexes) as $indexName) {
+            if (fnmatch($pattern, $indexName)) {
+                $matched[] = $indexName;
+            }
+        }
+
+        return $matched;
+    }
+
+    public function indexAliases(string $indexName): array
+    {
+        $this->assertNoFailure('indexAliases');
+
+        $aliases = [];
+        foreach ($this->aliases as $aliasName => $targets) {
+            if (in_array($indexName, $targets, true)) {
+                $aliases[] = $aliasName;
+            }
+        }
+
+        return $aliases;
+    }
+
+    public function indexCreatedAt(string $indexName): int
+    {
+        $this->assertNoFailure('indexCreatedAt');
+
+        return $this->createdAt[$indexName] ?? 0;
     }
 
     /**

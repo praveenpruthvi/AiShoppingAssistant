@@ -100,6 +100,44 @@ final class DbConversationHistoryStoreDatabaseTest extends TestCase
         self::assertSame('It is $9.99.', $messages[3]->content);
     }
 
+    /**
+     * A ToolCall's providerMetadata (e.g. Gemini's thoughtSignature, which
+     * must be echoed back verbatim on any later turn that replays this
+     * same function call, confirmed against a real Gemini response — see
+     * GeminiProviderTest) must survive a real save/reload round trip, not
+     * just an in-memory one — a real, multi-turn storefront conversation
+     * persists and reloads across separate HTTP requests.
+     */
+    public function testAToolCallsProviderMetadataSurvivesARealSaveAndReloadRoundTrip(): void
+    {
+        $toolCall = new ToolCall('call_1', 'check_price', ['skus' => ['SKU-1']], 'thought-signature-xyz');
+
+        $this->store->appendTurn(self::CONVERSATION_A, self::STORE_ID, [
+            new ChatMessage('user', 'What does SKU-1 cost?'),
+            new ChatMessage('assistant', '', null, [$toolCall]),
+            new ChatMessage('tool', '{"prices":[{"sku":"SKU-1","price":9.99}]}', 'call_1'),
+        ], 40);
+
+        $messages = $this->store->recentMessages(self::CONVERSATION_A, self::STORE_ID, 40);
+
+        self::assertSame('thought-signature-xyz', $messages[1]->toolCalls[0]->providerMetadata);
+    }
+
+    public function testAToolCallWithNoProviderMetadataRoundTripsAsNullNotAnEmptyString(): void
+    {
+        $toolCall = new ToolCall('call_1', 'check_price', ['skus' => ['SKU-1']]);
+
+        $this->store->appendTurn(self::CONVERSATION_A, self::STORE_ID, [
+            new ChatMessage('user', 'What does SKU-1 cost?'),
+            new ChatMessage('assistant', '', null, [$toolCall]),
+            new ChatMessage('tool', '{"prices":[]}', 'call_1'),
+        ], 40);
+
+        $messages = $this->store->recentMessages(self::CONVERSATION_A, self::STORE_ID, 40);
+
+        self::assertNull($messages[1]->toolCalls[0]->providerMetadata);
+    }
+
     public function testMessagesFromADifferentConversationIdNeverLeakIn(): void
     {
         $this->store->appendTurn(self::CONVERSATION_A, self::STORE_ID, [

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Aavirbhava\AiShoppingAssistant\Block\Frontend;
 
+use Aavirbhava\AiShoppingAssistant\Api\Chat\CircuitBreakerInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\AppearanceConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\ConfigurationReaderInterface;
 use Aavirbhava\AiShoppingAssistant\Api\CostCap\CostCapCheckerInterface;
@@ -53,6 +54,7 @@ class ChatWidget extends Template
         private readonly StoreManagerInterface $storeManager,
         private readonly ModuleManager $moduleManager,
         private readonly CostCapCheckerInterface $costCapChecker,
+        private readonly CircuitBreakerInterface $circuitBreaker,
         array $data = []
     ) {
         parent::__construct($context, $data);
@@ -164,7 +166,7 @@ class ChatWidget extends Template
      */
     protected function _toHtml(): string
     {
-        if (!$this->isAssistantEnabled() || $this->costCapChecker->isBlocking()) {
+        if (!$this->isAssistantEnabled() || $this->costCapChecker->isBlocking() || $this->isAssistantConfirmedDown()) {
             return '';
         }
 
@@ -183,6 +185,56 @@ class ChatWidget extends Template
             ]);
 
             return false;
+        }
+    }
+
+    /**
+     * Third render-gate check (Task 44): hides the widget only when the
+     * assistant is CONFIRMED genuinely down, reusing the exact same
+     * per-store circuit-breaker state FallbackChatGenerationService
+     * already maintains — no second, separate health-tracking mechanism.
+     * The primary circuit only opens after real consecutive failures
+     * accumulate past a configured threshold (CircuitBreakerInterface's
+     * own contract), so a single transient failed request never trips
+     * this — that's the whole point of reading the CIRCUIT's state rather
+     * than the outcome of one request.
+     *
+     * Primary alone being open is not enough to hide the widget: if a
+     * fallback provider is configured and enabled and its OWN circuit is
+     * still closed, the assistant is still genuinely usable (via
+     * fallback) and the widget must keep rendering normally — hiding it
+     * here would contradict the fact that a real chat request in this
+     * exact state still gets a real AI response, not just a safe
+     * non-AI one.
+     *
+     * Fails CLOSED (hides the widget) on its own internal error reading
+     * circuit-breaker/fallback-config state — deliberately the OPPOSITE
+     * fail-direction from costCapChecker's own fail-OPEN check right
+     * above, and instead matching isAssistantEnabled()'s own fail-closed
+     * precedent in this same class: an assistant this safeguard cannot
+     * even confirm the health of is treated the same as one confirmed
+     * down, never silently treated as healthy.
+     */
+    private function isAssistantConfirmedDown(): bool
+    {
+        try {
+            $storeId = (int) $this->storeManager->getStore()->getId();
+
+            if (!$this->circuitBreaker->isOpen($storeId, CircuitBreakerInterface::ROLE_PRIMARY)) {
+                return false;
+            }
+
+            if (!$this->configurationReader->readFallback($storeId)->isEnabled()) {
+                return true;
+            }
+
+            return $this->circuitBreaker->isOpen($storeId, CircuitBreakerInterface::ROLE_FALLBACK);
+        } catch (Throwable $exception) {
+            $this->_logger->error('AI shopping assistant: chat widget health check failed.', [
+                'exception' => $exception->getMessage(),
+            ]);
+
+            return true;
         }
     }
 }

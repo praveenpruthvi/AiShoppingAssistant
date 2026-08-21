@@ -446,6 +446,80 @@ final class OpenSearchAssistantClient implements AssistantSearchClientInterface
         }
     }
 
+    public function listIndices(string $pattern): array
+    {
+        try {
+            $response = $this->client()->indices()->get(
+                ['index' => $pattern, 'client' => ['timeout' => $this->timeout()]]
+            );
+        } catch (ProductIndexingException $exception) {
+            throw $exception;
+        } catch (\Throwable $throwable) {
+            if ($this->isNotFound($throwable)) {
+                return [];
+            }
+
+            throw new OpenSearchBackendUnavailableException();
+        }
+
+        if (!is_array($response)) {
+            throw new OpenSearchBackendUnavailableException();
+        }
+
+        return array_map('strval', array_keys($response));
+    }
+
+    public function indexAliases(string $indexName): array
+    {
+        try {
+            $response = $this->client()->indices()->getAlias(
+                ['index' => $indexName, 'client' => ['timeout' => $this->timeout()]]
+            );
+        } catch (ProductIndexingException $exception) {
+            throw $exception;
+        } catch (\Throwable $throwable) {
+            if ($this->isNotFound($throwable)) {
+                return [];
+            }
+
+            throw new OpenSearchBackendUnavailableException();
+        }
+
+        if (!is_array($response) || !isset($response[$indexName]) || !is_array($response[$indexName])) {
+            throw new OpenSearchBackendUnavailableException();
+        }
+
+        $aliases = $response[$indexName]['aliases'] ?? null;
+        if (!is_array($aliases)) {
+            throw new OpenSearchBackendUnavailableException();
+        }
+
+        return array_map('strval', array_keys($aliases));
+    }
+
+    public function indexCreatedAt(string $indexName): int
+    {
+        try {
+            $response = $this->client()->indices()->getSettings(
+                ['index' => $indexName, 'client' => ['timeout' => $this->timeout()]]
+            );
+        } catch (ProductIndexingException $exception) {
+            throw $exception;
+        } catch (\Throwable $throwable) {
+            throw new OpenSearchBackendUnavailableException();
+        }
+
+        $creationDate = is_array($response)
+            ? $response[$indexName]['settings']['index']['creation_date'] ?? null
+            : null;
+
+        if (!is_scalar($creationDate) || !is_numeric($creationDate)) {
+            throw new OpenSearchBackendUnavailableException();
+        }
+
+        return (int)$creationDate;
+    }
+
     public function search(string $indexName, array $queryBody): array
     {
         try {

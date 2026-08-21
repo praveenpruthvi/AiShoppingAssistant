@@ -20,9 +20,14 @@ interface ProductIndexMappingInterface
 {
     /**
      * Version of the assistant mapping structure. Increment when field layout
-     * or settings change incompatibly.
+     * or settings change incompatibly. Bumped to 4 for admin-controlled
+     * attribute indexing selection (the field shape is unchanged — the
+     * `attributes` nested field already generically holds any code/label/
+     * values triples — but which codes populate it can now change on an
+     * admin save alone, requiring a full reindex, the same reasoning as
+     * MerchandisingBoost's own signal-content-changed bump).
      */
-    public const MAPPING_VERSION = 3;
+    public const MAPPING_VERSION = 4;
 
     /**
      * Bounded, non-disabled refresh interval applied at index creation so

@@ -194,12 +194,12 @@
             <input type="text"
                    id="aavirbhava-hyva-chat-input"
                    x-model="input"
-                   :disabled="loading"
+                   :disabled="loading || stopped"
                    autocomplete="off"
-                   placeholder="<?= $block->escapeHtmlAttr(__('Ask about products…')) ?>"
+                   :placeholder="stopped ? '<?= $block->escapeJs(__('This conversation has ended.')) ?>' : '<?= $block->escapeJs(__('Ask about products…')) ?>'"
                    class="flex-1 rounded border border-gray-300 px-2 py-1 disabled:opacity-60"/>
             <button type="submit"
-                    :disabled="loading"
+                    :disabled="loading || stopped"
                     class="aavirbhava-hyva-toggle rounded px-3 py-1 disabled:opacity-60">
                 <?= $block->escapeHtml(__('Send')) ?>
             </button>

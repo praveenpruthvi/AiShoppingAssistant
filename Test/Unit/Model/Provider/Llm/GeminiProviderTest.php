@@ -282,6 +282,191 @@ final class GeminiProviderTest extends TestCase
         self::assertNotSame($response->toolCalls[0]->id, $response->toolCalls[1]->id);
     }
 
+    /**
+     * Live-confirmed against a real gemini-3.6-flash response: Gemini's
+     * "thinking" model family DOES include a real `id` on `functionCall`,
+     * correcting this class's own original built-to-spec assumption that
+     * it never does. The real id must be used, not overwritten by a
+     * synthesized one — a synthesized id is only the fallback for a
+     * response shape that genuinely omits it (still covered by
+     * testMultipleFunctionCallsGetDistinctSynthesizedIds above).
+     */
+    public function testUsesTheRealFunctionCallIdWhenGeminiProvidesOneInsteadOfSynthesizing(): void
+    {
+        $provider = $this->provider(
+            'HTTP/1.1 200 OK' . "\r\n\r\n" .
+            '{"candidates":[{"content":{"role":"model","parts":[' .
+            '{"functionCall":{"name":"search_products","args":{},"id":"call_real123"}}' .
+            ']},"finishReason":"STOP"}]}'
+        );
+
+        $response = $provider->chat($this->request());
+
+        self::assertSame('call_real123', $response->toolCalls[0]->id);
+    }
+
+    /**
+     * Live-confirmed against a real gemini-3.6-flash response: a
+     * `thoughtSignature` sibling key alongside `functionCall` in the same
+     * response part must be captured, since Gemini's real API rejects a
+     * later multi-round request that replays this same function call
+     * without echoing it back (a real 400 "missing thought_signature"
+     * error) — see the matching round-trip test below.
+     */
+    public function testCapturesTheThoughtSignatureSiblingKeyForLaterRoundTripping(): void
+    {
+        $provider = $this->provider(
+            'HTTP/1.1 200 OK' . "\r\n\r\n" .
+            '{"candidates":[{"content":{"role":"model","parts":[' .
+            '{"functionCall":{"name":"search_products","args":{}},"thoughtSignature":"sig-abc123"}' .
+            ']},"finishReason":"STOP"}]}'
+        );
+
+        $response = $provider->chat($this->request());
+
+        self::assertSame('sig-abc123', $response->toolCalls[0]->providerMetadata);
+    }
+
+    public function testAFunctionCallWithNoThoughtSignatureLeavesProviderMetadataNull(): void
+    {
+        $provider = $this->provider(
+            'HTTP/1.1 200 OK' . "\r\n\r\n" .
+            '{"candidates":[{"content":{"role":"model","parts":[' .
+            '{"functionCall":{"name":"search_products","args":{}}}' .
+            ']},"finishReason":"STOP"}]}'
+        );
+
+        $response = $provider->chat($this->request());
+
+        self::assertNull($response->toolCalls[0]->providerMetadata);
+    }
+
+    /**
+     * The write side of the thoughtSignature round trip: a ToolCall
+     * carrying a captured providerMetadata must be echoed back as a
+     * sibling `thoughtSignature` key on the SAME part when that turn is
+     * replayed in a later request — real, live-confirmed requirement for
+     * Gemini's "thinking" model family, not merely a nice-to-have.
+     */
+    public function testEchoesACapturedThoughtSignatureBackAsASiblingKeyWhenReplayingAPriorToolCall(): void
+    {
+        $provider = $this->provider('HTTP/1.1 200 OK' . "\r\n\r\n" . $this->textResponse('ok'));
+
+        $request = new ChatRequest(
+            storeId: 1,
+            messages: [
+                new ChatMessage('user', 'What is the price of SKU-1?'),
+                new ChatMessage(
+                    'assistant',
+                    '',
+                    null,
+                    [new ToolCall('call_real123', 'check_price', ['skus' => ['SKU-1']], 'sig-abc123')]
+                ),
+                new ChatMessage('tool', '{"prices":[]}', 'call_real123'),
+            ],
+            model: self::MODEL,
+            baseUrl: '',
+            apiKey: new SecretValue('gemini-key'),
+            timeoutSeconds: 20
+        );
+
+        $provider->chat($request);
+
+        $body = json_decode($this->client->getRequest()->getContent(), true);
+
+        self::assertSame('sig-abc123', $body['contents'][1]['parts'][0]['thoughtSignature']);
+    }
+
+    public function testAToolCallWithNoCapturedProviderMetadataOmitsTheThoughtSignatureKeyEntirely(): void
+    {
+        $provider = $this->provider('HTTP/1.1 200 OK' . "\r\n\r\n" . $this->textResponse('ok'));
+
+        $request = new ChatRequest(
+            storeId: 1,
+            messages: [
+                new ChatMessage('user', 'What is the price of SKU-1?'),
+                new ChatMessage('assistant', '', null, [new ToolCall('gemini-call-0', 'check_price', ['skus' => ['SKU-1']])]),
+                new ChatMessage('tool', '{"prices":[]}', 'gemini-call-0'),
+            ],
+            model: self::MODEL,
+            baseUrl: '',
+            apiKey: new SecretValue('gemini-key'),
+            timeoutSeconds: 20
+        );
+
+        $provider->chat($request);
+
+        $body = json_decode($this->client->getRequest()->getContent(), true);
+
+        self::assertArrayNotHasKey('thoughtSignature', $body['contents'][1]['parts'][0]);
+    }
+
+    /**
+     * Live-confirmed against a real 400 response ("Unknown name
+     * additionalProperties ... Cannot find field"): Gemini's schema
+     * dialect is a restricted subset that rejects `additionalProperties`
+     * wherever it appears — every tool in this module sets it at every
+     * object level as a deliberate strict-mode convention (see
+     * LlmResponseSchema's own docblock) that must survive for every OTHER
+     * provider; only the copy sent to Gemini strips it, recursively,
+     * since it can appear at any nesting depth.
+     */
+    public function testStripsAdditionalPropertiesFromToolParameterSchemasRecursively(): void
+    {
+        $provider = $this->provider('HTTP/1.1 200 OK' . "\r\n\r\n" . $this->textResponse('ok'));
+
+        $provider->chat($this->request(tools: [
+            [
+                'name' => 'add_to_cart',
+                'description' => 'Add an item',
+                'parameters' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'items' => [
+                            'type' => 'array',
+                            'items' => [
+                                'type' => 'object',
+                                'properties' => ['sku' => ['type' => 'string']],
+                                'additionalProperties' => false,
+                            ],
+                        ],
+                    ],
+                    'additionalProperties' => false,
+                ],
+            ],
+        ]));
+
+        $body = json_decode($this->client->getRequest()->getContent(), true);
+        $parameters = $body['tools'][0]['functionDeclarations'][0]['parameters'];
+
+        self::assertArrayNotHasKey('additionalProperties', $parameters);
+        self::assertArrayNotHasKey('additionalProperties', $parameters['properties']['items']['items']);
+        // Every keyword Gemini DOES support must survive the strip untouched.
+        self::assertSame('string', $parameters['properties']['items']['items']['properties']['sku']['type']);
+    }
+
+    public function testStripsAdditionalPropertiesFromTheResponseSchemaRecursively(): void
+    {
+        $provider = $this->provider('HTTP/1.1 200 OK' . "\r\n\r\n" . $this->textResponse('{}'));
+
+        $provider->chat($this->request(responseSchema: [
+            'type' => 'object',
+            'properties' => [
+                'items' => [
+                    'type' => 'array',
+                    'items' => ['type' => 'object', 'properties' => [], 'additionalProperties' => false],
+                ],
+            ],
+            'additionalProperties' => false,
+        ]));
+
+        $body = json_decode($this->client->getRequest()->getContent(), true);
+        $schema = $body['generationConfig']['responseSchema'];
+
+        self::assertArrayNotHasKey('additionalProperties', $schema);
+        self::assertArrayNotHasKey('additionalProperties', $schema['properties']['items']['items']);
+    }
+
     public function testSafetyFinishReasonMapsToRefusalException(): void
     {
         $provider = $this->provider(
@@ -290,6 +475,112 @@ final class GeminiProviderTest extends TestCase
         );
 
         $this->expectException(ProviderRefusalException::class);
+        $provider->chat($this->request());
+    }
+
+    /**
+     * `finishReason: "MAX_TOKENS"` is a normal, real Gemini outcome (the
+     * response was truncated by generationConfig.maxOutputTokens, not an
+     * error) — whatever text was generated before truncation must still
+     * be returned. This class deliberately only special-cases SAFETY as
+     * a real refusal signal; every other finish reason falls through to
+     * whatever content actually exists, which this proves is correct
+     * for this specific, real, named case.
+     */
+    public function testMaxTokensFinishReasonStillReturnsTheTruncatedText(): void
+    {
+        $provider = $this->provider(
+            'HTTP/1.1 200 OK' . "\r\n\r\n" .
+            '{"candidates":[{"content":{"role":"model","parts":[{"text":"This got cut off becau"}]},"finishReason":"MAX_TOKENS"}]}'
+        );
+
+        $response = $provider->chat($this->request());
+
+        self::assertSame('This got cut off becau', $response->text);
+    }
+
+    /**
+     * RECITATION is a real, documented Gemini finish reason (the
+     * response was withheld for reproducing training data too closely)
+     * — distinct from SAFETY, and this class deliberately does not
+     * treat it as a refusal (only the one well-documented SAFETY signal
+     * is mapped, per this class's own docblock) since this module
+     * cannot confirm RECITATION always means empty content the way
+     * SAFETY does. With genuinely empty parts, it falls through to the
+     * normal empty-response rejection instead of a fabricated refusal.
+     */
+    public function testRecitationFinishReasonIsNotTreatedAsARefusal(): void
+    {
+        $provider = $this->provider(
+            'HTTP/1.1 200 OK' . "\r\n\r\n" .
+            '{"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"RECITATION"}]}'
+        );
+
+        $this->expectException(ProviderInvalidResponseException::class);
+        $provider->chat($this->request());
+    }
+
+    /**
+     * Real, documented Gemini behavior: a candidate's parts array can
+     * legitimately contain several text parts (e.g. interleaved with
+     * functionCall parts) — every one must be concatenated, not just
+     * the first.
+     */
+    public function testMultipleTextPartsAreConcatenated(): void
+    {
+        $provider = $this->provider(
+            'HTTP/1.1 200 OK' . "\r\n\r\n" .
+            '{"candidates":[{"content":{"role":"model","parts":[{"text":"Part one. "},{"text":"Part two."}]},"finishReason":"STOP"}]}'
+        );
+
+        $response = $provider->chat($this->request());
+
+        self::assertSame('Part one. Part two.', $response->text);
+    }
+
+    public function testMissingUsageMetadataDefaultsToZeroUsageRatherThanFailing(): void
+    {
+        $provider = $this->provider(
+            'HTTP/1.1 200 OK' . "\r\n\r\n" .
+            '{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}'
+        );
+
+        $response = $provider->chat($this->request());
+
+        self::assertSame(0, $response->usage->inputTokens);
+        self::assertSame(0, $response->usage->outputTokens);
+    }
+
+    /**
+     * Gemini's real API can return multiple candidates if
+     * generationConfig.candidateCount is explicitly raised above its
+     * default of 1 — this module never requests more than one (no
+     * candidateCount is ever sent), and this class deliberately only
+     * ever reads candidates[0], the one it actually asked for.
+     */
+    public function testOnlyTheFirstCandidateIsUsedWhenMultipleAreReturned(): void
+    {
+        $provider = $this->provider(
+            'HTTP/1.1 200 OK' . "\r\n\r\n" .
+            '{"candidates":[' .
+            '{"content":{"role":"model","parts":[{"text":"First candidate."}]},"finishReason":"STOP"},' .
+            '{"content":{"role":"model","parts":[{"text":"Second candidate."}]},"finishReason":"STOP"}' .
+            ']}'
+        );
+
+        $response = $provider->chat($this->request());
+
+        self::assertSame('First candidate.', $response->text);
+    }
+
+    public function testAFunctionCallMissingANameIsRejected(): void
+    {
+        $provider = $this->provider(
+            'HTTP/1.1 200 OK' . "\r\n\r\n" .
+            '{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"args":{}}}]},"finishReason":"STOP"}]}'
+        );
+
+        $this->expectException(ProviderInvalidResponseException::class);
         $provider->chat($this->request());
     }
 
@@ -316,6 +607,60 @@ final class GeminiProviderTest extends TestCase
         $provider = $this->provider('HTTP/1.1 401 Unauthorized' . "\r\n\r\n" . '{}');
 
         $this->expectException(ProviderAuthenticationException::class);
+        $provider->chat($this->request());
+    }
+
+    /**
+     * Task 45: Gemini's real API returns a genuine HTTP 400
+     * ("INVALID_ARGUMENT") for an invalid/revoked key, not 401/403 — live-
+     * confirmed via a direct curl against the real generateContent
+     * endpoint with a deliberately bad key, which returned exactly this
+     * body shape. Without assertNotApiKeyFailure(), this 400 would have
+     * fallen through to HttpStatusMapper's generic mapping and become a
+     * ProviderInvalidResponseException instead — silently defeating the
+     * "an invalid key stops the chat" hard-failure safeguard for this
+     * provider specifically, since HardFailureClassifier would never see
+     * the real cause.
+     */
+    public function testRealGeminiApiKeyInvalidBodyOnA400MapsToAuthenticationException(): void
+    {
+        $body = json_encode([
+            'error' => [
+                'code' => 400,
+                'message' => 'API key not valid. Please pass a valid API key.',
+                'status' => 'INVALID_ARGUMENT',
+                'details' => [
+                    ['reason' => 'API_KEY_INVALID'],
+                ],
+            ],
+        ], JSON_THROW_ON_ERROR);
+
+        $provider = $this->provider('HTTP/1.1 400 Bad Request' . "\r\n\r\n" . $body);
+
+        $this->expectException(ProviderAuthenticationException::class);
+        $provider->chat($this->request());
+    }
+
+    /**
+     * A 400 for a genuinely different reason (a malformed request/schema
+     * issue, e.g. an unsupported field name) must still map to
+     * ProviderInvalidResponseException as before — assertNotApiKeyFailure()
+     * only reclassifies the one specific, documented API_KEY_INVALID case,
+     * never every 400 wholesale.
+     */
+    public function testUnrelatedBadRequestStatusStillMapsToInvalidResponseException(): void
+    {
+        $body = json_encode([
+            'error' => [
+                'code' => 400,
+                'message' => "Unknown name \"badField\": Cannot find field.",
+                'status' => 'INVALID_ARGUMENT',
+            ],
+        ], JSON_THROW_ON_ERROR);
+
+        $provider = $this->provider('HTTP/1.1 400 Bad Request' . "\r\n\r\n" . $body);
+
+        $this->expectException(ProviderInvalidResponseException::class);
         $provider->chat($this->request());
     }
 

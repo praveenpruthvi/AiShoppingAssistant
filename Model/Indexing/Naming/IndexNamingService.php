@@ -42,6 +42,13 @@ final class IndexNamingService implements IndexNamingServiceInterface
         );
     }
 
+    public function runIndexPattern(string $prefix, StoreScopeInterface $scope): string
+    {
+        $prefix = $this->requirePrefix($prefix);
+
+        return sprintf('%s_store_%d_%s_*', $prefix, $scope->storeId(), self::RUN_SEGMENT);
+    }
+
     public function isAssistantOwnedIndex(string $prefix, string $indexName): bool
     {
         return $this->parseAssistantIndex($prefix, $indexName) !== null;

@@ -43,8 +43,11 @@ use Aavirbhava\AiShoppingAssistant\Model\Dto\TokenUsage;
 use Aavirbhava\AiShoppingAssistant\Model\Dto\ToolCall;
 use Aavirbhava\AiShoppingAssistant\Model\Embedding\Exception\EmbeddingConfigurationException;
 use Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\SearchQueryFailedException;
+use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderAuthenticationException;
 use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderInvalidResponseException;
+use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderRateLimitException;
 use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderUnavailableException;
+use Aavirbhava\AiShoppingAssistant\Model\Provider\HardFailureClassifier;
 use Aavirbhava\AiShoppingAssistant\Model\Ranking\SearchContext;
 use Aavirbhava\AiShoppingAssistant\Model\Retrieval\SearchCandidate;
 use Aavirbhava\AiShoppingAssistant\Model\Revalidation\RevalidatedProduct;
@@ -75,6 +78,8 @@ final class ChatEntryPipelineTest extends TestCase
 {
     private const STORE_ID = 5;
     private const OUT_OF_SCOPE_MESSAGE = 'I can help you search, compare, and learn about products on this store.';
+    private const ASSISTANT_UNAVAILABLE_MESSAGE = "I'm having trouble answering right now. Please try again in a moment.";
+    private const ASSISTANT_DOWN_MESSAGE = 'Our shopping assistant is temporarily unavailable. Please try again later.';
 
     public function testOutOfScopeMessageNeverReachesRetrievalRevalidationOrToolCallingChatService(): void
     {
@@ -369,6 +374,44 @@ final class ChatEntryPipelineTest extends TestCase
 
         self::assertTrue($result->wasShortCircuited());
         self::assertSame(ChatEntryPipeline::REASON_ASSISTANT_UNAVAILABLE, $result->safeResponse()->reasonCode);
+    }
+
+    public function testRateLimitFailureShortCircuitsToTheAssistantDownReasonAndMessage(): void
+    {
+        $classifier = $this->createMock(CommerceScopeClassifierInterface::class);
+        $classifier->method('classify')->willReturn(ScopeClassification::inScope());
+
+        $toolCallingChatService = $this->createMock(ToolCallingChatServiceInterface::class);
+        $toolCallingChatService->expects(self::once())
+            ->method('converse')
+            ->willThrowException(new ProviderRateLimitException(new Phrase('rate limited')));
+
+        $pipeline = $this->pipeline(classifier: $classifier, toolCallingChatService: $toolCallingChatService);
+
+        $result = $pipeline->handle(self::STORE_ID, 'Show me waterproof phones.');
+
+        self::assertTrue($result->wasShortCircuited());
+        self::assertSame(ChatEntryPipeline::REASON_ASSISTANT_DOWN, $result->safeResponse()->reasonCode);
+        self::assertSame(self::ASSISTANT_DOWN_MESSAGE, $result->safeResponse()->message);
+    }
+
+    public function testAuthenticationFailureShortCircuitsToTheAssistantDownReasonAndMessage(): void
+    {
+        $classifier = $this->createMock(CommerceScopeClassifierInterface::class);
+        $classifier->method('classify')->willReturn(ScopeClassification::inScope());
+
+        $toolCallingChatService = $this->createMock(ToolCallingChatServiceInterface::class);
+        $toolCallingChatService->expects(self::once())
+            ->method('converse')
+            ->willThrowException(new ProviderAuthenticationException(new Phrase('bad key')));
+
+        $pipeline = $this->pipeline(classifier: $classifier, toolCallingChatService: $toolCallingChatService);
+
+        $result = $pipeline->handle(self::STORE_ID, 'Show me waterproof phones.');
+
+        self::assertTrue($result->wasShortCircuited());
+        self::assertSame(ChatEntryPipeline::REASON_ASSISTANT_DOWN, $result->safeResponse()->reasonCode);
+        self::assertSame(self::ASSISTANT_DOWN_MESSAGE, $result->safeResponse()->message);
     }
 
     public function testIncompleteProductsAreRetriedOnceAndTheRetryAddsTheMissingSku(): void
@@ -1422,7 +1465,7 @@ final class ChatEntryPipelineTest extends TestCase
 
         self::assertTrue($result->wasShortCircuited());
         self::assertSame(ChatEntryPipeline::REASON_ASSISTANT_UNAVAILABLE, $result->safeResponse()->reasonCode);
-        self::assertSame(self::OUT_OF_SCOPE_MESSAGE, $result->safeResponse()->message);
+        self::assertSame(self::ASSISTANT_UNAVAILABLE_MESSAGE, $result->safeResponse()->message);
     }
 
     public function testRetrievalBackendFailureFallsBackToSafeResponseInsteadOfPropagating(): void
@@ -1442,7 +1485,7 @@ final class ChatEntryPipelineTest extends TestCase
 
         self::assertTrue($result->wasShortCircuited());
         self::assertSame(ChatEntryPipeline::REASON_RETRIEVAL_UNAVAILABLE, $result->safeResponse()->reasonCode);
-        self::assertSame(self::OUT_OF_SCOPE_MESSAGE, $result->safeResponse()->message);
+        self::assertSame(self::ASSISTANT_UNAVAILABLE_MESSAGE, $result->safeResponse()->message);
     }
 
     public function testEmbeddingProviderFailureDuringRetrievalFallsBackToSafeResponseInsteadOfPropagating(): void
@@ -1467,6 +1510,31 @@ final class ChatEntryPipelineTest extends TestCase
 
         self::assertTrue($result->wasShortCircuited());
         self::assertSame(ChatEntryPipeline::REASON_RETRIEVAL_UNAVAILABLE, $result->safeResponse()->reasonCode);
+    }
+
+    public function testEmbeddingRateLimitDuringRetrievalShortCircuitsToTheAssistantDownReasonAndMessage(): void
+    {
+        // The embedding-provider exception hierarchy (used during
+        // retrieval's query-embedding step) is a sibling of, not a
+        // subclass of, the chat-provider one HardFailureClassifier was
+        // originally written against — proving both are recognized.
+        $classifier = $this->createMock(CommerceScopeClassifierInterface::class);
+        $classifier->method('classify')->willReturn(ScopeClassification::inScope());
+
+        $retrievalService = $this->createMock(HybridRetrievalServiceInterface::class);
+        $retrievalService->method('retrieve')->willThrowException(
+            new \Aavirbhava\AiShoppingAssistant\Model\Embedding\Exception\EmbeddingRateLimitException(
+                new Phrase('Embedding provider rate limited.')
+            )
+        );
+
+        $pipeline = $this->pipeline(classifier: $classifier, retrievalService: $retrievalService);
+
+        $result = $pipeline->handle(self::STORE_ID, 'Show me waterproof phones.');
+
+        self::assertTrue($result->wasShortCircuited());
+        self::assertSame(ChatEntryPipeline::REASON_ASSISTANT_DOWN, $result->safeResponse()->reasonCode);
+        self::assertSame(self::ASSISTANT_DOWN_MESSAGE, $result->safeResponse()->message);
     }
 
     public function testRetrievalFailureIsLoggedWithTheSanitizedErrorCodeButNeverPropagatesTheRawException(): void
@@ -1622,7 +1690,8 @@ final class ChatEntryPipelineTest extends TestCase
             new PriceConstraintReconciler(),
             new PriorTurnProductCarryOver($historyStore),
             new ChatDebugLogger($this->createMock(LoggerInterface::class)),
-            $logger
+            $logger,
+            new HardFailureClassifier()
         );
     }
 
@@ -1641,6 +1710,8 @@ final class ChatEntryPipelineTest extends TestCase
         $guardrails = $this->createMock(GuardrailConfigInterface::class);
         $guardrails->method('maxInputCharacters')->willReturn(1000);
         $guardrails->method('outOfScopeMessage')->willReturn(self::OUT_OF_SCOPE_MESSAGE);
+        $guardrails->method('assistantUnavailableMessage')->willReturn(self::ASSISTANT_UNAVAILABLE_MESSAGE);
+        $guardrails->method('assistantDownMessage')->willReturn(self::ASSISTANT_DOWN_MESSAGE);
 
         $general = $this->createMock(GeneralConfigInterface::class);
         $general->method('isEnabled')->willReturn($assistantEnabled);

@@ -41,6 +41,7 @@ function aavirbhavaChatWidget(config) {
         open: false,
         minimized: false,
         loading: false,
+        stopped: false,
         input: '',
         messages: [],
         resizing: false,
@@ -172,7 +173,7 @@ function aavirbhavaChatWidget(config) {
 
         send: function (text) {
             var message = (text || '').trim();
-            if (message === '' || this.loading || !window.AavirbhavaChatCore) {
+            if (message === '' || this.loading || this.stopped || !window.AavirbhavaChatCore) {
                 return;
             }
 
@@ -182,8 +183,22 @@ function aavirbhavaChatWidget(config) {
 
             var self = this;
             window.AavirbhavaChatCore.sendMessage(this.sendUrl, message).then(function (result) {
-                self.loading = false;
                 var normalized = window.AavirbhavaChatCore.normalizeResponse(result.data);
+
+                // A confirmed-down response (Task 45) ends the
+                // conversation for the rest of this visit — retrying
+                // cannot help, since the underlying failure is confirmed
+                // to recur identically, so input/send stay disabled
+                // rather than inviting the customer to keep typing. A
+                // page reload re-evaluates ChatWidget's own server-side
+                // render gate (Task 44), which hides the widget entirely
+                // once the same confirmed-down circuit-breaker state is
+                // visible there too.
+                if (normalized.reasonCode === window.AavirbhavaChatCore.REASON_ASSISTANT_DOWN) {
+                    self.stopped = true;
+                }
+
+                self.loading = false;
 
                 if (!result.ok && normalized.message === '') {
                     self.messages.push(self.failureMessage());

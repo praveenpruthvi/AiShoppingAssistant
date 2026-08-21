@@ -4,9 +4,10 @@ declare(strict_types=1);
 
 namespace Aavirbhava\AiShoppingAssistant\Test\Unit\Model\Config;
 
-use Aavirbhava\AiShoppingAssistant\Api\Catalog\ProductAttributePolicyInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Catalog\AttributeIndexingSelectionRepositoryInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\GeneralConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\GuardrailConfigInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Config\ProviderCostRepositoryInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Config\ColorContrast;
 use Aavirbhava\AiShoppingAssistant\Model\Config\ConfigurationReader;
 use Aavirbhava\AiShoppingAssistant\Model\Config\Exception\ConfigurationException;
@@ -23,9 +24,14 @@ final class ConfigurationReaderTest extends TestCase
 {
     /**
      * @param array<string, mixed> $values
+     * @param list<string> $indexedAttributeCodes
+     * @param array<string, array{input: float, output: float}> $providerCosts
      */
-    private function reader(array $values): ConfigurationReader
-    {
+    private function reader(
+        array $values,
+        array $indexedAttributeCodes = [],
+        array $providerCosts = []
+    ): ConfigurationReader {
         $scopeConfig = $this->createMock(ScopeConfigInterface::class);
         $scopeConfig->method('getValue')
             ->willReturnCallback(
@@ -36,15 +42,34 @@ final class ConfigurationReaderTest extends TestCase
         // directly here rather than mocked, the same way this module's
         // other simple deterministic collaborators (e.g. LlmResponseParser
         // in OutputValidatorTest) are used directly rather than mocked.
-        return new ConfigurationReader($scopeConfig, $this->policy(), new ColorContrast());
+        return new ConfigurationReader(
+            $scopeConfig,
+            new ColorContrast(),
+            $this->attributeRepository($indexedAttributeCodes),
+            $this->providerCostRepository($providerCosts)
+        );
     }
 
-    private function policy(): ProductAttributePolicyInterface
+    /**
+     * @param list<string> $indexedAttributeCodes
+     */
+    private function attributeRepository(array $indexedAttributeCodes): AttributeIndexingSelectionRepositoryInterface
     {
-        $policy = $this->createMock(ProductAttributePolicyInterface::class);
-        $policy->method('isAllowed')->willReturn(true);
+        $repository = $this->createMock(AttributeIndexingSelectionRepositoryInterface::class);
+        $repository->method('indexedCodes')->willReturn($indexedAttributeCodes);
 
-        return $policy;
+        return $repository;
+    }
+
+    /**
+     * @param array<string, array{input: float, output: float}> $providerCosts
+     */
+    private function providerCostRepository(array $providerCosts): ProviderCostRepositoryInterface
+    {
+        $repository = $this->createMock(ProviderCostRepositoryInterface::class);
+        $repository->method('all')->willReturn($providerCosts);
+
+        return $repository;
     }
 
     public function testReadsConfigurationForExplicitStoreScope(): void
@@ -93,7 +118,12 @@ final class ConfigurationReaderTest extends TestCase
                 static fn (string $path): mixed => $values[$path] ?? null
             );
 
-        $reader = new ConfigurationReader($scopeConfig, $this->policy(), new ColorContrast());
+        $reader = new ConfigurationReader(
+            $scopeConfig,
+            new ColorContrast(),
+            $this->attributeRepository([]),
+            $this->providerCostRepository([])
+        );
 
         $general = $reader->readGeneral($storeId);
         self::assertInstanceOf(GeneralConfigInterface::class, $general);
@@ -545,12 +575,11 @@ final class ConfigurationReaderTest extends TestCase
     {
         $reader = $this->reader([
             Path::INDEXING_BATCH_SIZE => '25',
-            Path::INDEXING_SEARCHABLE_ATTRIBUTE_CODES => 'Brand, COLOR , size',
             Path::INDEXING_INCLUDE_SHORT_DESCRIPTION => '1',
             Path::INDEXING_INCLUDE_LONG_DESCRIPTION => '0',
             Path::INDEXING_AGGREGATE_CONFIGURABLE_VARIANTS => '0',
             Path::INDEXING_MAX_ATTRIBUTE_VALUES_PER_PRODUCT => '50',
-        ]);
+        ], ['brand', 'color', 'size']);
 
         $indexing = $reader->readIndexing(1);
         self::assertSame(25, $indexing->batchSize());
@@ -561,20 +590,30 @@ final class ConfigurationReaderTest extends TestCase
         self::assertSame(50, $indexing->maxAttributeValuesPerProduct());
     }
 
+    /**
+     * searchableAttributeCodes() is sourced from
+     * AttributeIndexingSelectionRepositoryInterface, not a config field
+     * with its own default list any more — an empty selection correctly
+     * yields an empty list, no fallback.
+     */
     public function testIndexingUsesSafeDefaultsWhenConfigurationIsUnavailable(): void
     {
         $reader = $this->reader([]);
 
         $indexing = $reader->readIndexing(1);
         self::assertSame(ConfigurationReader::DEFAULT_BATCH_SIZE, $indexing->batchSize());
-        self::assertSame(
-            ConfigurationReader::DEFAULT_SEARCHABLE_ATTRIBUTE_CODES,
-            $indexing->searchableAttributeCodes()
-        );
+        self::assertSame([], $indexing->searchableAttributeCodes());
         self::assertTrue($indexing->includeShortDescription());
         self::assertTrue($indexing->includeLongDescription());
         self::assertFalse($indexing->aggregateConfigurableVariants());
         self::assertSame(ConfigurationReader::DEFAULT_MAX_ATTRIBUTE_VALUES, $indexing->maxAttributeValuesPerProduct());
+    }
+
+    public function testIndexingSearchableAttributeCodesComeFromTheRepositoryLive(): void
+    {
+        $reader = $this->reader([], ['manufacturer', 'material']);
+
+        self::assertSame(['manufacturer', 'material'], $reader->readIndexing(1)->searchableAttributeCodes());
     }
 
     public function testIndexingClampsBatchSizeAndAttributeValuesToBounds(): void
@@ -599,48 +638,6 @@ final class ConfigurationReaderTest extends TestCase
         $indexing = $reader->readIndexing(1);
         self::assertSame(ConfigurationReader::MIN_BATCH_SIZE, $indexing->batchSize());
         self::assertSame(ConfigurationReader::MIN_MAX_ATTRIBUTE_VALUES, $indexing->maxAttributeValuesPerProduct());
-    }
-
-    public function testIndexingFailsClosedOnMalformedAttributeCode(): void
-    {
-        $reader = $this->reader([
-            Path::INDEXING_SEARCHABLE_ATTRIBUTE_CODES => 'Good-Code, BAD CODE',
-        ]);
-
-        $this->expectException(ConfigurationException::class);
-        $this->expectExceptionMessage('invalid attribute code');
-
-        $reader->readIndexing(1);
-    }
-
-    public function testIndexingExplicitBlankListYieldsNoSearchableAttributes(): void
-    {
-        $reader = $this->reader([
-            Path::INDEXING_SEARCHABLE_ATTRIBUTE_CODES => '',
-        ]);
-
-        $indexing = $reader->readIndexing(1);
-        self::assertSame([], $indexing->searchableAttributeCodes());
-    }
-
-    public function testIndexingRemovesPolicyDeniedAttributeCodes(): void
-    {
-        $policy = $this->createMock(ProductAttributePolicyInterface::class);
-        $policy->method('isAllowed')
-            ->willReturnCallback(
-                static fn (string $code): bool => $code !== 'cost'
-            );
-
-        $scopeConfig = $this->createMock(ScopeConfigInterface::class);
-        $scopeConfig->method('getValue')
-            ->willReturnCallback(
-                static fn (string $path): mixed => $path === Path::INDEXING_SEARCHABLE_ATTRIBUTE_CODES
-                    ? 'cost,color'
-                    : null
-            );
-
-        $indexing = (new ConfigurationReader($scopeConfig, $policy, new ColorContrast()))->readIndexing(1);
-        self::assertSame(['color'], $indexing->searchableAttributeCodes());
     }
 
     public function testIndexingRejectsEnabledConfigurableVariantAggregation(): void
@@ -692,13 +689,16 @@ final class ConfigurationReaderTest extends TestCase
         self::assertSame(CapPeriod::DAILY, $costCap->period());
     }
 
-    public function testReadsProviderCostConfiguration(): void
+    public function testReadsProviderCostConfigurationFromTheRepositoryNotAFixedFieldPair(): void
     {
-        $reader = $this->reader([
-            Path::PROVIDER_COST_OPENAI_PRICE_PER_1K_INPUT_TOKENS => '0.005',
-            Path::PROVIDER_COST_OPENAI_PRICE_PER_1K_OUTPUT_TOKENS => '0.015',
-            Path::PROVIDER_COST_OPENAI_COMPATIBLE_PRICE_PER_1K_INPUT_TOKENS => '0',
-            Path::PROVIDER_COST_OPENAI_COMPATIBLE_PRICE_PER_1K_OUTPUT_TOKENS => '0',
+        $reader = $this->reader([], [], [
+            ProviderIdentifiers::LLM_OPENAI => ['input' => 0.005, 'output' => 0.015],
+            ProviderIdentifiers::LLM_OPENAI_COMPATIBLE => ['input' => 0.0, 'output' => 0.0],
+            // A provider absent from Task 35's original static field pair
+            // (only openai/openai_compatible existed then) proves this is
+            // genuinely reading a dynamic, provider-keyed source now, not
+            // still secretly limited to two hardcoded identifiers.
+            ProviderIdentifiers::LLM_ANTHROPIC => ['input' => 0.003, 'output' => 0.015],
         ]);
 
         $providerCost = $reader->readProviderCost(1);
@@ -707,9 +707,11 @@ final class ConfigurationReaderTest extends TestCase
         self::assertSame(0.015, $providerCost->pricePerThousandOutputTokens(ProviderIdentifiers::LLM_OPENAI));
         self::assertSame(0.0, $providerCost->pricePerThousandInputTokens(ProviderIdentifiers::LLM_OPENAI_COMPATIBLE));
         self::assertSame(0.0, $providerCost->pricePerThousandOutputTokens(ProviderIdentifiers::LLM_OPENAI_COMPATIBLE));
+        self::assertSame(0.003, $providerCost->pricePerThousandInputTokens(ProviderIdentifiers::LLM_ANTHROPIC));
+        self::assertSame(0.015, $providerCost->pricePerThousandOutputTokens(ProviderIdentifiers::LLM_ANTHROPIC));
     }
 
-    public function testProviderCostDefaultsToZeroForEveryKnownProviderWhenConfigurationIsUnavailable(): void
+    public function testProviderCostDefaultsToZeroForAnyProviderTheRepositoryHasNoRowFor(): void
     {
         $providerCost = $this->reader([])->readProviderCost(1);
 
@@ -717,5 +719,6 @@ final class ConfigurationReaderTest extends TestCase
         self::assertSame(0.0, $providerCost->pricePerThousandOutputTokens(ProviderIdentifiers::LLM_OPENAI));
         self::assertSame(0.0, $providerCost->pricePerThousandInputTokens(ProviderIdentifiers::LLM_OPENAI_COMPATIBLE));
         self::assertSame(0.0, $providerCost->pricePerThousandOutputTokens(ProviderIdentifiers::LLM_OPENAI_COMPATIBLE));
+        self::assertSame(0.0, $providerCost->pricePerThousandInputTokens(ProviderIdentifiers::LLM_GOOGLE));
     }
 }

@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+    <!--
+        Swaps in this module's own subclass (adds the "Indexed for AI
+        Assistant" column + mass action) for the native Stores >
+        Attributes > Product grid. A `<preference>` on this CONCRETE
+        class (not an interface) is valid here because
+        Magento\Backend\Block\Widget\Grid\Container::_prepareLayout()
+        creates this exact block directly in PHP via createBlock() with
+        no stable, addressable layout block name for a `<referenceBlock
+        class="...">` override to target instead — see
+        Model\Catalog\AttributeGrid\Grid's own docblock for the full
+        reasoning.
+    -->
+    <preference for="Magento\Catalog\Block\Adminhtml\Product\Attribute\Grid"
+                type="Aavirbhava\AiShoppingAssistant\Model\Catalog\AttributeGrid\Grid"/>
+</config>

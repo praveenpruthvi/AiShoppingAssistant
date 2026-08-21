@@ -37,6 +37,7 @@ use Aavirbhava\AiShoppingAssistant\Test\Unit\Fake\FakeEmbeddingGenerationService
 use Aavirbhava\AiShoppingAssistant\Test\Unit\Fake\FakeProductDocumentFactory;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
+use Psr\Log\LoggerInterface;
 
 #[CoversClass(OpenSearchProductDocumentWriter::class)]
 final class OpenSearchProductDocumentWriterTest extends TestCase
@@ -63,10 +64,16 @@ final class OpenSearchProductDocumentWriterTest extends TestCase
 
     private RebuildRunContext $context;
 
+    /**
+     * @var LoggerInterface&\PHPUnit\Framework\MockObject\MockObject
+     */
+    private $logger;
+
     protected function setUp(): void
     {
         $this->client = new FakeAssistantSearchClient();
         $this->generation = new FakeEmbeddingGenerationService();
+        $this->logger = $this->createMock(LoggerInterface::class);
         $this->configurationReader = $this->createMock(ConfigurationReaderInterface::class);
         $this->scope = new StoreScope(2, 1, 'default');
         $this->context = new RebuildRunContext(self::RUN_ID, 1, [$this->scope], 1.0);
@@ -109,7 +116,8 @@ final class OpenSearchProductDocumentWriterTest extends TestCase
             new ProductIndexMapping(),
             new EmbeddingEnrichmentService($this->generation, new ContentHashService(), $this->configSnapshot),
             new IndexedDocumentPayloadBuilder(),
-            $this->configSnapshot
+            $this->configSnapshot,
+            $this->logger
         );
     }
 
@@ -565,7 +573,8 @@ final class OpenSearchProductDocumentWriterTest extends TestCase
             new ProductIndexMapping(),
             new EmbeddingEnrichmentService($this->generation, new ContentHashService(), $this->configSnapshot),
             new IndexedDocumentPayloadBuilder(),
-            $this->configSnapshot
+            $this->configSnapshot,
+            $this->logger
         );
 
         $this->expectException(\Aavirbhava\AiShoppingAssistant\Model\Indexing\Exception\OpenSearchConfigurationInvalidException::class);
@@ -752,5 +761,116 @@ final class OpenSearchProductDocumentWriterTest extends TestCase
 
         $this->expectException(IndexCompatibilityMismatchException::class);
         $writer->writeBatch([(new FakeProductDocumentFactory())->make(2, 42, 'SKU-42')]);
+    }
+
+    public function testActivateRunPrunesOldUnaliasedIndexesBeyondRetentionWindow(): void
+    {
+        $writer = $this->buildWriter();
+
+        $oldest = self::PREFIX . '_store_2_run_oldest01';
+        $older = self::PREFIX . '_store_2_run_older002';
+        $newest = self::PREFIX . '_store_2_run_newest03';
+        $this->seedOldIndex($oldest, 1);
+        $this->seedOldIndex($older, 2);
+        $this->seedOldIndex($newest, 3);
+
+        $writer->beginRun($this->context);
+        $writer->beginStore($this->scope);
+        $writer->finishStore();
+        $writer->activateRun();
+
+        // Retention keeps the just-activated index plus the single most
+        // recent previous one; the two oldest fall outside that window.
+        self::assertContains($oldest, $this->client->deleted);
+        self::assertContains($older, $this->client->deleted);
+        self::assertNotContains($newest, $this->client->deleted);
+        self::assertTrue($this->client->indexExists($newest));
+        self::assertTrue($this->client->indexExists($this->physicalIndexName()));
+        self::assertSame([$this->physicalIndexName()], $this->client->aliasTargets($this->readAliasName()));
+    }
+
+    public function testActivateRunKeepsExactlyTheRetentionCountAcrossManyReindexes(): void
+    {
+        $writer = $this->buildWriter();
+        $namingService = new IndexNamingService();
+
+        $runIds = [
+            '9f6f0c80-5d3b-4b2a-8e7c-100000000001',
+            '9f6f0c80-5d3b-4b2a-8e7c-100000000002',
+            '9f6f0c80-5d3b-4b2a-8e7c-100000000003',
+            '9f6f0c80-5d3b-4b2a-8e7c-100000000004',
+        ];
+
+        $contexts = [];
+        foreach ($runIds as $runId) {
+            $context = new RebuildRunContext($runId, 1, [$this->scope], 1.0);
+            $contexts[] = $context;
+
+            $writer->beginRun($context);
+            $writer->beginStore($this->scope);
+            $writer->finishStore();
+            $writer->activateRun();
+        }
+
+        $remaining = array_values(array_filter(
+            array_keys($this->client->indexes),
+            static fn (string $name): bool => str_starts_with($name, self::PREFIX . '_store_2_run_')
+        ));
+
+        self::assertCount(2, $remaining);
+
+        $lastIndex = $namingService->physicalIndex(self::PREFIX, $this->scope, $contexts[3]);
+        $secondLastIndex = $namingService->physicalIndex(self::PREFIX, $this->scope, $contexts[2]);
+        self::assertContains($lastIndex, $remaining);
+        self::assertContains($secondLastIndex, $remaining);
+    }
+
+    public function testActivateRunNeverPrunesAnIndexStillReferencedByAnyAlias(): void
+    {
+        $writer = $this->buildWriter();
+
+        $referenced = self::PREFIX . '_store_2_run_referenced1';
+        $this->seedOldIndex($referenced, 1);
+        // Simulate the index still being referenced by some other alias (a
+        // prior alias generation, a foreign consumer) - pruning must confirm
+        // no reference exists anywhere before deleting, not just check this
+        // store's own canonical alias.
+        $this->client->aliases['some_other_alias_pointing_here'] = [$referenced];
+
+        $writer->beginRun($this->context);
+        $writer->beginStore($this->scope);
+        $writer->finishStore();
+        $writer->activateRun();
+
+        self::assertNotContains($referenced, $this->client->deleted);
+        self::assertTrue($this->client->indexExists($referenced));
+    }
+
+    public function testActivateRunSurvivesPruningFailureWithoutFailingTheRun(): void
+    {
+        $writer = $this->buildWriter();
+        $this->client->failOn('listIndices', new \RuntimeException('list failed'));
+        $this->logger->expects(self::once())->method('error');
+
+        $writer->beginRun($this->context);
+        $writer->beginStore($this->scope);
+        $writer->finishStore();
+        $writer->activateRun();
+
+        $index = $this->physicalIndexName();
+        self::assertTrue($this->client->indexExists($index));
+        self::assertSame([$index], $this->client->aliasTargets($this->readAliasName()));
+    }
+
+    private function seedOldIndex(string $indexName, int $createdAt): void
+    {
+        $this->client->indexes[$indexName] = true;
+        $this->client->metaByIndex[$indexName] = [
+            'assistant_index' => true,
+            'store_id' => $this->scope->storeId(),
+            'website_id' => $this->scope->websiteId(),
+            'physical_index' => $indexName,
+        ];
+        $this->client->createdAt[$indexName] = $createdAt;
     }
 }
