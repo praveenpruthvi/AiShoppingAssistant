@@ -26,6 +26,7 @@ use Aavirbhava\AiShoppingAssistant\Model\Dto\ChatResponse;
 use Aavirbhava\AiShoppingAssistant\Model\Dto\TokenUsage;
 use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderAuthenticationException;
 use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderConfigurationException;
+use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderConfirmedDownException;
 use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderRateLimitException;
 use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderTimeoutException;
 use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderUnavailableException;
@@ -131,12 +132,12 @@ final class FallbackChatGenerationServiceTest extends TestCase
      * primary key must never itself trigger a fallback attempt — see
      * this class's own docblock), and that still holds: the fallback
      * provider is never called and the original exception still
-     * propagates unchanged. But since Task 45, recordFailure IS now
-     * still called — with threshold 1, forcing the circuit open on this
-     * single occurrence — because the circuit breaker is also
-     * ChatWidget's only health signal (Task 44) and an invalid key must
-     * be visible there, even though, as a safety boundary, it must never
-     * cause a fallback provider to be consulted.
+     * propagates unchanged. But since Task 46, recordHardFailure() IS
+     * still called — forcing the circuit open on this single occurrence
+     * — because the circuit breaker is also ChatWidget's only health
+     * signal (Task 44) and an invalid key must be visible there, even
+     * though, as a safety boundary, it must never cause a fallback
+     * provider to be consulted.
      */
     public function testAuthenticationFailureNeverConsultsFallbackButStillForcesTheCircuitOpenImmediately(): void
     {
@@ -151,8 +152,9 @@ final class FallbackChatGenerationServiceTest extends TestCase
         $circuitBreaker = $this->createMock(CircuitBreakerInterface::class);
         $circuitBreaker->method('isOpen')->willReturn(false);
         $circuitBreaker->expects(self::once())
-            ->method('recordFailure')
-            ->with(self::STORE_ID, CircuitBreakerInterface::ROLE_PRIMARY, 1, 60);
+            ->method('recordHardFailure')
+            ->with(self::STORE_ID, CircuitBreakerInterface::ROLE_PRIMARY, 60);
+        $circuitBreaker->expects(self::never())->method('recordFailure');
         $circuitBreaker->expects(self::never())->method('recordSuccess');
 
         $service = $this->service(
@@ -180,8 +182,9 @@ final class FallbackChatGenerationServiceTest extends TestCase
         $circuitBreaker = $this->createMock(CircuitBreakerInterface::class);
         $circuitBreaker->method('isOpen')->willReturn(false);
         $circuitBreaker->expects(self::once())
-            ->method('recordFailure')
-            ->with(self::STORE_ID, CircuitBreakerInterface::ROLE_PRIMARY, 1, 60);
+            ->method('recordHardFailure')
+            ->with(self::STORE_ID, CircuitBreakerInterface::ROLE_PRIMARY, 60);
+        $circuitBreaker->expects(self::never())->method('recordFailure');
 
         $service = $this->service(
             $this->providerResolver($primaryProvider, $fallbackProvider),
@@ -204,31 +207,22 @@ final class FallbackChatGenerationServiceTest extends TestCase
             ->method('chat')
             ->willThrowException(new ProviderRateLimitException(new Phrase('fallback also rate limited')));
 
-        $recordedFailures = [];
         $circuitBreaker = $this->createMock(CircuitBreakerInterface::class);
         $circuitBreaker->method('isOpen')->willReturn(false);
-        $circuitBreaker->expects(self::exactly(2))
+        $circuitBreaker->expects(self::once())
             ->method('recordFailure')
-            ->willReturnCallback(function (int $storeId, string $role, int $threshold, int $cooldown) use (&$recordedFailures): void {
-                $recordedFailures[] = [$storeId, $role, $threshold, $cooldown];
-            });
+            ->with(self::STORE_ID, CircuitBreakerInterface::ROLE_PRIMARY, 3, 60);
+        $circuitBreaker->expects(self::once())
+            ->method('recordHardFailure')
+            ->with(self::STORE_ID, CircuitBreakerInterface::ROLE_FALLBACK, 60);
 
         $service = $this->service(
             $this->providerResolver($primaryProvider, $fallbackProvider),
             circuitBreaker: $circuitBreaker
         );
 
-        try {
-            $service->chat(self::STORE_ID, $this->messages);
-            self::fail('Expected a ProviderRateLimitException.');
-        } catch (ProviderRateLimitException) {
-            // Expected — assert the recorded failures below.
-        }
-
-        self::assertSame([
-            [self::STORE_ID, CircuitBreakerInterface::ROLE_PRIMARY, 3, 60],
-            [self::STORE_ID, CircuitBreakerInterface::ROLE_FALLBACK, 1, 60],
-        ], $recordedFailures);
+        $this->expectException(ProviderRateLimitException::class);
+        $service->chat(self::STORE_ID, $this->messages);
     }
 
     public function testBothPrimaryAndFallbackFailingPropagatesTheFallbackFailure(): void
@@ -319,6 +313,169 @@ final class FallbackChatGenerationServiceTest extends TestCase
         $response = $service->chat(self::STORE_ID, $this->messages);
 
         self::assertTrue($response->usedFallback);
+    }
+
+    /**
+     * Task 46's alternating-message fix. Reproduces the real bug found
+     * live: with the primary circuit already open from an earlier hard
+     * failure, a call made during the cooldown never re-attempts the
+     * primary (isOpen() is checked first), so $primaryException stays
+     * null — before this fix, attemptFallback()'s "nothing left to try"
+     * branch always synthesized a generic ProviderUnavailableException
+     * there, which HardFailureClassifier does not treat as hard,
+     * silently downgrading the customer-facing message from
+     * assistant_down back to assistant_unavailable for every request
+     * made during the cooldown. wasOpenedByHardFailure() lets this call
+     * recover that context even though it never saw a fresh exception.
+     */
+    public function testPrimaryCircuitAlreadyOpenFromAHardFailureThrowsConfirmedDownNotGenericUnavailable(): void
+    {
+        $primaryProvider = $this->createMock(LlmProviderInterface::class);
+        $primaryProvider->expects(self::never())->method('chat');
+
+        $circuitBreaker = $this->createMock(CircuitBreakerInterface::class);
+        $circuitBreaker->method('isOpen')->willReturn(true);
+        $circuitBreaker->method('wasOpenedByHardFailure')
+            ->with(self::STORE_ID, CircuitBreakerInterface::ROLE_PRIMARY)
+            ->willReturn(true);
+
+        $service = $this->service(
+            $this->providerResolver($primaryProvider, null, fallbackEnabled: false),
+            circuitBreaker: $circuitBreaker
+        );
+
+        $this->expectException(ProviderConfirmedDownException::class);
+        $service->chat(self::STORE_ID, $this->messages);
+    }
+
+    /**
+     * The mirror case: the primary circuit is open from ordinary
+     * accumulated transient failures (recordFailure(), never
+     * recordHardFailure()) — wasOpenedByHardFailure() correctly reports
+     * false, and the skip-path keeps throwing the original, generic
+     * ProviderUnavailableException exactly as it always did. Proves the
+     * fix above is narrowly scoped to hard opens, not every open circuit.
+     */
+    public function testPrimaryCircuitAlreadyOpenFromASoftFailureStillThrowsGenericUnavailable(): void
+    {
+        $primaryProvider = $this->createMock(LlmProviderInterface::class);
+        $primaryProvider->expects(self::never())->method('chat');
+
+        $circuitBreaker = $this->createMock(CircuitBreakerInterface::class);
+        $circuitBreaker->method('isOpen')->willReturn(true);
+        $circuitBreaker->method('wasOpenedByHardFailure')
+            ->with(self::STORE_ID, CircuitBreakerInterface::ROLE_PRIMARY)
+            ->willReturn(false);
+
+        $service = $this->service(
+            $this->providerResolver($primaryProvider, null, fallbackEnabled: false),
+            circuitBreaker: $circuitBreaker
+        );
+
+        $this->expectException(ProviderUnavailableException::class);
+        $service->chat(self::STORE_ID, $this->messages);
+    }
+
+    /**
+     * Task 47's "hide doesn't survive a refresh" fix. Live investigation
+     * found the real gap: with fallback enabled and its OWN circuit
+     * still closed (not yet individually tripped past its multi-failure
+     * threshold), a customer refresh saw the widget reappear even
+     * though EVERY real request during that window was failing on both
+     * primary (already hard-down) and fallback (a real, repeated
+     * failure just below its own threshold) — because
+     * ChatWidget::isAssistantConfirmedDown() only reads FALLBACK's
+     * circuit state, and nothing had force-opened it yet. Reproduces
+     * the skip-path variant: primary's circuit is ALREADY open from an
+     * earlier hard failure ($primaryException stays null — see chat()'s
+     * own control flow), fallback IS attempted (its circuit still
+     * closed) and fails with an ordinary SOFT exception. Proves the
+     * fallback failure is upgraded to hard (forcing FALLBACK's circuit
+     * open on this one occurrence too) and the exception thrown is
+     * ProviderConfirmedDownException, not the raw soft one — keeping
+     * the customer-facing reason code and the widget's next render
+     * consistent with the real, already-confirmed-broken state.
+     */
+    public function testFallbackFailureWhilePrimaryCircuitAlreadyHardOpenUpgradesToConfirmedDown(): void
+    {
+        $primaryProvider = $this->createMock(LlmProviderInterface::class);
+        $primaryProvider->expects(self::never())->method('chat');
+
+        $fallbackProvider = $this->createMock(LlmProviderInterface::class);
+        $fallbackProvider->expects(self::once())
+            ->method('chat')
+            ->willThrowException($this->timeoutException());
+
+        $circuitBreaker = $this->createMock(CircuitBreakerInterface::class);
+        $circuitBreaker->method('isOpen')->willReturnMap([
+            [self::STORE_ID, CircuitBreakerInterface::ROLE_PRIMARY, true],
+            [self::STORE_ID, CircuitBreakerInterface::ROLE_FALLBACK, false],
+        ]);
+        $circuitBreaker->method('wasOpenedByHardFailure')
+            ->with(self::STORE_ID, CircuitBreakerInterface::ROLE_PRIMARY)
+            ->willReturn(true);
+        $circuitBreaker->expects(self::once())
+            ->method('recordHardFailure')
+            ->with(self::STORE_ID, CircuitBreakerInterface::ROLE_FALLBACK, 60);
+        $circuitBreaker->expects(self::never())->method('recordFailure');
+
+        $service = $this->service(
+            $this->providerResolver($primaryProvider, $fallbackProvider),
+            circuitBreaker: $circuitBreaker
+        );
+
+        $this->expectException(ProviderConfirmedDownException::class);
+        $service->chat(self::STORE_ID, $this->messages);
+    }
+
+    /**
+     * The non-skip-path variant of the same fix: primary IS attempted
+     * this call and fails hard (a real ProviderRateLimitException, not
+     * an already-open circuit), fallback is then attempted and fails
+     * with an ordinary soft exception. Same upgrade should occur.
+     * Deliberately uses rate limit rather than authentication here —
+     * authentication is never fallback-eligible at all (a separate,
+     * pre-existing safety boundary), so it would never even reach
+     * attemptFallback() to exercise this fix in the first place.
+     */
+    public function testFallbackFailureAfterAFreshHardPrimaryFailureInTheSameCallAlsoUpgradesToConfirmedDown(): void
+    {
+        $primaryProvider = $this->createMock(LlmProviderInterface::class);
+        $primaryProvider->expects(self::once())
+            ->method('chat')
+            ->willThrowException(new ProviderRateLimitException(new Phrase('rate limited')));
+
+        $fallbackProvider = $this->createMock(LlmProviderInterface::class);
+        $fallbackProvider->expects(self::once())
+            ->method('chat')
+            ->willThrowException($this->timeoutException());
+
+        $recordedHardFailures = [];
+        $circuitBreaker = $this->createMock(CircuitBreakerInterface::class);
+        $circuitBreaker->method('isOpen')->willReturn(false);
+        $circuitBreaker->expects(self::exactly(2))
+            ->method('recordHardFailure')
+            ->willReturnCallback(function (int $storeId, string $role, int $cooldown) use (&$recordedHardFailures): void {
+                $recordedHardFailures[] = [$storeId, $role, $cooldown];
+            });
+        $circuitBreaker->expects(self::never())->method('recordFailure');
+
+        $service = $this->service(
+            $this->providerResolver($primaryProvider, $fallbackProvider),
+            circuitBreaker: $circuitBreaker
+        );
+
+        try {
+            $service->chat(self::STORE_ID, $this->messages);
+            self::fail('Expected a ProviderConfirmedDownException.');
+        } catch (ProviderConfirmedDownException) {
+            // Expected — assert the recorded hard failures below.
+        }
+
+        self::assertSame([
+            [self::STORE_ID, CircuitBreakerInterface::ROLE_PRIMARY, 60],
+            [self::STORE_ID, CircuitBreakerInterface::ROLE_FALLBACK, 60],
+        ], $recordedHardFailures);
     }
 
     public function testCircuitBreakerOpenForFallbackSkipsFallbackAttemptAndPropagatesPrimaryFailure(): void

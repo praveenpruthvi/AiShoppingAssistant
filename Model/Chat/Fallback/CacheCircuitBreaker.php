@@ -48,7 +48,34 @@ final class CacheCircuitBreaker implements CircuitBreakerInterface
             ? $this->now() + max(1, $cooldownSeconds)
             : null;
 
-        $this->writeState($storeId, $providerRole, $failures, $openedUntil, max(1, $cooldownSeconds));
+        $this->writeState($storeId, $providerRole, $failures, $openedUntil, false, max(1, $cooldownSeconds));
+    }
+
+    /**
+     * A hard failure (Task 45) always opens the breaker on this single
+     * occurrence — unlike recordFailure(), there is no accumulating
+     * failure count to reach a threshold, since the whole point is that
+     * one confirmed hard failure is already conclusive. The `is_hard`
+     * flag persists in the same stored state so wasOpenedByHardFailure()
+     * can answer correctly for every later call made while the breaker
+     * is still open, not only the one that actually tripped it — see
+     * that method's own docblock for why this matters.
+     */
+    public function recordHardFailure(int $storeId, string $providerRole, int $cooldownSeconds): void
+    {
+        $state = $this->readState($storeId, $providerRole);
+        $failures = $state['failures'] + 1;
+
+        $this->writeState($storeId, $providerRole, $failures, $this->now() + max(1, $cooldownSeconds), true, max(1, $cooldownSeconds));
+    }
+
+    public function wasOpenedByHardFailure(int $storeId, string $providerRole): bool
+    {
+        if (!$this->isOpen($storeId, $providerRole)) {
+            return false;
+        }
+
+        return $this->readState($storeId, $providerRole)['is_hard'];
     }
 
     public function recordSuccess(int $storeId, string $providerRole): void
@@ -57,24 +84,24 @@ final class CacheCircuitBreaker implements CircuitBreakerInterface
     }
 
     /**
-     * @return array{failures: int, opened_until: int|null}
+     * @return array{failures: int, opened_until: int|null, is_hard: bool}
      */
     private function readState(int $storeId, string $providerRole): array
     {
         $raw = $this->cache->load($this->cacheId($storeId, $providerRole));
 
         if (!is_string($raw) || $raw === '') {
-            return ['failures' => 0, 'opened_until' => null];
+            return ['failures' => 0, 'opened_until' => null, 'is_hard' => false];
         }
 
         try {
             $decoded = json_decode($raw, true, 8, JSON_THROW_ON_ERROR);
         } catch (\JsonException) {
-            return ['failures' => 0, 'opened_until' => null];
+            return ['failures' => 0, 'opened_until' => null, 'is_hard' => false];
         }
 
         if (!is_array($decoded) || !isset($decoded['failures']) || !is_int($decoded['failures'])) {
-            return ['failures' => 0, 'opened_until' => null];
+            return ['failures' => 0, 'opened_until' => null, 'is_hard' => false];
         }
 
         $openedUntil = $decoded['opened_until'] ?? null;
@@ -82,12 +109,22 @@ final class CacheCircuitBreaker implements CircuitBreakerInterface
         return [
             'failures' => $decoded['failures'],
             'opened_until' => is_int($openedUntil) ? $openedUntil : null,
+            'is_hard' => ($decoded['is_hard'] ?? false) === true,
         ];
     }
 
-    private function writeState(int $storeId, string $providerRole, int $failures, ?int $openedUntil, int $lifeTimeSeconds): void
-    {
-        $data = json_encode(['failures' => $failures, 'opened_until' => $openedUntil], JSON_THROW_ON_ERROR);
+    private function writeState(
+        int $storeId,
+        string $providerRole,
+        int $failures,
+        ?int $openedUntil,
+        bool $isHard,
+        int $lifeTimeSeconds
+    ): void {
+        $data = json_encode(
+            ['failures' => $failures, 'opened_until' => $openedUntil, 'is_hard' => $isHard],
+            JSON_THROW_ON_ERROR
+        );
 
         // Life time bounds how long a stale failure count can linger once
         // nothing records a success; always at least the cooldown so an

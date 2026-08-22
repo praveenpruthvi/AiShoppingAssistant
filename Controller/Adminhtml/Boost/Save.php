@@ -161,7 +161,14 @@ class Save extends Action implements HttpPostActionInterface
         // The form's date inputs submit `Y-m-d` only; normalize to a full
         // MySQL datetime so start/end comparisons in MerchandisingBoostRow
         // and ActiveBoostReader's own SQL stay consistent in format.
-        $parsed = \DateTimeImmutable::createFromFormat('Y-m-d', $raw);
+        // The leading `!` is required: without it, PHP's createFromFormat()
+        // leaves every field the format string doesn't mention (here, the
+        // whole time-of-day) at the CURRENT wall-clock time rather than
+        // midnight — a real, confirmed PHP behavior (Task 33's own
+        // integration test caught it), which would have made a boost's
+        // real active window start/end at whatever random time of day it
+        // happened to be saved, not the intended midnight boundary.
+        $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $raw);
         if ($parsed === false) {
             $parsed = \DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $raw);
         }

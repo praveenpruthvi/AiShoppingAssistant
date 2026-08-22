@@ -32,6 +32,12 @@
                     <comment>How many prior messages of a conversation (not customer-visible turns — a single turn can span several messages via tool calls) are kept and re-sent as context on each new message.</comment>
                     <validate>validate-digits validate-greater-than-zero</validate>
                 </field>
+                <field id="token_optimization_enabled" translate="label comment" type="select" sortOrder="40"
+                       showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Token Optimization</label>
+                    <comment>Disabled by default (full product context is sent exactly as today). When enabled, the product context sent to the LLM drops fields the response schema does not require (currently: category names) to reduce token cost — this can reduce recommendation quality for category-sensitive queries, so it is an explicit opt-in, never the default.</comment>
+                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                </field>
             </group>
 
             <group id="appearance" translate="label" type="text" sortOrder="15"

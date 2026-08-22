@@ -7,6 +7,8 @@ namespace Aavirbhava\AiShoppingAssistant\Test\Unit\Model\Ranking;
 use Aavirbhava\AiShoppingAssistant\Api\Config\ConfigurationReaderInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\RetrievalConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Merchandising\ActiveBoostReaderInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Merchandising\ActiveCategoryBoostReaderInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Merchandising\ProductCategoryMembershipReaderInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Ranking\RankingSignalCollectorInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Ranking\RankingSignalInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Merchandising\MerchandisingBoostRow;
@@ -268,12 +270,16 @@ final class RankingPipelineTest extends TestCase
             2 => MerchandisingBoostRow::MAX_BOOST_WEIGHT,
             3 => MerchandisingBoostRow::MAX_BOOST_WEIGHT,
         ]);
+        $categoryBoostReader = $this->createMock(ActiveCategoryBoostReaderInterface::class);
+        $categoryBoostReader->method('forCategoryIds')->willReturn([]);
+        $categoryMembershipReader = $this->createMock(ProductCategoryMembershipReaderInterface::class);
+        $categoryMembershipReader->method('forProductIds')->willReturn([]);
         $pipeline = new RankingPipeline($configReader, [
             'text_relevance' => new TextRelevanceSignal(),
             'vector_similarity' => new VectorSimilaritySignal(),
             'attribute_match' => new AttributeMatchSignal(),
             'rating' => new RatingSignal($configReader),
-            'merchandising_boost' => new MerchandisingBoostSignal($boostReader),
+            'merchandising_boost' => new MerchandisingBoostSignal($boostReader, $categoryBoostReader, $categoryMembershipReader),
             'availability' => new AvailabilitySignal(),
         ]);
 

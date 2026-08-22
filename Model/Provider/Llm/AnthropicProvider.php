@@ -198,7 +198,24 @@ final class AnthropicProvider implements LlmProviderInterface
         ];
 
         if ($systemText !== '') {
-            $body['system'] = $systemText;
+            // Array-of-blocks form (rather than a plain string) is
+            // required to attach cache_control at all — Anthropic's
+            // prompt-caching feature (Task 48, unconditional
+            // infrastructure, never gated behind the Token Optimization
+            // toggle: identical content, just billed differently when
+            // cached). One breakpoint here is enough since the whole
+            // system text is always sent as a single joined string
+            // (extractSystemText() above) — Anthropic caches everything
+            // from the start of the request up to and including a
+            // marked block, so this one breakpoint covers the entire
+            // system prompt.
+            $body['system'] = [
+                [
+                    'type' => 'text',
+                    'text' => $systemText,
+                    'cache_control' => ['type' => 'ephemeral'],
+                ],
+            ];
         }
 
         if ($request->tools !== []) {
@@ -206,6 +223,17 @@ final class AnthropicProvider implements LlmProviderInterface
                 fn (array $tool): array => $this->buildTool($tool),
                 $request->tools
             );
+            // Same prompt-caching feature: cache_control on the LAST
+            // tool definition caches every tool definition up to and
+            // including it (Anthropic's own documented placement rule —
+            // a breakpoint is not per-block, it marks "cache everything
+            // before this point too"). Tool definitions are this
+            // module's other large, identical-across-requests content
+            // (see CommerceToolRegistry's own docblock: DI-built, fixed
+            // insertion order, no per-request variation), right
+            // alongside the system prompt.
+            $lastToolIndex = array_key_last($body['tools']);
+            $body['tools'][$lastToolIndex]['cache_control'] = ['type' => 'ephemeral'];
             $body['tool_choice'] = ['type' => 'auto'];
         }
 
@@ -425,6 +453,31 @@ final class AnthropicProvider implements LlmProviderInterface
     }
 
     /**
+     * Anthropic's three input-token fields are ADDITIVE and mutually
+     * exclusive — `input_tokens + cache_read_input_tokens +
+     * cache_creation_input_tokens` is the real total input token count
+     * (Anthropic's own documented formula), unlike OpenAI's model where
+     * `cached_tokens` is already a SUBSET of `prompt_tokens`. A real,
+     * previously-latent bug here (Task 48, only just exposed since
+     * caching was never actually enabled before this task added real
+     * cache_control breakpoints — cache_read_input_tokens had always
+     * been 0 until now, so this path was never actually exercised):
+     * treating `input_tokens` alone as the total and clamping
+     * `cache_read_input_tokens` down to fit inside it
+     * (`min($cachedTokens, $inputTokens)`) massively UNDER-reported real
+     * cache hits — a typical cache hit has a LARGE cache_read_input_tokens
+     * (the whole cached system+tools prefix) alongside a SMALL
+     * input_tokens (just this turn's new content), so the old clamp
+     * would report almost none of the real cache benefit.
+     * cache_creation_input_tokens (a cache WRITE, billed at a premium,
+     * not a discount) is folded into the "normal-priced" portion of the
+     * total here rather than tracked as its own third tier — this
+     * module's TokenUsage/CostCalculator only distinguish two tiers
+     * (normal-priced vs. cached/cheap), so a cache-write turn's real
+     * cost is slightly underestimated (billed at 1.0x here, actually
+     * 1.25x on Anthropic's side for the default 5-minute TTL) — a
+     * disclosed, bounded simplification, not silently wrong.
+     *
      * @param mixed $rawUsage
      */
     private function parseUsage(mixed $rawUsage): TokenUsage
@@ -433,10 +486,13 @@ final class AnthropicProvider implements LlmProviderInterface
             return new TokenUsage(0, 0);
         }
 
-        $inputTokens = $this->usageTokenCount($rawUsage['input_tokens'] ?? null) ?? 0;
+        $newInputTokens = $this->usageTokenCount($rawUsage['input_tokens'] ?? null) ?? 0;
         $outputTokens = $this->usageTokenCount($rawUsage['output_tokens'] ?? null) ?? 0;
-        $cachedTokens = $this->usageTokenCount($rawUsage['cache_read_input_tokens'] ?? null) ?? 0;
-        $cachedTokens = min($cachedTokens, $inputTokens);
+        $cacheReadTokens = $this->usageTokenCount($rawUsage['cache_read_input_tokens'] ?? null) ?? 0;
+        $cacheCreationTokens = $this->usageTokenCount($rawUsage['cache_creation_input_tokens'] ?? null) ?? 0;
+
+        $inputTokens = $newInputTokens + $cacheReadTokens + $cacheCreationTokens;
+        $cachedTokens = $cacheReadTokens;
 
         try {
             return new TokenUsage($inputTokens, $outputTokens, $cachedTokens);

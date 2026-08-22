@@ -41,7 +41,7 @@ function aavirbhavaChatWidget(config) {
         open: false,
         minimized: false,
         loading: false,
-        stopped: false,
+        hidden: false,
         input: '',
         messages: [],
         resizing: false,
@@ -49,6 +49,7 @@ function aavirbhavaChatWidget(config) {
         resizeStartY: 0,
         resizeStartWidth: 0,
         resizeStartHeight: 0,
+        consecutiveSoftFailures: 0,
 
         init: function () {
             this.sendUrl = config && config.sendUrl ? config.sendUrl : '';
@@ -171,9 +172,81 @@ function aavirbhavaChatWidget(config) {
             this.send(question);
         },
 
+        // Removes the entire widget (toggle button and panel alike —
+        // `hidden` gates the whole x-data root, see widget-hyva.phtml)
+        // for the rest of this visit (Task 46, replacing Task 45's
+        // disable-input-only `stopped` approach: that logic was correct
+        // but its live "doesn't actually work" report traced to a stale
+        // compiled pub/static asset, not a logic bug — see the Task 46
+        // status report). A customer genuinely confirmed unable to get
+        // help from the assistant is better told plainly by the
+        // widget's absence than left probing a visibly "alive" but
+        // useless one. Deliberately not persisted client-side — a page
+        // reload re-evaluates ChatWidget's own server-side render gate
+        // (Task 44), which by then hides the widget on the SERVER side
+        // too once the same confirmed-down circuit-breaker state is
+        // visible there.
+        //
+        // Never called directly from send() (Task 47) — always
+        // scheduled via scheduleHideIfNeeded() so the failure message
+        // the customer is being told to react to has already been
+        // pushed AND had a real chance to render first. See that
+        // method's own docblock for why a synchronous call here, even
+        // placed after messages.push() in source order, was still a
+        // real, live-reproduced bug.
+        hideWidgetEntirely: function () {
+            this.hidden = true;
+        },
+
+        // A single assistant_unavailable/retrieval_unavailable is not,
+        // on its own, evidence the assistant is genuinely down — it
+        // might be a one-off blip a fresh request wouldn't repeat. Only
+        // SOFT_FAILURE_HIDE_THRESHOLD of them IN A ROW, with no
+        // successful/out-of-scope response resetting the count in
+        // between, is treated the same as a single assistant_down.
+        //
+        // Deliberately only DECIDES here — never hides directly. Hiding
+        // is scheduleHideIfNeeded()'s job, called only after the
+        // response has actually been rendered (see send()).
+        shouldHideWidget: function (reasonCode) {
+            if (reasonCode === window.AavirbhavaChatCore.REASON_ASSISTANT_DOWN) {
+                return true;
+            }
+
+            if (window.AavirbhavaChatCore.isSoftFailureReason(reasonCode)) {
+                this.consecutiveSoftFailures++;
+                return this.consecutiveSoftFailures >= window.AavirbhavaChatCore.SOFT_FAILURE_HIDE_THRESHOLD;
+            }
+
+            this.consecutiveSoftFailures = 0;
+            return false;
+        },
+
+        // The real fix for a real, live-reproduced bug (Task 47): the
+        // widget was hiding before the customer could read why, because
+        // hideWidgetEntirely() ran synchronously in the same step that
+        // decided to hide — even calling it AFTER messages.push() in
+        // source order was not enough, since nothing forces Alpine to
+        // paint the newly-pushed message before a synchronous `hidden =
+        // true` change immediately after it. A real `setTimeout`
+        // genuinely yields to the browser's render step before firing,
+        // which plain synchronous reordering does not guarantee — and
+        // HIDE_DELAY_MS gives actual reading time on top of that, not
+        // just a technically-correct but imperceptibly-brief window.
+        scheduleHideIfNeeded: function (shouldHide) {
+            if (!shouldHide) {
+                return;
+            }
+
+            var self = this;
+            window.setTimeout(function () {
+                self.hideWidgetEntirely();
+            }, window.AavirbhavaChatCore.HIDE_DELAY_MS);
+        },
+
         send: function (text) {
             var message = (text || '').trim();
-            if (message === '' || this.loading || this.stopped || !window.AavirbhavaChatCore) {
+            if (message === '' || this.loading || !window.AavirbhavaChatCore) {
                 return;
             }
 
@@ -184,37 +257,30 @@ function aavirbhavaChatWidget(config) {
             var self = this;
             window.AavirbhavaChatCore.sendMessage(this.sendUrl, message).then(function (result) {
                 var normalized = window.AavirbhavaChatCore.normalizeResponse(result.data);
-
-                // A confirmed-down response (Task 45) ends the
-                // conversation for the rest of this visit — retrying
-                // cannot help, since the underlying failure is confirmed
-                // to recur identically, so input/send stay disabled
-                // rather than inviting the customer to keep typing. A
-                // page reload re-evaluates ChatWidget's own server-side
-                // render gate (Task 44), which hides the widget entirely
-                // once the same confirmed-down circuit-breaker state is
-                // visible there too.
-                if (normalized.reasonCode === window.AavirbhavaChatCore.REASON_ASSISTANT_DOWN) {
-                    self.stopped = true;
-                }
+                var shouldHide = self.shouldHideWidget(normalized.reasonCode);
 
                 self.loading = false;
 
                 if (!result.ok && normalized.message === '') {
                     self.messages.push(self.failureMessage());
-                    self.scrollLogToBottom();
-                    return;
+                } else {
+                    self.messages.push({
+                        role: 'assistant',
+                        text: normalized.message,
+                        html: window.AavirbhavaChatCore.renderMarkdown(normalized.message),
+                        products: normalized.products,
+                        followUps: normalized.followUpQuestions,
+                        awaitingConfirmation: normalized.awaitingConfirmation
+                    });
                 }
 
-                self.messages.push({
-                    role: 'assistant',
-                    text: normalized.message,
-                    html: window.AavirbhavaChatCore.renderMarkdown(normalized.message),
-                    products: normalized.products,
-                    followUps: normalized.followUpQuestions,
-                    awaitingConfirmation: normalized.awaitingConfirmation
-                });
                 self.scrollLogToBottom();
+
+                // Always scheduled AFTER the message above is actually
+                // in `messages` — see scheduleHideIfNeeded()'s own
+                // docblock for why this ordering, plus the real
+                // setTimeout delay, both matter.
+                self.scheduleHideIfNeeded(shouldHide);
             }).catch(function () {
                 self.loading = false;
                 self.messages.push(self.failureMessage());

@@ -102,6 +102,68 @@ LLM/embedding adapters behind interfaces. Local dev: docker-magento
   live-verification possible (used for Task 35's cost-cap alert) — don't
   assume email sending is unverifiable in this environment the way
   admin-UI-through-a-real-browser is (CAPTCHA-gated, no browser tool).
+- **Editing a static frontend asset (`view/frontend/web/js/*.js`,
+  `*.css`) does NOT reach a real browser on its own, even in
+  `developer` mode.** Confirmed as a real, reproducible root cause
+  (Task 46): Task 45's storefront JS fix was logically correct
+  (verified by direct code reading, never disproven) but a real
+  customer never actually received it, because `pub/static/frontend/
+  Magento/{luma,blank}/en_US/Aavirbhava_AiShoppingAssistant/js/*.js`
+  already held a materialized copy from an earlier request/deploy —
+  nginx's static-file location block serves an existing file directly
+  and never re-invokes PHP to check whether the source changed, so
+  developer mode's "regenerate on request" behavior only ever helps
+  the FIRST time a given static file is requested, never on an edit to
+  an already-materialized one. `var/view_preprocessed/pub/static/...`
+  can hold an equally stale intermediate copy. After changing ANY file
+  under `view/*/web/`, before claiming the change is live, delete both
+  copies for this module and re-request the asset through the real
+  site URL to confirm the served bytes actually changed: `rm -rf
+  pub/static/frontend/Magento/{luma,blank}/en_US/Aavirbhava_AiShoppingAssistant
+  var/view_preprocessed/pub/static/app/code/Aavirbhava &&
+  bin/magento cache:flush && curl -sk https://magento.test/static/
+  frontend/Magento/luma/en_US/Aavirbhava_AiShoppingAssistant/js/
+  <file>.js | grep <a string only the new version has>`. Don't assume
+  a frontend JS/CSS fix is live just because the source file and its
+  unit-test-equivalent (direct code reading, since this module has no
+  browser tool) both look correct — confirm the SERVED bytes too.
+- **`bin/magento cache:flush` wipes this module's circuit-breaker state
+  immediately, even well inside its configured cooldown.** Confirmed
+  live (Task 47): `CacheCircuitBreaker` stores its per-role state
+  through the generic `Magento\Framework\App\CacheInterface`, the same
+  Redis-backed cache pool `cache:flush` blindly clears in full —
+  `cache:flush` (unlike `cache:clean`) doesn't respect Magento's
+  per-type cache tags, it flushes the whole backend. A real customer's
+  browser refresh does NOT trigger this (it's a CLI/admin operation),
+  so this is not itself a customer-facing bug, but it IS a real trap
+  for diagnosing one: running `cache:flush` between manual
+  live-verification steps (as this session routinely does for other,
+  unrelated cache-staleness reasons) silently resets circuit-breaker
+  state and can make a genuinely still-broken assistant look "healthy"
+  again mid-investigation, producing a false "it fixed itself" or
+  masking a real "doesn't survive X" symptom. When investigating
+  anything circuit-breaker/widget-hide-related, use `redis-cli -n 0
+  FLUSHALL` (or nothing at all) between steps instead of
+  `bin/magento cache:flush`, or account for it explicitly if you must
+  flush for an unrelated reason mid-investigation.
+- **Node (`node:test`, including its built-in `mock.timers` fake-timer
+  API) is available in the phpfpm container with zero npm install** —
+  confirmed Node 20.18 (Task 47). This makes genuinely testing
+  storefront JS timing/sequencing logic (not just DOM rendering, which
+  still has no browser tool here) possible without adding any new
+  dependency: load the REAL source file(s) via `vm.runInContext()`
+  against a minimal hand-built DOM/window stub, drive them through
+  their real public entry points (a captured `DOMContentLoaded`
+  handler, a captured form `submit` listener, etc.), and control time
+  with `node:test`'s `mock.timers`. See `Test/Unit/js/
+  chatWidgetHideTiming.test.js` for the pattern — run with `node --test
+  Test/Unit/js/<file>.test.js`. A fake `window` object built for this
+  purpose needs an explicit `setTimeout`/`clearTimeout` referencing the
+  OUTER realm's (mockable) globals — a `vm` context does not inherit
+  Node-added globals automatically, and a widget's `.then().catch()`
+  chain will silently swallow a missing-global TypeError as if it were
+  a real request failure, which is exactly as confusing to debug as it
+  sounds.
 
 ## Required workflow
 - Diagnose from evidence, not guesses: use
@@ -837,6 +899,152 @@ LLM/embedding adapters behind interfaces. Local dev: docker-magento
   toHtml()` immediately afterward, in that same forced-down state,
   returned a genuinely empty string.
 
+## Hide the widget entirely on confirmed/repeated failure (Task 46)
+- Implemented in Task 46 (see references/progress-log.md) — kept here as
+  the binding design constraints for maintaining it, not a pending spec.
+- **Task 45's disable-input JS had NO logic bug.** Reported as "doesn't
+  actually work live" and re-traced from scratch (event listeners, the
+  `stopped` flag's scope, the send handler's guard) — every path was
+  correct. The real cause: editing `view/frontend/web/js/*.js` does
+  NOT reach a real browser on its own, even in `developer` mode — see
+  the new environment-realities entry above. `pub/static/frontend/
+  Magento/{luma,blank}/en_US/Aavirbhava_AiShoppingAssistant/js/*.js`
+  still held Task 45's PRE-edit bytes (confirmed: `grep -c stopped`
+  returned 0 on the deployed copy, non-zero on source), so a real
+  browser was never actually served the fix at all. Fixed by clearing
+  both the materialized `pub/static` copies and the intermediate
+  `var/view_preprocessed` ones and re-confirming via a real HTTPS
+  request through the actual site URL that the served bytes now
+  contain the current code — not by changing any JS logic, since none
+  needed changing.
+- **A second, real, independent bug was found and fixed**: the
+  "alternating hard/soft message" pattern (screenshot-reported) is NOT
+  circuit-breaker cooldown working as designed — live-reproduced with 5
+  consecutive real requests against a persistently invalid key: call 1
+  (circuit closed, real attempt) correctly returned `assistant_down`,
+  but calls 2-5 (circuit already open, `FallbackChatGenerationService`
+  skips the provider entirely) incorrectly reverted to
+  `assistant_unavailable` for every one of them — because the skip-path
+  synthesized a generic `ProviderUnavailableException`
+  (`HardFailureClassifier` doesn't treat it as hard) instead of
+  remembering the original hard cause. Fixed by extending
+  `CircuitBreakerInterface` with `recordHardFailure()` (always opens on
+  one occurrence, unlike `recordFailure()`'s threshold) and
+  `wasOpenedByHardFailure()` (lets a later skip-path call recover that
+  context), plus a new `ProviderConfirmedDownException` — thrown
+  instead of the generic one when the breaker is known to be open for a
+  hard reason, and added to `HardFailureClassifier`. Live-reconfirmed
+  after the fix: all 5 consecutive calls now correctly return
+  `assistant_down`. Do not revert `attemptFallback()`'s skip-path back
+  to a bare `new ProviderUnavailableException(...)` — that IS the bug.
+- **The actual new feature**: on `reason_code: assistant_down`, both
+  presentation layers (`chat-widget-luma.js`/`chat-widget-hyva.js`)
+  hide the ENTIRE widget (toggle button and panel — Luma via
+  `root.style.display = 'none'`, Hyva via a reactive `hidden` flag
+  bound to the outer `x-data` root's `x-show="!hidden"` in
+  `widget-hyva.phtml`) for the rest of that visit, replacing Task 45's
+  disable-input-only approach — a customer confirmed unable to get
+  help is told plainly by the widget's absence, not left probing a
+  visibly "alive" but useless one. `SOFT_FAILURE_HIDE_THRESHOLD` (3,
+  matching the backend's own default `fallback/failure_threshold` for
+  familiarity, though independent of it) also triggers a full hide
+  after that many CONSECUTIVE `assistant_unavailable`/
+  `retrieval_unavailable` responses with nothing else resetting the
+  count in between — deliberately not on the first one, since either
+  reason code alone only means "expected to be momentary." Both
+  constants and the shared soft-reason check
+  (`isSoftFailureReason()`) live in `chat-widget-core.js` so the two
+  presentation layers can't drift on the threshold or the reason-code
+  strings. Not persisted client-side by design — a reload re-evaluates
+  `ChatWidget`'s own server-side render gate (Task 44), the stronger,
+  authoritative form of "hidden," once the same circuit-breaker state
+  is visible there too; this client-side hide only covers the gap
+  before that reload.
+- No browser-automation tool exists in this session (same disclosed
+  limitation as every other frontend-UI task in this module) — verified
+  instead via direct reading of the current JS/phtml logic against the
+  real, live-confirmed `assistant_down`/`assistant_unavailable`
+  response shape, plus confirming via a real HTTPS request that the
+  served static bytes actually contain this logic (see above) — the
+  specific gap that made Task 45's otherwise-correct JS invisible.
+
+## Widget-hide timing and the fallback-not-yet-tripped gap (Task 47)
+- Implemented in Task 47 (see references/progress-log.md) — kept here as
+  the binding design constraints for maintaining it, not a pending spec.
+- **Part A — the widget was hiding before the customer could read
+  why.** Task 46's `hideWidgetEntirely()` ran SYNCHRONOUSLY, and in the
+  Luma layer it was even called BEFORE `appendAssistantResponse()` in
+  source order — the failure message was never in the DOM at all when
+  the widget disappeared. Fixed by splitting the concern into two
+  functions each presentation layer must keep separate: a pure
+  DECISION function (`shouldHideWidget()`, returns a bool, never
+  touches the DOM) and a SCHEDULING function
+  (`scheduleHideIfNeeded(shouldHide)`, calls `window.setTimeout(hideWidgetEntirely,
+  HIDE_DELAY_MS)`) — called only AFTER the response has actually been
+  rendered into the log/messages. Do not call `hideWidgetEntirely()`
+  synchronously from anywhere else, even after the message append in
+  source order: a synchronous style/state change immediately after an
+  append gives the browser no guaranteed chance to paint the message
+  first — only a real `setTimeout` genuinely yields to the render step.
+  `HIDE_DELAY_MS` (5000) lives in `chat-widget-core.js`, shared by both
+  layers, and exists for actual reading time on top of that guarantee,
+  not merely to satisfy it technically.
+- **Part B — "hide doesn't survive a refresh" had two separate causes,
+  only one of which is a real bug.** Live-diagnosed with real evidence
+  before touching any code:
+  1. Repeated real `ChatWidget::toHtml()` calls over several seconds,
+     with NO `cache:flush` in between, correctly stayed hidden — a
+     genuine customer page refresh does NOT lose the hidden state. This
+     ruled out "the render-gate logic itself" and "cooldown expiring
+     faster than expected" as the cause.
+  2. Running `bin/magento cache:flush` between checks immediately reset
+     the circuit breaker (see the new environment-realities entry
+     above) — a real, reproducible mechanism, but not a customer-facing
+     bug (a browser refresh never runs it); this is documented as a
+     diagnostic-process trap, not fixed in code.
+  3. The REAL bug: with fallback enabled and its own circuit still
+     closed (below `fallback/failure_threshold`, not yet individually
+     tripped), a customer refresh saw the widget reappear even though
+     EVERY real request during that window was failing on BOTH primary
+     (already hard-down) and fallback (a real, repeated failure just
+     short of its own threshold) — `ChatWidget::isAssistantConfirmedDown()`
+     only reads FALLBACK's OWN circuit state, which nothing had
+     force-opened yet.
+- **The fix deliberately does NOT touch `ChatWidget::isAssistantConfirmedDown()`
+  or blanket-hide whenever primary is hard-down.** That was seriously
+  considered and rejected: primary being hard-down while fallback is
+  configured, enabled, and GENUINELY HEALTHY is a real, legitimate,
+  already-tested case (Task 44) where the assistant is still fully
+  answering real questions via fallback — hiding the widget there would
+  be actively wrong, not overcautious, and `attemptFallback()`'s own
+  `recordSuccess()` path is completely untouched by this fix (a healthy
+  fallback never reaches the failure-handling code at all). Instead,
+  `FallbackChatGenerationService::attemptFallback()` now upgrades a
+  fallback failure to hard — `recordHardFailure()` instead of
+  `recordFailure()`, and the exception thrown becomes
+  `ProviderConfirmedDownException` instead of the fallback's own raw
+  exception — whenever `primaryFailureWasHard()` confirms primary's own
+  failure (this call's fresh exception, or an earlier call's
+  already-open circuit via `wasOpenedByHardFailure()`) was hard. This
+  only fires when fallback has just been ACTUALLY ATTEMPTED and
+  ACTUALLY FAILED; it never second-guesses a working fallback. Do not
+  widen this further (e.g. hiding whenever primary alone is hard-down,
+  regardless of fallback's real outcome) without re-confirming that
+  doesn't regress the working-fallback case Task 44 exists to protect.
+- Live-verified end-to-end (skip-path variant — the realistic "customer
+  refreshes after an earlier failure" case): primary's circuit
+  simulated already hard-open; one real chat request with fallback
+  enabled and pointed at a genuinely unreachable host (Ollama via
+  `host.docker.internal`, per this file's own documented unreachability
+  note) — fallback's circuit force-opened on that SAME single request
+  (`wasOpenedByHardFailure(FALLBACK)` flipped `true`), and
+  `ChatWidget::toHtml()` immediately afterward returned empty. Also
+  confirmed live that using an INVALID API KEY (authentication) for
+  this same test is the wrong trigger — authentication is deliberately
+  never fallback-eligible, so `attemptFallback()` is never even
+  reached; use a hard-but-eligible failure (rate limit) to exercise
+  this path, live or in a test.
+
 ## Token efficiency (2 separate mechanisms — do not conflate)
 - Prompt caching (Anthropic cache_control breakpoints on system prompt
   + tool definitions; confirming OpenAI's automatic prefix caching
@@ -854,3 +1062,213 @@ LLM/embedding adapters behind interfaces. Local dev: docker-magento
   behind this toggle — an ungated trimming "optimization" silently
   changes accuracy for every merchant, which defeats the toggle's
   entire purpose.
+- **Implemented in Task 48 (see references/progress-log.md) — kept
+  here as the binding design constraints for maintaining it.**
+- Confirmed before assuming: NO cache_control was ever being sent for
+  Anthropic before this task — `parseUsage()` already parsed
+  `cache_read_input_tokens` (Task 42), but nothing in `buildRequestBody()`
+  ever marked anything cacheable, so that parsing had never actually
+  been exercised (cache_read_input_tokens had always been 0). Fixed:
+  `system` is now an array-of-blocks (required to attach cache_control
+  at all — a plain string cannot carry it) with one `cache_control:
+  {type: ephemeral}` breakpoint; the LAST tool in `tools` gets the
+  same breakpoint (Anthropic caches everything up to and including a
+  marked block, not the block alone — placing it on every tool would
+  be both wrong and wasteful against the 4-breakpoint-per-request cap).
+- **A real, previously-latent bug was found and fixed while wiring
+  this up**: Anthropic's `input_tokens`/`cache_read_input_tokens`/
+  `cache_creation_input_tokens` are ADDITIVE, non-overlapping fields
+  (`total = input_tokens + cache_read_input_tokens +
+  cache_creation_input_tokens`, Anthropic's own documented formula) —
+  unlike OpenAI's model, where `cached_tokens` is already a SUBSET of
+  `prompt_tokens`. The old `parseUsage()` treated `input_tokens` alone
+  as the total and clamped `cache_read_input_tokens` down to fit
+  inside it (`min($cachedTokens, $inputTokens)`), which would have
+  massively UNDER-reported real cache hits the moment caching actually
+  started working (a real hit typically has a LARGE cache_read_input_tokens
+  — the whole cached prefix — alongside a SMALL input_tokens — just
+  this turn's new content). Never caught before because caching was
+  never actually active, so this path was never exercised. Fixed by
+  computing the real additive total; `cache_creation_input_tokens` (a
+  cache WRITE, billed at a premium not a discount) is folded into the
+  normal-priced portion of the total, a disclosed, bounded
+  simplification since this module's TokenUsage/CostCalculator only
+  distinguish two tiers (normal vs. cached/cheap), not three.
+- OpenAI/xAI/local-compatible need NO code change: audited the full
+  request-body-construction path (tool registry → tool filtering →
+  tool schemas → system prompt → JSON encoding) and confirmed every
+  step is already deterministic for a fixed config state — DI-built
+  tool registry with fixed insertion order, pure linear filtering, PHP
+  array literals for schemas, a `const` system-prompt string always
+  first in message order, and `json_encode()` on associative arrays
+  with no `ksort`/ordering surprises anywhere in the path. Two
+  otherwise-identical requests already produce byte-identical
+  serialized prefixes, which is all OpenAI's automatic prefix caching
+  needs.
+- Gemini: researched before deciding scope, per the task's own
+  instruction not to guess. Gemini has TWO separate mechanisms —
+  **implicit caching** (automatic for Gemini 2.5+, zero code needed,
+  and already benefits from the exact same deterministic-request-shape
+  work above) and **explicit caching** (the `cachedContents` API — a
+  genuinely different, heavier, STATEFUL mechanism: create a cache
+  resource, manage its own TTL/expiration, reference it by id in later
+  requests, real storage costs). Implicit caching needs nothing further
+  from this module. Explicit caching is correctly OUT of scope for this
+  task and flagged as a real follow-up, not implemented — it is not a
+  simple per-request breakpoint like Anthropic's and would need its own
+  resource-lifecycle infrastructure (when is the cached content still
+  valid, when to recreate it, where its id is stored) that doesn't
+  exist anywhere in this module yet.
+- **Part B's first gated behavior**: `general/token_optimization_enabled`
+  (Yes/No, default No — `GeneralConfigInterface::isTokenOptimizationEnabled()`).
+  When Yes, `ProductContextFormatter` drops the "Categories: ..." part
+  from each product's line. Audited before trimming anything (same
+  audit-before-changing discipline as prior tasks): SKU stays in both
+  modes (OutputValidator's fabricated_sku security boundary depends on
+  it), Name stays (the model needs to know what the product IS),
+  attribute label/values stay (this module's real matching signal for
+  attribute-driven queries like "waterproof" or "size medium") —
+  category names are the one field `LlmResponseSchema::schema()` never
+  asks the model to return or ground anything against (confirmed by
+  reading that schema directly: no `category` property exists anywhere
+  in it) and are typically the most redundant signal already implied
+  by name+attributes. Toggling this changes nothing else about
+  correctness — OutputValidator, live revalidation, and price/stock/
+  discount grounding all still run identically either way, only the
+  size of the context payload feeding them differs. Live-verified: the
+  same real query against the real indexed catalog (8 real candidates)
+  produced a 2468-byte context with toggle=No and a 2164-byte context
+  with toggle=Yes (304 bytes / ~12% smaller, categories genuinely
+  absent) — confirmed across two separate PHP processes specifically
+  (Magento's config reader caches values in-memory for the life of one
+  process, so flipping the DB row and re-reading within the SAME
+  process silently returns the stale value — a real gotcha hit while
+  verifying this, not a bug in the toggle itself).
+- **Live-verification gap, disclosed**: no LLM provider has a working
+  API key configured in this environment at the time this task ran
+  (confirmed via a direct DB check: `llm/api_key` is NULL, `llm/provider`
+  is `openai_compatible`/Local-Ollama with no base URL reachable for a
+  real call) — the one real key this session ever had (Gemini, Task 42)
+  is gone, apparently overwritten when the store's provider was later
+  switched. Anthropic itself has never had a live key available in any
+  session (Task 39's own original disclosed limitation, still true).
+  Part A is therefore verified via comprehensive, passing unit tests
+  (the real cache_control shape, confirmed against Anthropic's current
+  published docs; the corrected additive token-counting formula) and
+  real, live-researched API documentation, but NOT via an actual
+  round-trip against a real provider's servers this session — if a
+  working key becomes available later, re-verify live: a first request
+  should show `cache_creation_input_tokens > 0`, an immediately
+  repeated identical request should show `cache_read_input_tokens > 0`
+  at a lower effective cost.
+
+## Hide-the-widget-not-disable (supersedes part of Task 45's UI approach)
+- REAL BUG (user-observed, screenshot evidence): Task 45's frontend
+  "permanently disable input after assistant_down" behavior does NOT
+  actually work live — the user sent 3 more messages successfully
+  after receiving an assistant_down response. Root-cause this before
+  building the new behavior below; don't assume the JS logic
+  described in Task 45's report actually executes correctly in a real
+  browser (never verified there due to the CAPTCHA limitation).
+- Also investigate: repeated real queries against what should be the
+  same persistent provider failure alternated between assistant_down
+  and assistant_unavailable messages across different requests — this
+  suggests either circuit-breaker cooldown/re-test behavior or
+  inconsistent hard-failure classification for what should be a
+  stable failure mode. Diagnose from evidence (real repeated requests
+  against a genuinely broken provider), don't guess.
+- New required behavior: on assistant_down (and once the assistant is
+  confirmed genuinely unavailable, not a single transient miss), HIDE
+  the entire chat widget client-side immediately — do not show a
+  grayed-out input with an explanation message. The existing
+  server-side ChatWidget render-gate (Task 44) still governs the NEXT
+  page load; this is an ADDITIONAL client-side hide for the CURRENT
+  session, so a customer doesn't need to reload to stop seeing a
+  broken assistant.
+
+## Hide-widget timing fix (Task 47, supersedes part of Task 46)
+- REAL BUG: Task 46's hideWidgetEntirely() hides the widget before the
+  customer can read the failure message that triggered it — hide and
+  message-render happen too close together, defeating the point of
+  showing a message at all.
+- Required fix: render the failure message bubble first (let it
+  actually appear on screen), THEN hide the widget after a real delay
+  (a few seconds is reasonable — long enough to read a short message,
+  not so long it feels broken) — never an instant hide in the same
+  tick as the message.
+- Also diagnose (don't assume) why the hide doesn't survive a page
+  refresh reliably — the leading hypothesis is Task 44's server-side
+  gate correctly NOT hiding when a configured fallback's own circuit
+  hasn't yet been individually tripped, causing a show-fail-hide cycle
+  on every reload until the fallback is also confirmed broken. Confirm
+  this with real evidence before fixing it.
+
+## Category-level boosting v2 (final Phase 2 backlog item)
+- Same table shape and 1.0 weight cap as MerchandisingBoost (Task 32) —
+  category_id, boost_weight, start_date/end_date, is_active, no
+  store_id (catalog-wide).
+- Admin entry point is the category edit form field, NOT a mass-action
+  grid — categories don't have a bulk-selectable grid the way products
+  do. Also add a standalone review grid (list/edit/delete all boosted
+  categories in one place), mirroring the product boost feature's
+  dual-entry-point pattern.
+- Combines with product-level boost ADDITIVELY, both still governed by
+  the same overall 1.0 cap: final = min(1.0, productBoost +
+  max(active boost among the product's OWN categories)). Use MAX
+  across a product's multiple categories, never sum — summing would
+  let a product game the system by being tagged into many boosted
+  categories.
+- Read live from MySQL at ranking time, scoped to only the current
+  candidate set's real category memberships (catalog_category_product)
+  — same reasoning as product boost: sparse, merchant-intent,
+  time-scoped, must be immediate. Not indexed into OpenSearch.
+- Guardrail unchanged from product boost: a category boost can only
+  reorder candidates that already passed retrieval/availability — it
+  can never inject an irrelevant product into results.
+
+Implemented in Task 50. New `aavirbhava_ai_category_boost` table
+(declarative schema, FK to `catalog_category_entity` with CASCADE
+delete), `CategoryBoostRepositoryInterface`/`CategoryBoostRepository`
+as the single read/write point, plus `findByCategoryId()` (not present
+on the product-boost repository) because Entry Point A needs upsert
+semantics against the category's own id, unlike product boost's
+always-create-new mass-action flow.
+
+Entry Point A (category edit form field) required a genuinely
+different extension mechanism than the product form: reading the real
+`Magento\Catalog\Model\Category\DataProvider::getData()` source
+confirmed it hard-overrides the parent `AbstractDataProvider`
+modifier-pool mechanism entirely, so the product form's "register a
+data Modifier" technique silently does nothing here. Used the
+core-precedented alternative instead — a plugin (`afterGetData`)
+directly on the concrete `DataProvider` class, the same pattern
+`Magento_CatalogUrlRewrite` uses for its own `url_key` field. Saving
+is wired to `catalog_category_save_after` (not
+`catalog_category_prepare_save`), since the latter fires before
+`$category->save()` and a new category's entity id isn't populated
+yet; `_save_after` guarantees a real id for both new and existing
+categories.
+
+Extended `MerchandisingBoostSignal` in place rather than adding a
+second parallel signal: `min(1.0, productBoost + max(categoryBoosts))`
+genuinely cannot be expressed by two independent, order-applied
+`RankingSignalInterface` stages without either breaking pipeline
+independence or letting the combined total exceed the cap (each
+signal capping only its own share would let e.g. 0.8 + 0.9 add up to
+1.7 instead of the required 1.0). Category memberships are resolved
+via a new `ProductCategoryMembershipReaderInterface` (raw SQL against
+`catalog_category_product`, scoped to the current candidate set only,
+per-instance memoized like `ActiveBoostReader`) — `SearchCandidate`
+was audited for this change and needed no new field and no change to
+`withScore()`, since category membership is looked up purely by the
+already-present `entityId`.
+
+Along the way, a real, previously-undetected bug was found and fixed
+in the ORIGINAL Task 32 product-boost date handling (not just the new
+category code): `\DateTimeImmutable::createFromFormat('Y-m-d', $raw)`
+leaves the time-of-day at the current wall-clock time rather than
+midnight, because the format string doesn't specify every component.
+Fixed by changing the format to `'!Y-m-d'` in all three affected
+files: `Controller/Adminhtml/Boost/Save.php` (Task 32, retroactively
+fixed), `Controller/Adminhtml/CategoryBoost/Save.php`, and
+`Observer/CategoryBoostSaveObserver.php`.

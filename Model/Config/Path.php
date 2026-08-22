@@ -11,6 +11,7 @@ final class Path
     public const GENERAL_ENABLED = self::PREFIX . 'general/enabled';
     public const GENERAL_STRICT_STORE_ONLY = self::PREFIX . 'general/strict_store_only';
     public const GENERAL_MAX_CONVERSATION_MESSAGES = self::PREFIX . 'general/max_conversation_messages';
+    public const GENERAL_TOKEN_OPTIMIZATION_ENABLED = self::PREFIX . 'general/token_optimization_enabled';
 
     public const APPEARANCE_PRIMARY_COLOR = self::PREFIX . 'appearance/primary_color';
     public const APPEARANCE_MESSAGE_BUBBLE_COLOR = self::PREFIX . 'appearance/message_bubble_color';

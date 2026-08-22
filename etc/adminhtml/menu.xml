@@ -41,5 +41,13 @@
              parent="Aavirbhava_AiShoppingAssistant::playground"
              action="aavirbhava_aishoppingassistant/providercost/index"
              resource="Aavirbhava_AiShoppingAssistant::provider_cost"/>
+        <add id="Aavirbhava_AiShoppingAssistant::categoryboost_index"
+             title="Category Boosts"
+             translate="title"
+             module="Aavirbhava_AiShoppingAssistant"
+             sortOrder="25"
+             parent="Aavirbhava_AiShoppingAssistant::playground"
+             action="aavirbhava_aishoppingassistant/categoryboost/index"
+             resource="Aavirbhava_AiShoppingAssistant::category_boost"/>
     </menu>
 </config>

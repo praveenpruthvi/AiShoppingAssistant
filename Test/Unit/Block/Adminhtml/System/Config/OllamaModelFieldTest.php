@@ -83,16 +83,16 @@ final class OllamaModelFieldTest extends TestCase
      * Regression test for a real, screenshot-confirmed layout bug:
      * Magento's native .input-text styling is full-width, so without a
      * flex wrapper the button/status text have no room on the same line
-     * and wrap onto their own row below the input. Shared verbatim with
-     * ColorPickerField::INLINE_ROW_STYLE/INPUT_WRAPPER_STYLE so a color
-     * field and a model field lay out identically.
+     * and wrap onto their own row below the input. INPUT_WRAPPER_STYLE
+     * is shared verbatim with ColorPickerField's own so a color field
+     * and a model field lay out identically.
      */
     public function testInputButtonAndStatusShareOneFlexRowWithA10pxGap(): void
     {
         $html = $this->renderedHtml('ai_shopping_assistant_llm_model');
 
         self::assertStringContainsString(
-            '<div class="aavirbhava-inline-field-row" style="display:flex;align-items:center;gap:10px;">',
+            '<div class="aavirbhava-inline-field-row" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">',
             $html
         );
         self::assertStringContainsString('<span style="flex:1;min-width:0;">', $html);
@@ -108,6 +108,36 @@ final class OllamaModelFieldTest extends TestCase
             self::assertGreaterThan($rowStart, $position);
             self::assertLessThan($rowEnd, $position);
         }
+    }
+
+    /**
+     * Regression test for a second, real, screenshot-confirmed flex bug:
+     * once the status span had real text, the row's default
+     * `flex-wrap:nowrap` kept it competing with the input for width on
+     * the same line — the status span's flex-basis (its own natural,
+     * unwrapped text width) dominated the shrink distribution, and the
+     * input's `flex:1` shorthand (flex-basis:0%) meant it received ZERO
+     * of the row's width once shrinking was in play, collapsing to 0px
+     * and making the button appear to jump left into the input's place.
+     * `flex:0 0 100%` under the row's now-added `flex-wrap:wrap` forces
+     * the status span onto its own full-width line instead, so it never
+     * competes with the input regardless of message length. The `:empty`
+     * CSS rule keeps this invisible (display:none) until the status
+     * span actually has text, so a fresh, never-clicked field renders
+     * identically to before this fix.
+     */
+    public function testStatusSpanIsHiddenWhenEmptyAndWrapsToItsOwnFullWidthLineWhenPopulated(): void
+    {
+        $html = $this->renderedHtml('ai_shopping_assistant_llm_model');
+
+        self::assertStringContainsString(
+            '<style>#ai_shopping_assistant_llm_model_status:empty{display:none;}</style>',
+            $html
+        );
+        self::assertStringContainsString(
+            '<span id="ai_shopping_assistant_llm_model_status" style="flex:0 0 100%;"></span>',
+            $html
+        );
     }
 
     public function testDatalistStaysOutsideTheFlexRow(): void

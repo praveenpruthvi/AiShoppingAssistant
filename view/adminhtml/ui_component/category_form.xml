@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Merges (by `name`-attribute matching, the same technique Task 32's
+    own product_listing.xml massaction addition already uses) a new
+    fieldset into Magento's real, native category_form.xml — zero core
+    files touched. Values are supplied into the form by
+    CategoryBoostDataProviderPlugin::afterGetData() on the concrete
+    Magento\Catalog\Model\Category\DataProvider class (see that plugin's
+    own docblock for why a plugin, rather than the product form's usual
+    Modifier-pool technique, is the correct extension point here — a real,
+    load-bearing difference between the category and product DataProvider
+    base classes). Persisted by CategoryBoostSaveObserver on the real
+    catalog_category_save_after event.
+-->
+<form xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Ui:etc/ui_configuration.xsd">
+    <fieldset name="aavirbhava_category_boost" sortOrder="15">
+        <settings>
+            <label translate="true">AI Shopping Assistant</label>
+            <collapsible>true</collapsible>
+        </settings>
+        <field name="aavirbhava_category_boost_weight" sortOrder="10" formElement="input">
+            <settings>
+                <dataType>text</dataType>
+                <label translate="true">Boost Weight for AI Assistant</label>
+                <notice translate="true">A number from 0 (no effect) to 1 (roughly one full relevance
+                    signal's worth of extra rank score) applied to every product in this category when the
+                    AI shopping assistant ranks results — additive with any per-product boost
+                    (Marketing &gt; AI Shopping Assistant &gt; Merchandising Boosts), never a hard override
+                    of genuine query relevance. Leave at 0 or blank for no boost.</notice>
+                <validation>
+                    <rule name="validate-number" xsi:type="boolean">true</rule>
+                    <rule name="validate-zero-or-greater" xsi:type="boolean">true</rule>
+                </validation>
+            </settings>
+        </field>
+        <field name="aavirbhava_category_boost_start_date" sortOrder="20" formElement="date">
+            <settings>
+                <additionalClasses>
+                    <class name="admin__field-date">true</class>
+                </additionalClasses>
+                <dataType>string</dataType>
+                <label translate="true">Boost Start Date</label>
+                <notice translate="true">Leave blank for no restriction — the boost is active from the
+                    moment it's saved.</notice>
+            </settings>
+        </field>
+        <field name="aavirbhava_category_boost_end_date" sortOrder="30" formElement="date">
+            <settings>
+                <additionalClasses>
+                    <class name="admin__field-date">true</class>
+                </additionalClasses>
+                <dataType>string</dataType>
+                <label translate="true">Boost End Date</label>
+                <notice translate="true">Leave blank for no expiry.</notice>
+            </settings>
+        </field>
+    </fieldset>
+</form>

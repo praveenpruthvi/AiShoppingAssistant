@@ -24,15 +24,67 @@
      * Mirrors ChatEntryPipeline::REASON_ASSISTANT_DOWN (Task 45) — a
      * provider failure confirmed to recur identically on every next
      * message (an exhausted quota, an invalid/revoked API key), as
-     * opposed to a merely transient one. Both presentation layers use
-     * this to stop accepting further input for the rest of the visit
-     * rather than inviting the customer to keep typing into a
+     * opposed to a merely transient one. Both presentation layers hide
+     * the widget entirely for the rest of the visit on this reason code
+     * (Task 46) rather than inviting the customer to keep typing into a
      * conversation that cannot proceed; a reload re-evaluates the
      * widget's own server-side render gate (Task 44), which will hide it
-     * entirely once the confirmed-down circuit-breaker state is visible
-     * there too.
+     * entirely on the SERVER side too once the same confirmed-down
+     * circuit-breaker state is visible there.
      */
     var REASON_ASSISTANT_DOWN = 'assistant_down';
+
+    /**
+     * Mirrors ChatEntryPipeline::REASON_ASSISTANT_UNAVAILABLE — a
+     * provider failure expected to be momentary (a slow response, a
+     * dropped connection, one malformed reply). A single one of these is
+     * not, on its own, evidence the assistant is genuinely down (see
+     * REASON_RETRIEVAL_UNAVAILABLE below for the sibling backend-failure
+     * code) — both presentation layers only hide the widget after
+     * several of these happen in a row with nothing else in between
+     * (SOFT_FAILURE_HIDE_THRESHOLD), not on the first one.
+     */
+    var REASON_ASSISTANT_UNAVAILABLE = 'assistant_unavailable';
+
+    /**
+     * Mirrors ChatEntryPipeline::REASON_RETRIEVAL_UNAVAILABLE — the same
+     * "momentary, not yet confirmed down" meaning as
+     * REASON_ASSISTANT_UNAVAILABLE above, just for a retrieval/embedding-
+     * provider failure instead of an LLM one. Counted identically toward
+     * the same consecutive-soft-failure threshold — from the customer's
+     * point of view, either one means "the assistant didn't answer this
+     * time," the specific backend that failed is an implementation
+     * detail only the debug log needs.
+     */
+    var REASON_RETRIEVAL_UNAVAILABLE = 'retrieval_unavailable';
+
+    /**
+     * How many consecutive soft-failure responses (assistant_unavailable/
+     * retrieval_unavailable, with no successful or out-of-scope response
+     * in between resetting the count) are treated as confirmed-down
+     * evidence, same as a single assistant_down response. Matches this
+     * module's own default `fallback/failure_threshold` admin setting
+     * (3) for familiarity, though the two are independent: this counts
+     * customer-visible response outcomes across a session, the backend
+     * setting counts raw provider call failures within a single request.
+     */
+    var SOFT_FAILURE_HIDE_THRESHOLD = 3;
+
+    /**
+     * How long the failure message stays genuinely visible on screen
+     * before the widget hides itself (Task 47) — long enough to read a
+     * short one/two-sentence message. Deciding to hide and actually
+     * hiding are deliberately two separate steps, each presentation
+     * layer's own responsibility to sequence correctly: append/render
+     * the message bubble FIRST, only THEN schedule the hide via a real
+     * `setTimeout(..., HIDE_DELAY_MS)` — never hide synchronously in the
+     * same step that decides to, even after the message has been
+     * appended to the DOM/reactive state, since a synchronous hide
+     * immediately after gives the browser no real chance to paint the
+     * message before it disappears (a real, live-reproduced bug: the
+     * widget was hiding before the customer could read why).
+     */
+    var HIDE_DELAY_MS = 5000;
 
     /**
      * Always-on console.debug logging of each request/response cycle —
@@ -144,6 +196,20 @@
 
     function isNonEmptyString(value) {
         return typeof value === 'string' && value.trim() !== '';
+    }
+
+    /**
+     * True for either "momentary" backend-failure reason code — see
+     * REASON_ASSISTANT_UNAVAILABLE/REASON_RETRIEVAL_UNAVAILABLE's own
+     * docblocks above. Centralized here so both presentation layers
+     * count consecutive soft failures identically rather than each
+     * re-implementing (and risking drifting) the same OR check.
+     *
+     * @param {?string} reasonCode
+     * @returns {boolean}
+     */
+    function isSoftFailureReason(reasonCode) {
+        return reasonCode === REASON_ASSISTANT_UNAVAILABLE || reasonCode === REASON_RETRIEVAL_UNAVAILABLE;
     }
 
     /**
@@ -305,6 +371,11 @@
 
     global.AavirbhavaChatCore = {
         REASON_ASSISTANT_DOWN: REASON_ASSISTANT_DOWN,
+        REASON_ASSISTANT_UNAVAILABLE: REASON_ASSISTANT_UNAVAILABLE,
+        REASON_RETRIEVAL_UNAVAILABLE: REASON_RETRIEVAL_UNAVAILABLE,
+        SOFT_FAILURE_HIDE_THRESHOLD: SOFT_FAILURE_HIDE_THRESHOLD,
+        HIDE_DELAY_MS: HIDE_DELAY_MS,
+        isSoftFailureReason: isSoftFailureReason,
         sendMessage: sendMessage,
         fetchHistory: fetchHistory,
         normalizeResponse: normalizeResponse,

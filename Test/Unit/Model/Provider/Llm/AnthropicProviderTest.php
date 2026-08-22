@@ -100,10 +100,51 @@ final class AnthropicProviderTest extends TestCase
 
         $body = json_decode($this->client->getRequest()->getContent(), true);
 
-        self::assertSame("You are a shopping assistant.\n\nNever invent a price.", $body['system']);
+        // Task 48: array-of-blocks, not a plain string — required to
+        // attach cache_control (see testSystemPromptCarriesACacheControlBreakpoint()).
+        self::assertSame("You are a shopping assistant.\n\nNever invent a price.", $body['system'][0]['text']);
         self::assertCount(1, $body['messages']);
         self::assertSame('user', $body['messages'][0]['role']);
         self::assertSame('Show me tents.', $body['messages'][0]['content']);
+    }
+
+    /**
+     * Task 48: unconditional provider-native prompt caching, never
+     * gated behind the Token Optimization toggle — identical content,
+     * just billed differently when cached. The system prompt is one of
+     * this module's two largest, most static per-request blocks (the
+     * other being tool definitions, see
+     * testLastToolDefinitionCarriesTheCacheControlBreakpointNotEveryTool()
+     * below), so it gets a real cache_control breakpoint, following
+     * Anthropic's documented shape: `system` becomes an array of
+     * content blocks (a plain string cannot carry cache_control at
+     * all) with `cache_control: {type: ephemeral}` on the block.
+     */
+    public function testSystemPromptCarriesACacheControlBreakpoint(): void
+    {
+        $provider = $this->provider(
+            'HTTP/1.1 200 OK' . "\r\n\r\n" . '{"content":[{"type":"text","text":"ok"}]}'
+        );
+
+        $request = new ChatRequest(
+            storeId: 1,
+            messages: [
+                new ChatMessage('system', 'You are a shopping assistant.'),
+                new ChatMessage('user', 'Show me tents.'),
+            ],
+            model: self::MODEL,
+            baseUrl: '',
+            apiKey: new SecretValue('claude-key'),
+            timeoutSeconds: 20
+        );
+
+        $provider->chat($request);
+
+        $body = json_decode($this->client->getRequest()->getContent(), true);
+
+        self::assertSame('text', $body['system'][0]['type']);
+        self::assertSame('You are a shopping assistant.', $body['system'][0]['text']);
+        self::assertSame(['type' => 'ephemeral'], $body['system'][0]['cache_control']);
     }
 
     public function testAssistantToolCallsBecomeToolUseContentBlocksWithDecodedInput(): void
@@ -168,6 +209,31 @@ final class AnthropicProviderTest extends TestCase
         self::assertArrayNotHasKey('function', $body['tools'][0]);
     }
 
+    /**
+     * Task 48: cache_control on the LAST tool definition caches every
+     * tool up to and including it — Anthropic's own documented
+     * placement rule, a breakpoint marks "cache everything before this
+     * point too," not "cache only this one block." Placing it on every
+     * tool would be both wrong (misrepresents the semantics) and
+     * wasteful (Anthropic caps at 4 breakpoints per request).
+     */
+    public function testLastToolDefinitionCarriesTheCacheControlBreakpointNotEveryTool(): void
+    {
+        $provider = $this->provider(
+            'HTTP/1.1 200 OK' . "\r\n\r\n" . '{"content":[{"type":"text","text":"ok"}]}'
+        );
+
+        $provider->chat($this->request(tools: [
+            ['name' => 'search_products', 'description' => 'Search the catalog', 'parameters' => ['type' => 'object', 'properties' => []]],
+            ['name' => 'get_product_details', 'description' => 'Get product details', 'parameters' => ['type' => 'object', 'properties' => []]],
+        ]));
+
+        $body = json_decode($this->client->getRequest()->getContent(), true);
+
+        self::assertArrayNotHasKey('cache_control', $body['tools'][0]);
+        self::assertSame(['type' => 'ephemeral'], $body['tools'][1]['cache_control']);
+    }
+
     public function testReturnsTextAndToolCallsParsedFromContentBlocksWithoutJsonDecodingInput(): void
     {
         $provider = $this->provider(
@@ -187,7 +253,11 @@ final class AnthropicProviderTest extends TestCase
         self::assertSame(['q' => 'phone'], $response->toolCalls[0]->arguments);
         self::assertSame('anthropic', $response->provider);
         self::assertSame('claude-sonnet-test', $response->model);
-        self::assertSame(42, $response->usage->inputTokens);
+        // Task 48: Anthropic's input_tokens/cache_read_input_tokens/
+        // cache_creation_input_tokens are additive, non-overlapping
+        // fields (Anthropic's own documented formula) — the real total
+        // is 42 (new) + 10 (cache read) = 52, not 42 alone.
+        self::assertSame(52, $response->usage->inputTokens);
         self::assertSame(8, $response->usage->outputTokens);
         self::assertSame(10, $response->usage->cachedInputTokens);
     }
@@ -262,6 +332,11 @@ final class AnthropicProviderTest extends TestCase
      * only cache_read maps onto this module's own cachedInputTokens
      * concept (a genuine discount on this call's real cost); a cache
      * write is not a discount and must never be double-counted as one.
+     * It DOES still count toward the real total input token count
+     * though (Task 48) — Anthropic's own documented formula is
+     * `input_tokens + cache_read_input_tokens + cache_creation_input_tokens
+     * = total`, all three additive and non-overlapping — so the real
+     * total here is 100 + 0 + 80 = 180, not 100 alone.
      */
     public function testCacheCreationTokensAreNeverConflatedWithCacheReadTokens(): void
     {
@@ -273,7 +348,7 @@ final class AnthropicProviderTest extends TestCase
 
         $response = $provider->chat($this->request());
 
-        self::assertSame(100, $response->usage->inputTokens);
+        self::assertSame(180, $response->usage->inputTokens);
         self::assertSame(0, $response->usage->cachedInputTokens);
     }
 

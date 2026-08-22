@@ -8,6 +8,7 @@ use Aavirbhava\AiShoppingAssistant\Api\Chat\ChatGenerationServiceInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Chat\CommerceScopeClassifierInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Chat\OutputValidatorInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\ConfigurationReaderInterface;
+use Aavirbhava\AiShoppingAssistant\Api\Config\GeneralConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\GuardrailConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Config\RetrievalConfigInterface;
 use Aavirbhava\AiShoppingAssistant\Api\Ranking\RankingPipelineInterface;
@@ -310,7 +311,7 @@ final class PlaygroundQueryRunnerTest extends TestCase
             $retrievalService,
             $rankingPipeline,
             $revalidationService,
-            new ProductContextFormatter(),
+            new ProductContextFormatter($configurationReader),
             $chatService,
             $toolRegistry,
             $outputValidator
@@ -325,9 +326,13 @@ final class PlaygroundQueryRunnerTest extends TestCase
         $guardrails = $this->createMock(GuardrailConfigInterface::class);
         $guardrails->method('maxToolCalls')->willReturn(4);
 
+        $general = $this->createMock(GeneralConfigInterface::class);
+        $general->method('isTokenOptimizationEnabled')->willReturn(false);
+
         $reader = $this->createMock(ConfigurationReaderInterface::class);
         $reader->method('readRetrieval')->with(self::STORE_ID)->willReturn($retrieval);
         $reader->method('readGuardrails')->with(self::STORE_ID)->willReturn($guardrails);
+        $reader->method('readGeneral')->with(self::STORE_ID)->willReturn($general);
 
         return $reader;
     }

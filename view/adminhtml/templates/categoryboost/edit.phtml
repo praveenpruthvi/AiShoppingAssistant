@@ -1,0 +1,89 @@
+<?php
+/**
+ * @var \Aavirbhava\AiShoppingAssistant\Block\Adminhtml\CategoryBoost\Edit $block
+ */
+$error = $block->getError();
+$existing = $block->getExistingBoost();
+?>
+<div class="admin__fieldset-wrapper aavirbhava-boost-edit">
+    <?php if ($error !== null || $existing === null): ?>
+        <div class="message message-error error">
+            <?= $block->escapeHtml($error ?? (string) __('No category boost was specified.')) ?>
+        </div>
+    <?php else: ?>
+        <div class="admin__fieldset-wrapper-title">
+            <strong><?= $block->escapeHtml(__('Edit Category Boost')) ?></strong>
+        </div>
+        <form method="post" action="<?= $block->escapeUrl($block->getSaveUrl()) ?>">
+            <input name="form_key" type="hidden" value="<?= $block->escapeHtmlAttr($block->getFormKey()) ?>"/>
+            <input type="hidden" name="boost_id" value="<?= (int) $existing->boostId() ?>"/>
+
+            <fieldset class="admin__fieldset">
+                <div class="admin__field">
+                    <label class="admin__field-label"><span><?= $block->escapeHtml(__('Category')) ?></span></label>
+                    <div class="admin__field-control">
+                        <?= $block->escapeHtml($block->getCategoryName()) ?>
+                        (ID <?= (int) $existing->categoryId() ?>)
+                    </div>
+                </div>
+                <div class="admin__field _required">
+                    <label class="admin__field-label" for="aavirbhava-category-boost-weight">
+                        <span><?= $block->escapeHtml(__('Boost Weight')) ?></span>
+                    </label>
+                    <div class="admin__field-control">
+                        <input type="number" id="aavirbhava-category-boost-weight" name="boost_weight" min="0" max="1"
+                               step="0.01" class="admin__control-text"
+                               value="<?= $block->escapeHtmlAttr((string) $existing->boostWeight()) ?>"
+                               required="required"/>
+                        <div class="admin__field-note">
+                            <span><?= $block->escapeHtml(__(
+                                'A number from 0 (no effect) to 1 (roughly one full relevance signal\'s '
+                                . 'worth of extra rank score) — additive with any per-product boost, '
+                                . 'never a hard override of genuine query relevance.'
+                            )) ?></span>
+                        </div>
+                    </div>
+                </div>
+                <div class="admin__field">
+                    <label class="admin__field-label" for="aavirbhava-category-boost-start-date">
+                        <span><?= $block->escapeHtml(__('Start Date')) ?></span>
+                    </label>
+                    <div class="admin__field-control">
+                        <input type="date" id="aavirbhava-category-boost-start-date" name="start_date"
+                               class="admin__control-text"
+                               value="<?= $block->escapeHtmlAttr($existing->startDate() !== null ? substr($existing->startDate(), 0, 10) : '') ?>"/>
+                    </div>
+                </div>
+                <div class="admin__field">
+                    <label class="admin__field-label" for="aavirbhava-category-boost-end-date">
+                        <span><?= $block->escapeHtml(__('End Date')) ?></span>
+                    </label>
+                    <div class="admin__field-control">
+                        <input type="date" id="aavirbhava-category-boost-end-date" name="end_date"
+                               class="admin__control-text"
+                               value="<?= $block->escapeHtmlAttr($existing->endDate() !== null ? substr($existing->endDate(), 0, 10) : '') ?>"/>
+                        <div class="admin__field-note">
+                            <span><?= $block->escapeHtml(__('Leave either date blank for no restriction on that side.')) ?></span>
+                        </div>
+                    </div>
+                </div>
+                <div class="admin__field">
+                    <div class="admin__field-control">
+                        <input type="checkbox" id="aavirbhava-category-boost-active" name="is_active" value="1"
+                               class="admin__control-checkbox"
+                            <?= $existing->isActive() ? 'checked="checked"' : '' ?>/>
+                        <label for="aavirbhava-category-boost-active"><?= $block->escapeHtml(__('Active')) ?></label>
+                    </div>
+                </div>
+                <div class="admin__field">
+                    <button type="submit" class="action-primary">
+                        <span><?= $block->escapeHtml(__('Save')) ?></span>
+                    </button>
+                    <a href="<?= $block->escapeUrl($block->getGridUrl()) ?>" class="action-secondary">
+                        <span><?= $block->escapeHtml(__('Cancel')) ?></span>
+                    </a>
+                </div>
+            </fieldset>
+        </form>
+    <?php endif; ?>
+</div>

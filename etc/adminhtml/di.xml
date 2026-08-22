@@ -15,4 +15,18 @@
     -->
     <preference for="Magento\Catalog\Block\Adminhtml\Product\Attribute\Grid"
                 type="Aavirbhava\AiShoppingAssistant\Model\Catalog\AttributeGrid\Grid"/>
+    <!--
+        Supplies the category edit form's own boost field values (Task
+        33, view/adminhtml/ui_component/category_form.xml) into
+        Magento\Catalog\Model\Category\DataProvider::getData() — the
+        real, core-precedented extension point for this concrete class
+        (Magento_CatalogUrlRewrite plugs the exact same class, in this
+        exact same way, for its own url_key field). See
+        CategoryBoostDataProviderPlugin's own docblock for why this
+        differs from the product form's usual Modifier-pool technique.
+    -->
+    <type name="Magento\Catalog\Model\Category\DataProvider">
+        <plugin name="aavirbhava_category_boost_data_provider"
+                type="Aavirbhava\AiShoppingAssistant\Plugin\Catalog\DataProvider\CategoryBoostDataProviderPlugin"/>
+    </type>
 </config>

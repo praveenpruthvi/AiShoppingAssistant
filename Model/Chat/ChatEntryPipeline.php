@@ -394,7 +394,7 @@ TEXT;
                 : [];
 
             $userMessage = new ChatMessage('user', $message);
-            $contextMessage = $this->productContextFormatter->format($candidates);
+            $contextMessage = $this->productContextFormatter->format($storeId, $candidates);
             $promotionContextMessage = $this->promotionContextFormatter->format($catalogDiscounts);
             $responseContractMessage = $this->responseContractFormatter->format();
 

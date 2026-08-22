@@ -20,6 +20,7 @@ use Aavirbhava\AiShoppingAssistant\Model\Dto\ChatMessage;
 use Aavirbhava\AiShoppingAssistant\Model\Dto\ChatRequest;
 use Aavirbhava\AiShoppingAssistant\Model\Dto\ChatResponse;
 use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderConfigurationException;
+use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderConfirmedDownException;
 use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderException;
 use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderUnavailableException;
 use Magento\Framework\Phrase;
@@ -65,6 +66,42 @@ use Magento\Framework\Phrase;
  * fallback-eligible, unlike authentication — a different provider is not
  * subject to the same account's quota, so trying it is still legitimate;
  * only the local same-provider retry is skipped.
+ *
+ * recordHardFailure()/wasOpenedByHardFailure() (Task 46's alternating-
+ * message fix) keep this correct across the cooldown, not only on the
+ * one call that actually trips the breaker: once a role's circuit is
+ * open, every later call skips it entirely and never sees a fresh
+ * exception, so attemptFallback()'s "nothing left to try" branch has to
+ * synthesize one — confirmedOrGenericallyUnavailableException() asks the
+ * breaker whether it was opened by a hard failure and throws
+ * ProviderConfirmedDownException (still hard, per HardFailureClassifier)
+ * instead of the generic, soft ProviderUnavailableException in that
+ * case, so the customer-facing message stays "assistant_down" for the
+ * whole cooldown rather than silently reverting to "just try again"
+ * after the very first request.
+ *
+ * primaryFailureWasHard() (Task 47) closes a related gap: fallback's OWN
+ * circuit only force-opens on a fallback exception that is ITSELF hard.
+ * An ordinary transient fallback failure (its own circuit still below
+ * failure_threshold) left FALLBACK's circuit closed even while PRIMARY
+ * was already confirmed hard-down — ChatWidget's render gate reads
+ * exactly that state and correctly treats a closed fallback circuit as
+ * "still genuinely usable," so the widget kept reappearing on a refresh
+ * even though every real request during that window was failing on
+ * BOTH primary and fallback. Fixed by upgrading a fallback failure to
+ * hard (recordHardFailure(), and the thrown exception itself becomes
+ * ProviderConfirmedDownException) whenever primaryFailureWasHard()
+ * confirms primary's OWN failure — this call's or an earlier one's
+ * already-open circuit — was hard. Deliberately narrow: this only fires
+ * when fallback has just been ACTUALLY ATTEMPTED and ACTUALLY FAILED —
+ * a fallback provider that is genuinely healthy and succeeding is
+ * completely untouched by this, since recordSuccess() runs instead and
+ * none of this failure-handling code executes at all. Do not widen this
+ * to hide the widget merely because primary is hard-down regardless of
+ * fallback's outcome — a working fallback genuinely means the assistant
+ * is still answering real questions, and hiding it in that case would
+ * be actively wrong, not merely overcautious (this is precisely the
+ * scenario ChatWidget's own fallback-circuit check exists to protect).
  */
 final class FallbackChatGenerationService implements ChatGenerationServiceInterface
 {
@@ -114,12 +151,21 @@ final class FallbackChatGenerationService implements ChatGenerationServiceInterf
                 // it must never itself trigger a fallback attempt.
                 if ($isEligible || $isHardFailure) {
                     $fallbackConfig = $this->readFallbackConfig($storeId);
-                    $this->circuitBreaker->recordFailure(
-                        $storeId,
-                        CircuitBreakerInterface::ROLE_PRIMARY,
-                        $isHardFailure ? 1 : $fallbackConfig->failureThreshold(),
-                        $fallbackConfig->cooldownSeconds()
-                    );
+
+                    if ($isHardFailure) {
+                        $this->circuitBreaker->recordHardFailure(
+                            $storeId,
+                            CircuitBreakerInterface::ROLE_PRIMARY,
+                            $fallbackConfig->cooldownSeconds()
+                        );
+                    } else {
+                        $this->circuitBreaker->recordFailure(
+                            $storeId,
+                            CircuitBreakerInterface::ROLE_PRIMARY,
+                            $fallbackConfig->failureThreshold(),
+                            $fallbackConfig->cooldownSeconds()
+                        );
+                    }
                 }
 
                 if (!$isEligible) {
@@ -177,9 +223,7 @@ final class FallbackChatGenerationService implements ChatGenerationServiceInterf
         $fallbackProvider = $this->resolveFallbackProvider($storeId);
 
         if ($fallbackProvider === null || $this->circuitBreaker->isOpen($storeId, CircuitBreakerInterface::ROLE_FALLBACK)) {
-            throw $primaryException ?? new ProviderUnavailableException(
-                new Phrase('The chat provider is temporarily unavailable.')
-            );
+            throw $primaryException ?? $this->confirmedOrGenericallyUnavailableException($storeId);
         }
 
         try {
@@ -188,20 +232,99 @@ final class FallbackChatGenerationService implements ChatGenerationServiceInterf
 
             return $response->withFallbackUsed(true);
         } catch (ProviderException $exception) {
-            $isHardFailure = $this->hardFailureClassifier->isHardFailure($exception);
+            $isFallbackHardFailure = $this->hardFailureClassifier->isHardFailure($exception);
+            $isPrimaryConfirmedHard = $this->primaryFailureWasHard($storeId, $primaryException);
+            $isHardFailure = $isFallbackHardFailure || $isPrimaryConfirmedHard;
 
             if ($this->eligibilityPolicy->isEligible($exception) || $isHardFailure) {
                 $fallbackConfig = $this->readFallbackConfig($storeId);
-                $this->circuitBreaker->recordFailure(
-                    $storeId,
-                    CircuitBreakerInterface::ROLE_FALLBACK,
-                    $isHardFailure ? 1 : $fallbackConfig->failureThreshold(),
-                    $fallbackConfig->cooldownSeconds()
+
+                if ($isHardFailure) {
+                    $this->circuitBreaker->recordHardFailure(
+                        $storeId,
+                        CircuitBreakerInterface::ROLE_FALLBACK,
+                        $fallbackConfig->cooldownSeconds()
+                    );
+                } else {
+                    $this->circuitBreaker->recordFailure(
+                        $storeId,
+                        CircuitBreakerInterface::ROLE_FALLBACK,
+                        $fallbackConfig->failureThreshold(),
+                        $fallbackConfig->cooldownSeconds()
+                    );
+                }
+            }
+
+            // Primary was already confirmed hard-down (this call's own
+            // exception, or an earlier call's already-open circuit) and
+            // fallback — the only remaining path — just genuinely failed
+            // too, even if fallback's own exception type isn't itself
+            // hard. Upgrading to ProviderConfirmedDownException here
+            // (Task 47's fallback-not-yet-tripped fix) keeps the
+            // customer-facing reason code, the fallback circuit, and
+            // ChatWidget's render gate all consistent: "both paths are
+            // currently broken" should read the same everywhere, not
+            // only once fallback's OWN failure count separately reaches
+            // its configured threshold. A fallback exception that's
+            // already independently hard is thrown as-is — no need to
+            // wrap what's already correctly classified.
+            if ($isPrimaryConfirmedHard && !$isFallbackHardFailure) {
+                throw new ProviderConfirmedDownException(
+                    new Phrase('The chat provider is still confirmed unavailable.'),
+                    $exception
                 );
             }
 
             throw $exception;
         }
+    }
+
+    /**
+     * Whether the failure that got this call into attemptFallback() at
+     * all was itself hard: either this call's own primary attempt threw
+     * a hard exception ($primaryException is non-null in that case), or
+     * this call never even attempted primary because its circuit was
+     * already open — necessarily from an earlier hard failure, since
+     * only recordHardFailure() force-opens a circuit on a single
+     * occurrence (see chat()'s own control flow: attemptFallback() is
+     * reached with $primaryException === null only via that skip path).
+     */
+    private function primaryFailureWasHard(int $storeId, ?ProviderException $primaryException): bool
+    {
+        if ($primaryException !== null) {
+            return $this->hardFailureClassifier->isHardFailure($primaryException);
+        }
+
+        return $this->circuitBreaker->wasOpenedByHardFailure($storeId, CircuitBreakerInterface::ROLE_PRIMARY);
+    }
+
+    /**
+     * Called only when this call never even attempted the primary
+     * provider, because its circuit breaker was already open
+     * (`$primaryException` is null specifically in that case — see
+     * chat()'s own control flow, the only other way attemptFallback() is
+     * reached is with a real caught exception). Without this, every such
+     * call — every request made during a hard failure's cooldown — would
+     * throw a generic ProviderUnavailableException, which
+     * HardFailureClassifier does NOT treat as hard, silently downgrading
+     * the customer-facing message from "assistant_down" back to
+     * "assistant_unavailable" even though the underlying cause has not
+     * changed. Task 45's own live verification caught exactly this: a
+     * real invalid-key run showed call 1 correctly reporting
+     * assistant_down, then calls 2-5 (circuit already open) incorrectly
+     * reverting to assistant_unavailable.
+     */
+    private function confirmedOrGenericallyUnavailableException(int $storeId): ProviderException
+    {
+        if ($this->circuitBreaker->wasOpenedByHardFailure($storeId, CircuitBreakerInterface::ROLE_PRIMARY)) {
+            return new ProviderConfirmedDownException(
+                new Phrase('The chat provider is still confirmed unavailable.')
+            );
+        }
+
+        return new ProviderUnavailableException(
+            new Phrase('The chat provider is temporarily unavailable.')
+        );
     }
 
     private function resolveFallbackProvider(int $storeId): ?LlmProviderInterface

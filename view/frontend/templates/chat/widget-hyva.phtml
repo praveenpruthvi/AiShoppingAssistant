@@ -79,7 +79,8 @@
 </style>
 <div class="fixed right-4 bottom-4 z-[900]"
      style="<?= $block->escapeHtmlAttr($block->getColorCustomPropertiesStyle()) ?>"
-     x-data="aavirbhavaChatWidget({ sendUrl: '<?= /* @noEscape */ $block->escapeJs($block->getSendUrl()) ?>', historyUrl: '<?= /* @noEscape */ $block->escapeJs($block->getHistoryUrl()) ?>' })">
+     x-data="aavirbhavaChatWidget({ sendUrl: '<?= /* @noEscape */ $block->escapeJs($block->getSendUrl()) ?>', historyUrl: '<?= /* @noEscape */ $block->escapeJs($block->getHistoryUrl()) ?>' })"
+     x-show="!hidden">
     <button type="button"
             class="aavirbhava-hyva-toggle rounded-full px-5 py-3 shadow-lg"
             @click="toggle()"
@@ -194,12 +195,12 @@
             <input type="text"
                    id="aavirbhava-hyva-chat-input"
                    x-model="input"
-                   :disabled="loading || stopped"
+                   :disabled="loading"
                    autocomplete="off"
-                   :placeholder="stopped ? '<?= $block->escapeJs(__('This conversation has ended.')) ?>' : '<?= $block->escapeJs(__('Ask about products…')) ?>'"
+                   placeholder="<?= $block->escapeHtmlAttr(__('Ask about products…')) ?>"
                    class="flex-1 rounded border border-gray-300 px-2 py-1 disabled:opacity-60"/>
             <button type="submit"
-                    :disabled="loading || stopped"
+                    :disabled="loading"
                     class="aavirbhava-hyva-toggle rounded px-3 py-1 disabled:opacity-60">
                 <?= $block->escapeHtml(__('Send')) ?>
             </button>

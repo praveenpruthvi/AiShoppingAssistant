@@ -64,7 +64,7 @@
         var loading = false;
         var isOpen = false;
         var isMinimized = false;
-        var stopped = false;
+        var consecutiveSoftFailures = 0;
 
         function persistState() {
             writePersistedState({open: isOpen, minimized: isMinimized});
@@ -90,25 +90,91 @@
 
         function setLoading(isLoading) {
             loading = isLoading;
-            input.disabled = isLoading || stopped;
-            sendButton.disabled = isLoading || stopped;
+            input.disabled = isLoading;
+            sendButton.disabled = isLoading;
         }
 
         /**
-         * A confirmed-down (reason_code assistant_down, Task 45) response
-         * ends the conversation for the rest of this visit: retrying
-         * cannot help, since the underlying failure is confirmed to recur
-         * identically, so input/send are permanently disabled rather than
-         * inviting the customer to keep typing. The widget itself stays
-         * open/closeable — only the ability to send another message is
-         * removed. A page reload re-evaluates ChatWidget's own server-side
-         * render gate (Task 44), which hides the widget entirely once the
-         * same confirmed-down circuit-breaker state is visible there too.
+         * Removes the entire widget — toggle button and panel alike,
+         * since both live inside `root` — from the page for the rest of
+         * this visit (Task 46, replacing Task 45's disable-input-only
+         * approach: that JS was correct but its live "doesn't actually
+         * work" report traced to a stale compiled pub/static asset, not
+         * a logic bug — see the Task 46 status report). Just disabling
+         * input left a visibly "alive" widget the customer could still
+         * open and stare at while it did nothing useful; a customer
+         * genuinely confirmed unable to get help from it is better told
+         * plainly by the widget's absence than left probing a dead one.
+         *
+         * Deliberately not persisted client-side (no sessionStorage
+         * entry) — a page reload re-evaluates ChatWidget's own
+         * server-side render gate (Task 44), which by then hides the
+         * widget on the SERVER side too once the same confirmed-down
+         * circuit-breaker state is visible there.
+         *
+         * Never called directly from the response handler (Task 47) —
+         * always scheduled via scheduleHideIfNeeded() so the failure
+         * message the customer is being told to react to has already
+         * been appended AND had a real chance to paint first. See that
+         * function's own docblock for why a synchronous call here, even
+         * placed after appendAssistantResponse() in source order, was
+         * still a real, live-reproduced bug.
          */
-        function stopChat() {
-            stopped = true;
-            input.placeholder = 'This conversation has ended.';
-            setLoading(false);
+        function hideWidgetEntirely() {
+            root.style.display = 'none';
+        }
+
+        /**
+         * A single assistant_unavailable/retrieval_unavailable is not,
+         * on its own, evidence the assistant is genuinely down — it
+         * might be a one-off blip a fresh request wouldn't repeat. Only
+         * SOFT_FAILURE_HIDE_THRESHOLD of them IN A ROW, with no
+         * successful/out-of-scope response resetting the count in
+         * between, is treated the same as a single assistant_down.
+         *
+         * Deliberately only DECIDES here — never hides directly. Hiding
+         * is scheduleHideIfNeeded()'s job, called only after the
+         * response has actually been rendered (see submitMessage()).
+         *
+         * @param {?string} reasonCode
+         * @returns {boolean} true if this response is grounds to hide
+         */
+        function shouldHideWidget(reasonCode) {
+            if (reasonCode === core.REASON_ASSISTANT_DOWN) {
+                return true;
+            }
+
+            if (core.isSoftFailureReason(reasonCode)) {
+                consecutiveSoftFailures++;
+                return consecutiveSoftFailures >= core.SOFT_FAILURE_HIDE_THRESHOLD;
+            }
+
+            consecutiveSoftFailures = 0;
+            return false;
+        }
+
+        /**
+         * The real fix for a real, live-reproduced bug (Task 47): the
+         * widget was hiding before the customer could read why, because
+         * hideWidgetEntirely() ran synchronously in the same step that
+         * decided to hide — even calling it AFTER appendAssistantResponse()
+         * in source order was not enough, since nothing forces the
+         * browser to paint the newly-appended message before a
+         * synchronous style change immediately after it. A real
+         * `setTimeout` genuinely yields to the browser's render step
+         * before firing, which plain synchronous reordering does not
+         * guarantee — and HIDE_DELAY_MS gives actual reading time on
+         * top of that, not just a technically-correct but
+         * imperceptibly-brief window.
+         *
+         * @param {boolean} shouldHide
+         */
+        function scheduleHideIfNeeded(shouldHide) {
+            if (!shouldHide) {
+                return;
+            }
+
+            window.setTimeout(hideWidgetEntirely, core.HIDE_DELAY_MS);
         }
 
         function appendBubble(role, html) {
@@ -216,7 +282,7 @@
 
         function submitMessage(text) {
             var message = (text || '').trim();
-            if (message === '' || loading || stopped) {
+            if (message === '' || loading) {
                 return;
             }
 
@@ -227,20 +293,21 @@
 
             core.sendMessage(sendUrl, message).then(function (result) {
                 thinkingBubble.remove();
+                setLoading(false);
                 var normalized = core.normalizeResponse(result.data);
-
-                if (normalized.reasonCode === core.REASON_ASSISTANT_DOWN) {
-                    stopChat();
-                } else {
-                    setLoading(false);
-                }
+                var shouldHide = shouldHideWidget(normalized.reasonCode);
 
                 if (!result.ok && normalized.message === '') {
                     appendBubble('assistant', '<p>Sorry, something went wrong. Please try again.</p>');
-                    return;
+                } else {
+                    appendAssistantResponse(normalized);
                 }
 
-                appendAssistantResponse(normalized);
+                // Always scheduled AFTER the message above is actually
+                // in the DOM — see scheduleHideIfNeeded()'s own docblock
+                // for why this ordering, plus the real setTimeout delay,
+                // both matter.
+                scheduleHideIfNeeded(shouldHide);
             }).catch(function () {
                 thinkingBubble.remove();
                 setLoading(false);

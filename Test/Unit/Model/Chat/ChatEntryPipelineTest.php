@@ -414,6 +414,38 @@ final class ChatEntryPipelineTest extends TestCase
         self::assertSame(self::ASSISTANT_DOWN_MESSAGE, $result->safeResponse()->message);
     }
 
+    /**
+     * Task 46's alternating-message fix: ProviderConfirmedDownException
+     * is what FallbackChatGenerationService now throws when a role's
+     * circuit is already open from an earlier hard failure and this
+     * call never even re-attempted the provider (see that class's own
+     * regression tests for the full mechanism). This proves the
+     * classification stays "assistant_down" all the way out to the
+     * customer-facing SafeResponse for that case too, not just for a
+     * freshly-occurring ProviderRateLimitException/
+     * ProviderAuthenticationException.
+     */
+    public function testConfirmedDownFailureShortCircuitsToTheAssistantDownReasonAndMessage(): void
+    {
+        $classifier = $this->createMock(CommerceScopeClassifierInterface::class);
+        $classifier->method('classify')->willReturn(ScopeClassification::inScope());
+
+        $toolCallingChatService = $this->createMock(ToolCallingChatServiceInterface::class);
+        $toolCallingChatService->expects(self::once())
+            ->method('converse')
+            ->willThrowException(new \Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderConfirmedDownException(
+                new Phrase('The chat provider is still confirmed unavailable.')
+            ));
+
+        $pipeline = $this->pipeline(classifier: $classifier, toolCallingChatService: $toolCallingChatService);
+
+        $result = $pipeline->handle(self::STORE_ID, 'Show me waterproof phones.');
+
+        self::assertTrue($result->wasShortCircuited());
+        self::assertSame(ChatEntryPipeline::REASON_ASSISTANT_DOWN, $result->safeResponse()->reasonCode);
+        self::assertSame(self::ASSISTANT_DOWN_MESSAGE, $result->safeResponse()->message);
+    }
+
     public function testIncompleteProductsAreRetriedOnceAndTheRetryAddsTheMissingSku(): void
     {
         // Task 23: live-reproduced "here are 2 jackets" rendering only 1
@@ -1676,7 +1708,7 @@ final class ChatEntryPipelineTest extends TestCase
             new ChatInputValidator(),
             $classifier ?? $this->createMock(CommerceScopeClassifierInterface::class),
             new ProductContextResolver($reader, $retrievalService, $rankingPipeline),
-            new ProductContextFormatter(),
+            new ProductContextFormatter($reader),
             $activePromotionReader ?? $this->noPromotionsReader(),
             new PromotionContextFormatter(),
             new ResponseContractFormatter(),
@@ -1716,6 +1748,7 @@ final class ChatEntryPipelineTest extends TestCase
         $general = $this->createMock(GeneralConfigInterface::class);
         $general->method('isEnabled')->willReturn($assistantEnabled);
         $general->method('maxConversationMessages')->willReturn(40);
+        $general->method('isTokenOptimizationEnabled')->willReturn(false);
 
         $retrieval = $this->createMock(RetrievalConfigInterface::class);
         $retrieval->method('isRerankerEnabled')->willReturn(false);

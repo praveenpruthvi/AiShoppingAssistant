@@ -26,6 +26,9 @@
                     <resource id="Aavirbhava_AiShoppingAssistant::provider_cost"
                               title="AI Shopping Assistant Provider Cost Pricing"
                               sortOrder="940"/>
+                    <resource id="Aavirbhava_AiShoppingAssistant::category_boost"
+                              title="AI Shopping Assistant Category Boosts"
+                              sortOrder="950"/>
                 </resource>
             </resource>
         </resources>

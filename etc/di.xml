@@ -108,6 +108,12 @@
                 type="Aavirbhava\AiShoppingAssistant\Model\Merchandising\MerchandisingBoostRepository"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Merchandising\ActiveBoostReaderInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Merchandising\ActiveBoostReader"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Merchandising\CategoryBoostRepositoryInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Merchandising\CategoryBoostRepository"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Merchandising\ActiveCategoryBoostReaderInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Merchandising\ActiveCategoryBoostReader"/>
+    <preference for="Aavirbhava\AiShoppingAssistant\Api\Merchandising\ProductCategoryMembershipReaderInterface"
+                type="Aavirbhava\AiShoppingAssistant\Model\Merchandising\ProductCategoryMembershipReader"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Promotion\ActivePromotionReaderInterface"
                 type="Aavirbhava\AiShoppingAssistant\Model\Promotion\ActivePromotionReader"/>
     <preference for="Aavirbhava\AiShoppingAssistant\Api\Indexing\FullProductReindexerInterface"

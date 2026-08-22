@@ -28,25 +28,62 @@ use Magento\Framework\Data\Form\Element\AbstractElement;
  * gracefully to "just a text field" if the fetch fails or hasn't been
  * run yet.
  *
- * Wraps the input, button, and status text in a flex row
- * (`INLINE_ROW_STYLE`, shared verbatim with `ColorPickerField` — see
- * that class's own docblock for why `min-width:0` on the input's
- * wrapping span is required) rather than relying on natural inline
- * flow: Magento's native `.input-text` admin styling is full-width, so
- * without a flex wrapper the button has no room left on the same line
- * and wraps onto its own row below — a real, screenshot-confirmed
- * layout bug, not a hypothetical one.
+ * Wraps the input, button, and status text in a flex row (see
+ * `ColorPickerField`'s own docblock for why `min-width:0` on the
+ * input's wrapping span, shared verbatim between the two classes, is
+ * required) rather than relying on natural inline flow: Magento's
+ * native `.input-text` admin styling is full-width, so without a flex
+ * wrapper the button has no room left on the same line and wraps onto
+ * its own row below — a real, screenshot-confirmed layout bug, not a
+ * hypothetical one.
+ *
+ * A second, real, screenshot-confirmed flex bug: once the status text
+ * is populated (e.g. "Found 3 model(s) — pick one from the Model field
+ * suggestions."), the row stayed single-line (`flex-wrap` was never
+ * set, so it defaults to `nowrap`) and the status span's flex-basis
+ * (its own natural, unwrapped text width — often wider than the row)
+ * dominated the shrink distribution entirely, since the input's own
+ * `flex:1` shorthand gives it `flex-basis:0%` — a 0 basis contributes
+ * nothing to the shrink calculation, so the input received ZERO of the
+ * row's width once shrinking was in play, collapsing to 0px and making
+ * the button appear to jump left into the input's place. Fixed by
+ * letting the status span wrap onto its OWN full-width line
+ * (`flex-basis:100%` under `flex-wrap:wrap`) instead of ever competing
+ * with the input for width on the same line — the input/button pair
+ * then always lays out exactly as it does with no status text at all,
+ * regardless of how long the message is. Gated behind a `:empty` CSS
+ * rule (the status span starts with no text node at all, so it starts
+ * `display:none` and takes no layout space or line-wrap at all) so
+ * this changes nothing visually before the button's first click —
+ * `flex-basis:100%` only takes effect once real text is actually
+ * present.
  */
 class OllamaModelField extends Field
 {
     /**
-     * Kept identical to ColorPickerField::INLINE_ROW_STYLE/
-     * INPUT_WRAPPER_STYLE — both fields must lay out their input +
-     * trailing control the same way. `gap:10px` is the one explicit
-     * spacing value between the input and the button/status text.
+     * INPUT_WRAPPER_STYLE is kept identical to ColorPickerField's own —
+     * both fields must lay out their input + trailing control the same
+     * way. `gap:10px` is the one explicit spacing value between the
+     * input and the button/status text. INLINE_ROW_STYLE additionally
+     * carries `flex-wrap:wrap` here, unlike ColorPickerField's — this
+     * field's trailing status text is dynamic, unbounded-length content
+     * that a fixed-size swatch never needs to account for (see this
+     * class's own docblock for the real bug that requires it).
      */
-    private const INLINE_ROW_STYLE = 'display:flex;align-items:center;gap:10px;';
+    private const INLINE_ROW_STYLE = 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;';
     private const INPUT_WRAPPER_STYLE = 'flex:1;min-width:0;';
+
+    /**
+     * `flex:0 0 100%` forces the status span onto its own full-width
+     * flex line (via the container's `flex-wrap:wrap`) once it has
+     * content, so it never competes with the input for width on the
+     * same line regardless of message length. The `:empty` CSS rule
+     * (emitted alongside this in _getElementHtml()) overrides this to
+     * `display:none` while the span has no text node yet — before the
+     * button's first click, this changes nothing visually from the
+     * plain input+button row.
+     */
+    private const STATUS_WRAPPER_STYLE = 'flex:0 0 100%;';
 
     protected function _getElementHtml(AbstractElement $element): string
     {
@@ -59,13 +96,14 @@ class OllamaModelField extends Field
         $statusId = $fieldId . '_status';
         $fetchUrl = $this->getUrl('aavirbhava_aishoppingassistant/system_config/fetchOllamaModels');
 
-        $html = '<div class="aavirbhava-inline-field-row" style="' . self::INLINE_ROW_STYLE . '">'
+        $html = '<style>#' . $this->escapeHtmlAttr($statusId) . ':empty{display:none;}</style>'
+            . '<div class="aavirbhava-inline-field-row" style="' . self::INLINE_ROW_STYLE . '">'
             . '<span style="' . self::INPUT_WRAPPER_STYLE . '">' . $inputHtml . '</span>'
             . '<button type="button" id="' . $this->escapeHtmlAttr($buttonId) . '" '
             . 'class="action-secondary" style="flex:0 0 auto;">'
             . $this->escapeHtml(__('Fetch Ollama Models'))
             . '</button>'
-            . '<span id="' . $this->escapeHtmlAttr($statusId) . '" style="flex:0 1 auto;"></span>'
+            . '<span id="' . $this->escapeHtmlAttr($statusId) . '" style="' . self::STATUS_WRAPPER_STYLE . '"></span>'
             . '</div>'
             . '<datalist id="' . $this->escapeHtmlAttr($datalistId) . '"></datalist>';
 

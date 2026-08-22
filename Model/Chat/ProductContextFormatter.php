@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Aavirbhava\AiShoppingAssistant\Model\Chat;
 
+use Aavirbhava\AiShoppingAssistant\Api\Config\ConfigurationReaderInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Dto\ChatMessage;
 use Aavirbhava\AiShoppingAssistant\Model\Retrieval\SearchCandidate;
 
@@ -31,6 +32,23 @@ use Aavirbhava\AiShoppingAssistant\Model\Retrieval\SearchCandidate;
  * turn's verified set), so this wording change can only make the model
  * more willing to reference something already legitimately available,
  * never able to smuggle in something that wasn't.
+ *
+ * Token Optimization (Task 48, `general/token_optimization_enabled`,
+ * default No): when enabled, drops the "Categories: ..." part from each
+ * candidate line. Audited before trimming anything (same
+ * audit-before-changing discipline as prior tasks): SKU is the
+ * OutputValidator fabricated_sku security boundary and must always stay;
+ * Name is required for the model to reason about the product at all;
+ * attribute label/values are this module's real matching signal for
+ * attribute-driven queries ("waterproof", "size medium") and are kept in
+ * both modes. Category names are the one field LlmResponseSchema::schema()
+ * never asks the model to return, echo, or ground anything against
+ * (confirmed by reading that schema — no `category` property exists
+ * anywhere in it) and are typically the most redundant signal with
+ * name+attributes already present — a real, measurable token reduction
+ * with a real, disclosed accuracy tradeoff for category-sensitive
+ * queries, not a free win. Default No sends this exactly as before this
+ * task, byte-for-byte.
  */
 final class ProductContextFormatter
 {
@@ -45,28 +63,35 @@ or imply either. If nothing here or from earlier in the conversation
 actually fits the request, say so instead of forcing a recommendation.
 TEXT;
 
+    public function __construct(
+        private readonly ConfigurationReaderInterface $configurationReader
+    ) {
+    }
+
     /**
      * @param list<SearchCandidate> $candidates
      */
-    public function format(array $candidates): ?ChatMessage
+    public function format(int $storeId, array $candidates): ?ChatMessage
     {
         if ($candidates === []) {
             return null;
         }
 
+        $tokenOptimizationEnabled = $this->configurationReader->readGeneral($storeId)->isTokenOptimizationEnabled();
+
         $lines = array_map(
-            fn (SearchCandidate $candidate): string => $this->formatCandidate($candidate),
+            fn (SearchCandidate $candidate): string => $this->formatCandidate($candidate, $tokenOptimizationEnabled),
             $candidates
         );
 
         return new ChatMessage('system', self::INSTRUCTIONS . "\n\n" . implode("\n", $lines));
     }
 
-    private function formatCandidate(SearchCandidate $candidate): string
+    private function formatCandidate(SearchCandidate $candidate, bool $tokenOptimizationEnabled): string
     {
         $parts = ['SKU: ' . $candidate->sku, 'Name: ' . $candidate->name];
 
-        if ($candidate->categoryNames !== []) {
+        if (!$tokenOptimizationEnabled && $candidate->categoryNames !== []) {
             $parts[] = 'Categories: ' . implode(', ', $candidate->categoryNames);
         }
 

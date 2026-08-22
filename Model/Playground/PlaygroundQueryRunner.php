@@ -83,7 +83,7 @@ final class PlaygroundQueryRunner implements PlaygroundQueryRunnerInterface
         $availability = $this->revalidationService->checkAvailability($storeId, null, $skus);
         $verified = $this->revalidationService->revalidate($storeId, null, $skus);
 
-        $contextMessage = $this->productContextFormatter->format($ranked);
+        $contextMessage = $this->productContextFormatter->format($storeId, $ranked);
 
         $llmRounds = [];
         $toolExecutions = [];

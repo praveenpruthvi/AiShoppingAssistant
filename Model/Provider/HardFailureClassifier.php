@@ -8,6 +8,7 @@ use Aavirbhava\AiShoppingAssistant\Api\Provider\HardFailureClassifierInterface;
 use Aavirbhava\AiShoppingAssistant\Model\Embedding\Exception\EmbeddingAuthenticationException;
 use Aavirbhava\AiShoppingAssistant\Model\Embedding\Exception\EmbeddingRateLimitException;
 use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderAuthenticationException;
+use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderConfirmedDownException;
 use Aavirbhava\AiShoppingAssistant\Model\Provider\Exception\ProviderRateLimitException;
 use Throwable;
 
@@ -28,6 +29,12 @@ use Throwable;
  * key is exactly as unrecoverable on the embedding path as on the chat
  * path, even though the two hierarchies are sibling ProviderException
  * subclasses rather than sharing a common Rate-Limit/Authentication base.
+ *
+ * ProviderConfirmedDownException (Task 46's alternating-message fix) is
+ * also hard: it is thrown specifically when a role's circuit breaker is
+ * already open because of an earlier hard failure and this call skipped
+ * the provider entirely — the underlying cause has not gone away just
+ * because this particular call never re-attempted it.
  */
 final class HardFailureClassifier implements HardFailureClassifierInterface
 {
@@ -36,6 +43,7 @@ final class HardFailureClassifier implements HardFailureClassifierInterface
         return $exception instanceof ProviderRateLimitException
             || $exception instanceof ProviderAuthenticationException
             || $exception instanceof EmbeddingRateLimitException
-            || $exception instanceof EmbeddingAuthenticationException;
+            || $exception instanceof EmbeddingAuthenticationException
+            || $exception instanceof ProviderConfirmedDownException;
     }
 }

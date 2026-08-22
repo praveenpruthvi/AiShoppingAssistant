@@ -161,7 +161,8 @@ final class ConfigurationReader implements ConfigurationReaderInterface
                 self::MIN_MAX_CONVERSATION_MESSAGES,
                 self::MAX_MAX_CONVERSATION_MESSAGES,
                 self::DEFAULT_MAX_CONVERSATION_MESSAGES
-            )
+            ),
+            $this->readBool(Path::GENERAL_TOKEN_OPTIMIZATION_ENABLED, $storeId, false)
         );
     }
 
