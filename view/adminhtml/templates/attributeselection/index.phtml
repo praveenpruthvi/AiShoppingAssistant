@@ -3,12 +3,33 @@
  * @var \Aavirbhava\AiShoppingAssistant\Block\Adminhtml\AttributeSelection\Index $block
  */
 $attributes = $block->getEligibleAttributes();
+
+/**
+ * Visual-only grouping (Task 51): a real attribute-set/group membership
+ * grouping was considered and deliberately rejected — this screen lists
+ * ELIGIBLE attributes across the whole catalog, and a single catalog
+ * attribute can belong to zero, one, or many attribute sets/groups with
+ * no canonical "the" group to key off of; resolving one would mean new
+ * EAV lookup logic (plus an "ungrouped" fallback for attributes not on
+ * the default set), not a presentation-only change. Grouping by the
+ * first letter of the already-displayed, already-alphabetically-sorted
+ * label needs no new data from the block at all (same $attributes array,
+ * same 'code'/'label'/'isIndexed' shape) and, on this store's own real
+ * attribute set, happens to cluster genuinely related attributes anyway
+ * (e.g. this catalog's "Style Bags"/"Style Bottom"/"Style General" all
+ * land under "S").
+ */
+$groups = [];
+foreach ($attributes as $attribute) {
+    $letter = strtoupper(substr(trim((string) $attribute['label']), 0, 1) ?: '#');
+    $groups[$letter][] = $attribute;
+}
 ?>
 <div class="admin__fieldset-wrapper aavirbhava-attribute-selection">
     <div class="admin__fieldset-wrapper-title">
         <strong><?= $block->escapeHtml(__('Attribute Indexing Selection')) ?></strong>
     </div>
-    <div class="admin__field-note" style="padding: 0 2.4rem 1.6rem;">
+    <div class="admin__field-note aavirbhava-attribute-selection-intro">
         <span><?= $block->escapeHtml(__(
             'Select which product attributes feed the AI Shopping Assistant\'s search index and the '
             . 'facts it can state about a product. Only real, merchant-defined attributes are listed '
@@ -20,7 +41,7 @@ $attributes = $block->getEligibleAttributes();
     </div>
 
     <?php if ($attributes === []): ?>
-        <div class="message message-notice notice" style="margin: 0 2.4rem 1.6rem;">
+        <div class="message message-notice notice aavirbhava-attribute-selection-empty">
             <?= $block->escapeHtml(__('No eligible product attributes were found.')) ?>
         </div>
     <?php else: ?>
@@ -28,23 +49,31 @@ $attributes = $block->getEligibleAttributes();
             <input name="form_key" type="hidden" value="<?= $block->escapeHtmlAttr($block->getFormKey()) ?>"/>
             <input type="hidden" name="all_codes" value="<?= $block->escapeHtmlAttr($block->getAllEligibleCodesCsv()) ?>"/>
 
-            <fieldset class="admin__fieldset">
-                <div class="admin__field aavirbhava-attribute-selection-grid" style="padding:0 2.4rem;">
-                    <?php foreach ($attributes as $attribute): ?>
-                        <?php $inputId = 'aavirbhava-attr-' . $block->escapeHtmlAttr($attribute['code']); ?>
-                        <div class="admin__field-option">
-                            <input type="checkbox" id="<?= $inputId ?>" name="selected_codes[]"
-                                   value="<?= $block->escapeHtmlAttr($attribute['code']) ?>"
-                                   class="admin__control-checkbox"
-                                <?= $attribute['isIndexed'] ? 'checked="checked"' : '' ?>/>
-                            <label class="admin__field-label" for="<?= $inputId ?>">
-                                <?= $block->escapeHtml($attribute['label']) ?>
-                                <span class="aavirbhava-attribute-code"> (<?= $block->escapeHtml($attribute['code']) ?>)</span>
-                            </label>
+            <fieldset class="admin__fieldset aavirbhava-attribute-selection-fieldset">
+                <?php foreach ($groups as $letter => $groupAttributes): ?>
+                    <div class="aavirbhava-attribute-group">
+                        <div class="aavirbhava-attribute-group-heading">
+                            <?= $block->escapeHtml($letter) ?>
                         </div>
-                    <?php endforeach; ?>
-                </div>
-                <div class="admin__field" style="padding:1.6rem 2.4rem 0;">
+                        <div class="admin__field aavirbhava-attribute-selection-grid">
+                            <?php foreach ($groupAttributes as $attribute): ?>
+                                <?php $inputId = 'aavirbhava-attr-' . $block->escapeHtmlAttr($attribute['code']); ?>
+                                <div class="admin__field-option aavirbhava-attribute-option">
+                                    <input type="checkbox" id="<?= $inputId ?>" name="selected_codes[]"
+                                           value="<?= $block->escapeHtmlAttr($attribute['code']) ?>"
+                                           class="admin__control-checkbox"
+                                        <?= $attribute['isIndexed'] ? 'checked="checked"' : '' ?>/>
+                                    <label class="admin__field-label" for="<?= $inputId ?>">
+                                        <?= $block->escapeHtml($attribute['label']) ?>
+                                        <span class="aavirbhava-attribute-code"><?= $block->escapeHtml($attribute['code']) ?></span>
+                                    </label>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+
+                <div class="admin__field aavirbhava-attribute-selection-actions">
                     <button type="submit" class="action-primary">
                         <span><?= $block->escapeHtml(__('Save Selection')) ?></span>
                     </button>
@@ -56,20 +85,67 @@ $attributes = $block->getEligibleAttributes();
 
 <style>
 /*
- * The checkbox grid below relies on Magento's own native
- * .admin__field-option + .admin__field-label pairing (the same classes
- * core admin forms use for a checkbox-with-text row) so the checkbox
- * renders and aligns correctly, including a label that wraps onto a
- * second line staying indented under the first rather than dropping
- * back to the grid cell's left edge.
+ * Reuses Magento's own native .admin__field-option + .admin__field-label
+ * pairing (the same classes core admin forms use for a checkbox-with-text
+ * row) for correct checkbox alignment and second-line label wrapping —
+ * the rules below are layout/spacing only, no bespoke replacement for
+ * anything the native admin classes already handle.
  */
+.aavirbhava-attribute-selection-intro {
+    padding: 0 2.4rem 1.6rem;
+}
+
+.aavirbhava-attribute-selection-empty {
+    margin: 0 2.4rem 1.6rem;
+}
+
+.aavirbhava-attribute-selection-fieldset {
+    padding: 0 2.4rem 1.6rem;
+}
+
+.aavirbhava-attribute-group {
+    border-top: 1px solid #e3e3e3;
+    padding-top: 1.6rem;
+    margin-top: 1.6rem;
+}
+
+.aavirbhava-attribute-group:first-child {
+    border-top: 0;
+    padding-top: 0;
+    margin-top: 0;
+}
+
+.aavirbhava-attribute-group-heading {
+    color: #767676;
+    font-size: 1.1rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    margin-bottom: 0.8rem;
+}
+
 .aavirbhava-attribute-selection-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-    gap: 1.2rem 2.4rem;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 1.2rem 3.2rem;
+}
+
+.aavirbhava-attribute-option {
+    display: flex;
+    align-items: baseline;
+    padding: 0.4rem 0;
 }
 
 .aavirbhava-attribute-code {
+    display: block;
     color: #767676;
+    font-size: 1.1rem;
+    margin-top: 0.2rem;
+}
+
+.aavirbhava-attribute-selection-actions {
+    padding-top: 1.6rem;
+    margin-top: 0.8rem;
+    border-top: 1px solid #e3e3e3;
 }
 </style>

@@ -1,8 +1,10 @@
 # Progress Log — Aavirbhava_AiShoppingAssistant
 
-Last updated from: category-level merchandising boost, completing Phase 2's backlog (2026-08-22). New `aavirbhava_ai_category_boost` table + `CategoryBoostRepository` (same shape/cap/pattern as Task 32's product boost, plus a `findByCategoryId()` upsert lookup). Entry Point A adds a boost field directly to the real category edit form — required reading `Category\DataProvider`'s real source first, since it hard-overrides the modifier-pool mechanism the product form uses, so the correct extension point is a plugin on the concrete `DataProvider` class (confirmed via `Magento_CatalogUrlRewrite`'s own precedent) wired to `catalog_category_save_after`. Entry Point B is a standalone review grid mirroring Task 32's own. `MerchandisingBoostSignal` extended in place (not a second signal, with the reasoning documented) to resolve real `catalog_category_product` membership live, scoped to the current candidate set, computing `min(1.0, productBoost + max(categoryBoosts))` — MAX across a product's own categories, additive with product boost, both under the shared cap. Audited `SearchCandidate`/`withScore()` per Task 31's own bug-class precedent — confirmed no change needed. Found and fixed a real, previously-latent bug in the ORIGINAL Task 32 code along the way: `DateTimeImmutable::createFromFormat('Y-m-d', ...)` defaults unspecified time to the current wall-clock time, not midnight — fixed via a leading `!` in the format string, applied to both the new files and retroactively to Task 32's `Boost/Save.php`. Live-verified against the real catalog: a real category-3 boost (0.6) plus a real product-1 boost (0.7) combined and capped to exactly 1.0 as expected, a category-only-boosted sibling product got exactly the category boost, and a genuinely unrelated control product was unaffected; the real `DataProvider` plugin and the real `catalog_category_save_after` observer wiring were each separately confirmed live. Full suite 1804 tests / 4447 assertions / 0 failures (up from 1750/4350).
+Last updated from: Attribute Indexing Selection visual-only redesign (2026-08-22). Same scope discipline as the earlier Playground redesign — presentation only, the block's `getEligibleAttributes()`/`getAllEligibleCodesCsv()`/`getSaveUrl()` contract and the "Save Selection" POST behavior are byte-identical to before, so zero test changes were needed. Considered grouping by real attribute-set/group membership (the task's own suggested option) and explicitly rejected it: this screen lists eligible attributes across the whole catalog, and one attribute can belong to zero, one, or many sets/groups with no canonical "the" group to key a catalog-wide list off of — resolving one would need new EAV lookup logic, not a presentation-only change. Grouped by the first letter of the already-sorted label instead (zero new data from the block), producing 9 real letter groups on this store's real 22 eligible attributes that incidentally cluster genuinely related attributes together (this catalog's "Style Bags"/"Style Bottom"/"Style General" all land under "S"). Widened the cramped `minmax(240px, 1fr)` checkbox grid to `minmax(320px, 1fr)` and moved the attribute code to its own secondary line. Verified this page has no static-asset pipeline at all (one server-rendered `.phtml` with an inline `<style>` block, no `web/js`/`web/css`) so Task 46's stale-compiled-copy gotcha doesn't apply here, confirmed the environment is in `developer` mode, then live-rendered the real block via a real `LayoutInterface::createBlock()` call and confirmed the real served HTML carries the new column width, the new letter headings, and a real checkbox's correct checked state from the real repository data. Full suite re-run to confirm nothing broke: 1804 tests / 4447 assertions / 0 failures — identical count to the prior task, correctly reflecting a template/CSS-only change.
 
-Previously: token efficiency — unconditional provider-native prompt caching + a "Token Optimization" admin toggle (2026-08-22). Part A: confirmed (not assumed) that Anthropic was never actually sending `cache_control` despite already parsing `cache_read_input_tokens` since Task 42 — added real breakpoints on the system prompt and the last tool definition, following Anthropic's current published API shape (verified via live research, not training-data guesswork). Found and fixed a real, previously-latent bug along the way: Anthropic's input-token fields are ADDITIVE (`input_tokens + cache_read_input_tokens + cache_creation_input_tokens = total`), unlike OpenAI's subset model — the old code was clamping cache-read counts down to fit inside `input_tokens` alone, which would have massively under-reported real cache hits the moment caching actually started working; never caught before because caching was never active. Confirmed OpenAI/xAI/local-compatible need no code change (a dedicated audit found the whole request-body path already deterministic) and researched Gemini's two caching mechanisms — implicit (automatic, benefits for free) vs. explicit (`cachedContents`, a genuinely separate stateful mechanism correctly deferred as a follow-up). Part B: new `general/token_optimization_enabled` toggle (default No); `ProductContextFormatter` drops category names when enabled, audited first (SKU/Name/attributes are all genuinely load-bearing and stay in both modes; categories are the one field the LLM response schema never references at all). Live-verified against the real indexed catalog: toggle=No produced a 2468-byte context, toggle=Yes produced 2164 bytes (~12% smaller) with categories genuinely gone. Part A's real cache-write-then-read round trip could not be live-verified — no LLM provider currently has a working API key in this environment, disclosed honestly. Full suite 1750 tests / 4350 assertions / 0 failures (up from 1746/4335).
+Previously: category-level merchandising boost, completing Phase 2's backlog (2026-08-22). New `aavirbhava_ai_category_boost` table + `CategoryBoostRepository` (same shape/cap/pattern as Task 32's product boost, plus a `findByCategoryId()` upsert lookup). Entry Point A adds a boost field directly to the real category edit form — required reading `Category\DataProvider`'s real source first, since it hard-overrides the modifier-pool mechanism the product form uses, so the correct extension point is a plugin on the concrete `DataProvider` class (confirmed via `Magento_CatalogUrlRewrite`'s own precedent) wired to `catalog_category_save_after`. Entry Point B is a standalone review grid mirroring Task 32's own. `MerchandisingBoostSignal` extended in place (not a second signal, with the reasoning documented) to resolve real `catalog_category_product` membership live, scoped to the current candidate set, computing `min(1.0, productBoost + max(categoryBoosts))` — MAX across a product's own categories, additive with product boost, both under the shared cap. Audited `SearchCandidate`/`withScore()` per Task 31's own bug-class precedent — confirmed no change needed. Found and fixed a real, previously-latent bug in the ORIGINAL Task 32 code along the way: `DateTimeImmutable::createFromFormat('Y-m-d', ...)` defaults unspecified time to the current wall-clock time, not midnight — fixed via a leading `!` in the format string, applied to both the new files and retroactively to Task 32's `Boost/Save.php`. Live-verified against the real catalog: a real category-3 boost (0.6) plus a real product-1 boost (0.7) combined and capped to exactly 1.0 as expected, a category-only-boosted sibling product got exactly the category boost, and a genuinely unrelated control product was unaffected; the real `DataProvider` plugin and the real `catalog_category_save_after` observer wiring were each separately confirmed live. Full suite 1804 tests / 4447 assertions / 0 failures (up from 1750/4350).
+
+Earlier: token efficiency — unconditional provider-native prompt caching + a "Token Optimization" admin toggle (2026-08-22). Part A: confirmed (not assumed) that Anthropic was never actually sending `cache_control` despite already parsing `cache_read_input_tokens` since Task 42 — added real breakpoints on the system prompt and the last tool definition, following Anthropic's current published API shape (verified via live research, not training-data guesswork). Found and fixed a real, previously-latent bug along the way: Anthropic's input-token fields are ADDITIVE (`input_tokens + cache_read_input_tokens + cache_creation_input_tokens = total`), unlike OpenAI's subset model — the old code was clamping cache-read counts down to fit inside `input_tokens` alone, which would have massively under-reported real cache hits the moment caching actually started working; never caught before because caching was never active. Confirmed OpenAI/xAI/local-compatible need no code change (a dedicated audit found the whole request-body path already deterministic) and researched Gemini's two caching mechanisms — implicit (automatic, benefits for free) vs. explicit (`cachedContents`, a genuinely separate stateful mechanism correctly deferred as a follow-up). Part B: new `general/token_optimization_enabled` toggle (default No); `ProductContextFormatter` drops category names when enabled, audited first (SKU/Name/attributes are all genuinely load-bearing and stay in both modes; categories are the one field the LLM response schema never references at all). Live-verified against the real indexed catalog: toggle=No produced a 2468-byte context, toggle=Yes produced 2164 bytes (~12% smaller) with categories genuinely gone. Part A's real cache-write-then-read round trip could not be live-verified — no LLM provider currently has a working API key in this environment, disclosed honestly. Full suite 1750 tests / 4350 assertions / 0 failures (up from 1746/4335).
 
 Earlier: fixing the "Fetch Ollama Models" status message covering the Model input (CSS-only) (2026-08-22) — user-reported, with 2 screenshots. A classic flexbox shrink-distribution bug in `OllamaModelField`: the row had no `flex-wrap` and the input's `flex:1` shorthand gives it `flex-basis:0%`, so once the status span had real (long) text, the input received zero of the shrink-mode width distribution and collapsed to 0px, making the button appear to jump left into its place. Fixed by giving the status span `flex:0 0 100%` under a new `flex-wrap:wrap` on the row, so it always wraps onto its own full-width line instead of ever competing with the input for space — gated behind a `:empty` CSS rule so a never-clicked field renders identically to before. No JS/business logic touched, per the explicit "CSS fix only" request. Full suite 1746 tests / 4335 assertions / 0 failures (up from 1745/4333).
 
@@ -6354,6 +6356,82 @@ initial 5-task priority order (LLM adapter → pipeline skeleton → retrieval
   other layer (schema, DI compile, real ORM/integration test, live
   ranking effect, live DataProvider plugin, live save-observer event
   dispatch) is separately, genuinely verified.
+
+### Task 51 — Attribute Indexing Selection visual-only redesign (DONE)
+
+- Scope discipline matched to the earlier Playground redesign: same
+  data (`Block\Adminhtml\AttributeSelection\Index::getEligibleAttributes()`
+  untouched, same `code`/`label`/`isIndexed` shape, zero test changes
+  needed to the block), same "Save Selection" POST
+  (`selected_codes[]`/`all_codes`), same sync with the Stores >
+  Attributes > Product grid column — presentation-only, confirmed by
+  making the change without touching `Index.php`,
+  `Controller/Adminhtml/AttributeSelection/{Index,Save}.php`, or any
+  repository/audit/seeding logic at all.
+- **Grouping decision, explicitly reasoned rather than defaulted to**:
+  considered grouping by real attribute-set/group membership first
+  (the task's own suggested option) and rejected it — this screen
+  lists ELIGIBLE attributes across the *whole* catalog, and a single
+  attribute can belong to zero, one, or many attribute sets/groups
+  with no canonical "the" group to key a catalog-wide list off of;
+  resolving one would mean new EAV lookup logic plus an "ungrouped"
+  fallback for attributes not on the default set — real new logic, not
+  a presentation-only change, and out of this task's scope. Instead
+  grouped by the first letter of the already-displayed,
+  already-alphabetically-sorted label — this needs no new data from
+  the block at all (same array, same fields), and on this store's own
+  real 22 eligible attributes it produces 9 real letter groups
+  (A/C/E/F/G/M/N/P/S) that, incidentally, cluster genuinely related
+  attributes together (this catalog's "Style Bags"/"Style
+  Bottom"/"Style General" all land under "S").
+- **Layout fix**: replaced the cramped `repeat(auto-fill,
+  minmax(240px, 1fr))` grid (up to 6 narrow columns on a wide admin
+  viewport) with `minmax(320px, 1fr)`, giving each row real breathing
+  room; the attribute code moved from an inline `(code)` suffix to its
+  own smaller secondary line under the label. Continues using
+  Magento's own native `admin__fieldset`/`admin__field-option`/
+  `admin__field-label`/`admin__control-checkbox` classes for the
+  checkbox row itself (unchanged from the original Task 38
+  implementation) — the only bespoke CSS is grid/column layout and the
+  new letter-heading typography, since no native admin component
+  covers a multi-column checkbox grid.
+- **Verification of served output (task's explicit requirement)**:
+  confirmed this page has no static-asset pipeline involved at all —
+  no `view/adminhtml/web/js` or `web/css`, the entire page is one
+  server-rendered `.phtml` with an inline `<style>` block, so Task 46's
+  "stale compiled copy" gotcha (which was specifically about JS files
+  needing `pub/static` regeneration) does not apply here; confirmed
+  the environment is in `developer` mode (`bin/magento
+  deploy:mode:show`), which serves templates live with no static
+  pipeline or block-HTML caching in play regardless. Ran
+  `bin/magento cache:flush` anyway as routine practice, then rendered
+  the real block through a real, DI-constructed
+  `LayoutInterface::createBlock()` call (the same real-object-manager
+  substitute used for every other admin-UI verification in this
+  module) and confirmed directly in the real produced HTML: the new
+  `minmax(320px, 1fr)` column width is present, the old
+  `minmax(240px, 1fr)` is gone, real letter-group headings
+  (`A, C, E, F, G, M, N, P, S`) matching this store's real 22 eligible
+  attributes were produced, and a real checkbox (`activity`) still
+  carries its correct `checked="checked"` state from the real
+  `AttributeIndexingSelectionRepositoryInterface` data — proving the
+  served output reflects the change and the underlying selection data
+  is untouched.
+- **Not done / blocked, disclosed**: same standing limitation as every
+  other admin-UI task in this module — the actual rendered-HTML/click-
+  through admin experience is unconfirmed through a real authenticated
+  browser session (CAPTCHA-gated admin login, no browser-automation
+  tool in this session). Verified instead via the real block-render
+  substitute described above.
+- **Tests**: no test changes needed — the block's public contract
+  (`getEligibleAttributes()`, `getAllEligibleCodesCsv()`,
+  `getSaveUrl()`) is byte-identical to before this task, so
+  `Test/Unit/Block/Adminhtml/AttributeSelection/IndexTest.php` and
+  `Test/Integration/Model/Catalog/AttributeSelectionAffectsIndexingPipelineTest.php`
+  needed no edits. Full suite re-run to confirm nothing broke: **1804
+  tests / 4447 assertions / 0 failures** — identical count to the
+  prior task, correctly reflecting that this was a template/CSS-only
+  change with no new or removed test.
 
 ## Next up
 
